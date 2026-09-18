@@ -260,12 +260,21 @@ def find_pairs(start_windows, end_windows):
     if not pairs_b.empty:
 
         pairs_b = pairs_b.sort_values(
-            ["delta_k_pct", "delta_b_pct"]
-        )
+            [
+                "delta_k_pct",
+                "delta_b_pct"
+            ],
+            ascending=[
+                True,
+                True
+            ]
+        ).reset_index(drop=True)
 
         top3 = pairs_b.head(3).copy()
 
-        top3["status"] = "Прошла фильтры Δk ≤ 5% и Δb ≤ 5%"
+        top3["status"] = (
+            "Прошла фильтры Δk ≤ 5% и Δb ≤ 5%"
+        )
 
         return top3, pairs_b
 
@@ -662,6 +671,7 @@ def main():
             print(
                 f"    {row.status}"
             )
+            
 
     # ========================================================
     # ПОДГОТОВКА EXCEL
@@ -736,7 +746,6 @@ def main():
 # ============================================================
 
 df, results, all_windows = main()
-
 
 import matplotlib.pyplot as plt
 

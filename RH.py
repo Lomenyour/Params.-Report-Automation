@@ -698,29 +698,29 @@ def main():
     print()
     print("Сохранение...")
 
-    with pd.ExcelWriter(
-        OUTPUT_FILE,
-        engine="openpyxl"
-    ) as writer:
+    # with pd.ExcelWriter(
+    #     OUTPUT_FILE,
+    #     engine="openpyxl"
+    # ) as writer:
 
-        result_df.to_excel(
-            writer,
-            sheet_name="Результат",
-            index=False
-        )
+    #     result_df.to_excel(
+    #         writer,
+    #         sheet_name="Результат",
+    #         index=False
+    #     )
 
-        windows_df.to_excel(
-            writer,
-            sheet_name="Все окна",
-            index=False
-        )
+    #     windows_df.to_excel(
+    #         writer,
+    #         sheet_name="Все окна",
+    #         index=False
+    #     )
 
-        pairs_df.to_excel(
-            writer,
-            sheet_name="Подходящие пары",
-            index=False
-        )
-
+    #     pairs_df.to_excel(
+    #         writer,
+    #         sheet_name="Подходящие пары",
+    #         index=False
+    #     )
+       
     print()
     print("ГОТОВО!")
 
@@ -728,11 +728,245 @@ def main():
         f"Результат сохранен: "
         f"{OUTPUT_FILE}"
     )
+    return df, results, all_windows
 
 
 # ============================================================
 # ЗАПУСК
 # ============================================================
 
-if __name__ == "__main__":
-    main()
+df, results, all_windows = main()
+
+
+import matplotlib.pyplot as plt
+
+
+# ============================================================
+# НАСТРОЙКИ МАСШТАБА
+#
+# None = автоматический масштаб
+#
+# Пример:
+# 1: (110000, 150000)
+# означает Y от 110000 до 150000
+# ============================================================
+
+Y_LIMITS = {
+    1: (20000, 24000),
+    2: None,
+}
+
+
+# ============================================================
+# МАСШТАБ X
+#
+# None = автоматический
+# ============================================================
+
+X_LIMITS = {
+    1: (70, 78),
+    2: None,
+}
+
+
+# ============================================================
+# ПОСТРОЕНИЕ ГРАФИКОВ
+# ============================================================
+
+def plot_selected_windows():
+
+    if not results:
+        print("Нет найденных результатов.")
+        return
+
+    print(
+        f"Построение графиков: "
+        f"{len(results)} вариантов"
+    )
+
+    for result in results:
+
+        period = result["period"]
+        rank = result["rank"]
+
+        # ====================================================
+        # ДАННЫЕ ОКОН
+        # ====================================================
+
+        start_begin = result["start_window_begin"]
+        start_end = result["start_window_end"]
+
+        end_begin = result["end_window_begin"]
+        end_end = result["end_window_end"]
+
+        start_data = df[
+            (df["period"] == period) &
+            (df["date"] >= start_begin) &
+            (df["date"] <= start_end)
+        ].copy()
+
+        end_data = df[
+            (df["period"] == period) &
+            (df["date"] >= end_begin) &
+            (df["date"] <= end_end)
+        ].copy()
+
+        if start_data.empty or end_data.empty:
+            print(
+                f"Период {period}, вариант {rank}: "
+                f"данные не найдены"
+            )
+            continue
+
+        # ====================================================
+        # КОЭФФИЦИЕНТЫ РЕГРЕССИИ
+        # ====================================================
+
+        k_start = result["k_start"]
+        b_start = result["b_start"]
+
+        k_end = result["k_end"]
+        b_end = result["b_end"]
+
+        # ====================================================
+        # ГРАФИК
+        # ====================================================
+
+        fig, ax = plt.subplots(
+            figsize=(11, 7)
+        )
+
+        # START
+        ax.scatter(
+            start_data["power"],
+            start_data["fuel"],
+            s=25,
+            alpha=0.65,
+            label="START"
+        )
+
+        # END
+        ax.scatter(
+            end_data["power"],
+            end_data["fuel"],
+            s=25,
+            alpha=0.65,
+            label="END"
+        )
+
+        # ====================================================
+        # РЕГРЕССИИ
+        # ====================================================
+
+        all_power = pd.concat([
+            start_data["power"],
+            end_data["power"]
+        ])
+
+        x_min = all_power.min()
+        x_max = all_power.max()
+
+        x_line = np.linspace(
+            x_min,
+            x_max,
+            100
+        )
+
+        y_start = (
+            k_start * x_line +
+            b_start
+        )
+
+        y_end = (
+            k_end * x_line +
+            b_end
+        )
+
+        ax.plot(
+            x_line,
+            y_start,
+            linewidth=2,
+            label="Регрессия START"
+        )
+
+        ax.plot(
+            x_line,
+            y_end,
+            linewidth=2,
+            label="Регрессия END"
+        )
+
+        # ====================================================
+        # РУЧНОЙ / АВТОМАТИЧЕСКИЙ Y
+        # ====================================================
+
+        if Y_LIMITS.get(period) is not None:
+
+            ax.set_ylim(
+                Y_LIMITS[period][0],
+                Y_LIMITS[period][1]
+            )
+
+        # ====================================================
+        # РУЧНОЙ / АВТОМАТИЧЕСКИЙ X
+        # ====================================================
+
+        if X_LIMITS.get(period) is not None:
+
+            ax.set_xlim(
+                X_LIMITS[period][0],
+                X_LIMITS[period][1]
+            )
+
+        # ====================================================
+        # ПОДПИСИ
+        # ====================================================
+
+        ax.set_xlabel("Мощность")
+        ax.set_ylabel("Расход топлива")
+
+        ax.set_title(
+            f"Период {period} — вариант №{rank}\n"
+            f"START: {start_begin} → {start_end}\n"
+            f"END: {end_begin} → {end_end}"
+        )
+
+        # ====================================================
+        # ИНФОРМАЦИЯ
+        # ====================================================
+
+        text = (
+            f"START: k = {k_start:.6f}, "
+            f"b = {b_start:.6f}, "
+            f"R² = {result['R2_start']:.4f}\n"
+            f"END:   k = {k_end:.6f}, "
+            f"b = {b_end:.6f}, "
+            f"R² = {result['R2_end']:.4f}\n"
+            f"Δk = {result['delta_k_pct']:.3f}%    "
+            f"Δb = {result['delta_b_pct']:.3f}%"
+        )
+
+        ax.text(
+            0.02,
+            0.98,
+            text,
+            transform=ax.transAxes,
+            verticalalignment="top",
+            bbox=dict(
+                boxstyle="round",
+                alpha=0.85
+            )
+        )
+
+        ax.grid(
+            True,
+            alpha=0.25
+        )
+
+        ax.legend()
+
+        plt.tight_layout()
+        plt.show()
+
+
+plot_selected_windows()

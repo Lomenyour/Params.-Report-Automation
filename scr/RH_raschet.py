@@ -29,7 +29,7 @@ except AttributeError:
 INPUT_FILE = (
     Path(__file__).resolve().parents[1]
     / "data"
-    / "НКТЭЦ ГТ1 2 квартальный 2026.xlsx"
+    / "СызТЭЦ ГТ-11 2кв 2026.xlsm"
 )
 SHEET_NAME = "Данные"
 
@@ -64,6 +64,28 @@ B_TOLERANCE = 0.05
 
 # Сколько лучших вариантов выгружать для каждого периода
 TOP_N_EXPORT = 3
+
+
+# ============================================================
+# РУЧНАЯ ПРАВКА ПЕРИОДОВ
+#
+# Пустой список = периоды определяются автоматически (по GAP_SIZE).
+#
+# Если автоматика разбила неверно — в логе печатается готовый блок
+# с найденными периодами: скопируй его сюда вместо строки
+# `PERIOD_OVERRIDES = []` и убери или поправь лишние периоды.
+#
+# Формат даты: "дд-мм-гггг чч:мм" либо "дд-мм-гггг".
+#
+# Пример — из четырёх найденных периодов оставить два:
+#
+# PERIOD_OVERRIDES = [
+#     ("11-12-2024 14:00", "01-06-2025 00:30"),   # 1
+#     ("13-06-2025 08:30", "01-11-2025 00:30"),   # 2
+# ]
+# ============================================================
+
+PERIOD_OVERRIDES = []
 
 
 # ============================================================
@@ -457,6 +479,82 @@ def describe_periods(df):
 
 
 # ============================================================
+# РУЧНАЯ РАЗМЕТКА ПЕРИОДОВ
+# ============================================================
+
+def apply_period_overrides(df, overrides):
+    """Размечает периоды по списку, заданному в PERIOD_OVERRIDES.
+
+    Нужна, когда автоматическое определение по GAP_SIZE разбило данные
+    неверно (например, мелкий останов посчитало концом периода).
+
+    Перекрывающиеся интервалы не суммируются: строка попадает в тот
+    период, который в списке идёт раньше.
+    """
+
+    result = df.copy()
+    result["period"] = 0
+
+    for number, (raw_start, raw_end) in enumerate(overrides, start=1):
+
+        try:
+            start = pd.to_datetime(raw_start, dayfirst=True)
+            end = pd.to_datetime(raw_end, dayfirst=True)
+        except Exception as error:
+            raise ValueError(
+                f"Не разобрать даты периода {number}: "
+                f"{raw_start!r} .. {raw_end!r} ({error})"
+            ) from error
+
+        if start > end:
+            raise ValueError(
+                f"Период {number}: начало ({raw_start}) позже конца ({raw_end})"
+            )
+
+        mask = (
+            (result["date"] >= start)
+            & (result["date"] <= end)
+            & (result["period"] == 0)
+        )
+
+        result.loc[mask, "period"] = number
+
+    return result
+
+
+def print_period_overrides_template(periods_df, used_overrides):
+    """Печатает готовый блок PERIOD_OVERRIDES для копирования в настройки."""
+
+    if periods_df.empty:
+        return
+
+    print()
+    print("-" * 70)
+
+    if used_overrides:
+        print("Периоды взяты из PERIOD_OVERRIDES (автоопределение отключено).")
+    else:
+        print("Периоды определены автоматически (GAP_SIZE).")
+
+    print("Если разбивка неверная — скопируй блок ниже в настройки")
+    print("RH_raschet.py вместо строки  PERIOD_OVERRIDES = []")
+    print("и убери или поправь лишние периоды.")
+    print("-" * 70)
+    print()
+    print("PERIOD_OVERRIDES = [")
+
+    for row in periods_df.itertuples(index=False):
+
+        print(
+            f'    ("{row.date_start:%d-%m-%Y %H:%M}", '
+            f'"{row.date_end:%d-%m-%Y %H:%M}"),'
+            f'   # {int(row.period)}'
+        )
+
+    print("]")
+
+
+# ============================================================
 # ГРАФИК ПЕРЕПАДОВ ДАВЛЕНИЯ И МОЩНОСТИ
 #
 # Нужен, чтобы ГЛАЗАМИ проверить разбивку на периоды.
@@ -570,34 +668,41 @@ def plot_pressure_drops(df, periods_df):
 
         for row in periods_df.itertuples(index=False):
 
-            ax.axvline(
+            number = int(row.period)
+
+            # подсветка самого отрезка периода
+            ax.axvspan(
                 row.date_start,
+                row.date_end,
                 color="red",
-                linewidth=1.2,
-                alpha=0.85
+                alpha=0.05
             )
 
-            ax.annotate(
-                f"П{int(row.period)} {row.date_start:%d-%m-%Y}",
-                xy=(row.date_start, 0),
-                xycoords=("data", "axes fraction"),
-                xytext=(0, -34),
-                textcoords="offset points",
-                rotation=90,
-                ha="center",
-                va="top",
-                fontsize=8,
-                color="red",
-                annotation_clip=False
-            )
+            for moment, caption in (
+                (row.date_start, "нач"),
+                (row.date_end, "кон"),
+            ):
 
-        # конец последнего периода
-        ax.axvline(
-            periods_df["date_end"].iloc[-1],
-            color="red",
-            linewidth=1.2,
-            alpha=0.85
-        )
+                ax.axvline(
+                    moment,
+                    color="red",
+                    linewidth=1.2,
+                    alpha=0.85
+                )
+
+                ax.annotate(
+                    f"П{number} {caption} {moment:%d-%m-%Y}",
+                    xy=(moment, 0),
+                    xycoords=("data", "axes fraction"),
+                    xytext=(0, -34),
+                    textcoords="offset points",
+                    rotation=90,
+                    ha="center",
+                    va="top",
+                    fontsize=8,
+                    color="red",
+                    annotation_clip=False
+                )
 
     fig.tight_layout()
     maximize_window()
@@ -638,7 +743,16 @@ def build_pair_frames(period_df, zone_size, start_id, end_id):
 
 def main():
     df = load_data()
-    df = detect_periods(df)
+
+    if PERIOD_OVERRIDES:
+        print()
+        print(
+            "Периоды заданы ВРУЧНУЮ (PERIOD_OVERRIDES) — "
+            "автоопределение отключено."
+        )
+        df = apply_period_overrides(df, PERIOD_OVERRIDES)
+    else:
+        df = detect_periods(df)
 
     periods_df = describe_periods(df)
 
@@ -660,6 +774,8 @@ def main():
             )
 
     print("=" * 70)
+
+    print_period_overrides_template(periods_df, PERIOD_OVERRIDES)
 
     # График перепадов давления — глазами проверить разбивку на периоды
     plot_pressure_drops(df, periods_df)

@@ -4,8 +4,20 @@
 # In[4]:
 
 
+import sys
+
 import pandas as pd
 import numpy as np
+
+
+# Windows-консоль по умолчанию работает в cp1251 и падает
+# на символах вроде '→'. Заменяем невыводимые символы,
+# чтобы вывод не ронял скрипт.
+try:
+    sys.stdout.reconfigure(errors="replace")
+    sys.stderr.reconfigure(errors="replace")
+except AttributeError:
+    pass
 
 
 # ============================================================
@@ -14,8 +26,6 @@ import numpy as np
 
 INPUT_FILE = r"C:\Users\user\Desktop\НКТЭЦ ГТ1 1+2 квартальный 2026.xlsx"
 SHEET_NAME = "Данные"
-
-EXPORT_FILE = "pair_export.xlsx"
 
 LOW_POWER = 10
 
@@ -409,20 +419,6 @@ def build_pair_frames(period_df, zone_size, start_id, end_id):
 
 
 # ============================================================
-# СБОРКА ЛИСТОВ ДЛЯ EXCEL
-# ============================================================
-
-def safe_sheet_name(name, max_len=31):
-    """
-    Excel разрешает до 31 символа в имени листа,
-    а также запрещает символы: \\ / ? * [ ] :
-    """
-    for ch in '\\/?*[]:':
-        name = name.replace(ch, "_")
-    return name[:max_len]
-
-
-# ============================================================
 # ОСНОВНАЯ ПРОГРАММА
 # ============================================================
 
@@ -457,9 +453,6 @@ def main():
     all_windows = []
     all_pairs = []
     results = []
-
-    # Сюда будем складывать все листы для Excel
-    export_sheets = {}
 
     for period_number, period_df in df.groupby("period"):
         period_df = period_df.reset_index(drop=True)
@@ -561,7 +554,7 @@ def main():
             print(f"    {row.status}")
 
             # ----------------------------------------------------
-            # Готовим 2 листа для этой пары
+            # КОНТРОЛЬНЫЕ КОЭФФИЦИЕНТЫ ПО 48 СТРОКАМ ПАРЫ
             # ----------------------------------------------------
 
             s_df, e_df = build_pair_frames(
@@ -581,61 +574,14 @@ def main():
                 1,
             )
 
-            s_sheet = safe_sheet_name(f"P{period_number}_r{rank}_START")
-            e_sheet = safe_sheet_name(f"P{period_number}_r{rank}_END")
-
-            export_sheets[s_sheet] = s_df
-            export_sheets[e_sheet] = e_df
-
-            print(f"    → лист Excel: {s_sheet}  "
-                  f"(контр. k = {k_s:.10f}, b = {b_s:.10f})")
-            print(f"    → лист Excel: {e_sheet}  "
-                  f"(контр. k = {k_e:.10f}, b = {b_e:.10f})")
+            print(f"    контроль START: k = {k_s:.10f}, b = {b_s:.10f}")
+            print(f"    контроль END:   k = {k_e:.10f}, b = {b_e:.10f}")
 
     # ========================================================
-    # ФИНАЛЬНЫЙ EXCEL: summary + по 2 листа на каждый вариант
+    # СВОДКА (Excel не пишем — только вывод в консоль)
     # ========================================================
 
     result_df = pd.DataFrame(results)
-
-    if all_windows:
-        windows_df = pd.concat(all_windows, ignore_index=True)
-    else:
-        windows_df = pd.DataFrame()
-
-    if all_pairs:
-        pairs_df = pd.concat(all_pairs, ignore_index=True)
-    else:
-        pairs_df = pd.DataFrame()
-
-    print()
-    print("=" * 70)
-    print(f"Сохранение Excel: {EXPORT_FILE}")
-    print("=" * 70)
-
-    with pd.ExcelWriter(EXPORT_FILE, engine="openpyxl") as writer:
-
-        # 1. Сводка по периодам
-        if not periods_df.empty:
-            periods_df.to_excel(
-                writer, sheet_name="periods", index=False
-            )
-
-        # 2. Сводка по всем найденным парам
-        if not result_df.empty:
-            result_df.to_excel(
-                writer, sheet_name="summary", index=False
-            )
-
-        # 3. По два листа на каждый вариант (48 строк)
-        for sheet_name, sheet_df in export_sheets.items():
-            sheet_df.to_excel(
-                writer, sheet_name=sheet_name, index=False
-            )
-
-    print(f"  Всего листов: "
-          f"{(0 if periods_df.empty else 1) + (0 if result_df.empty else 1) + len(export_sheets)}")
-    print(f"  Данные вариантов: {len(export_sheets)} листов")
 
     print()
     print("ГОТОВО!")

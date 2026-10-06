@@ -1,3 +1,6 @@
+import re
+import sys
+
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
@@ -6,16 +9,178 @@ from pathlib import Path
 from CoolProp.CoolProp import PropsSI
 
 
+# Windows-консоль по умолчанию работает в cp1251 и падает на символах
+# вроде 'φ' из заголовков Excel. Заменяем невыводимые символы,
+# чтобы лог не ронял скрипт.
+try:
+    sys.stdout.reconfigure(errors="replace")
+    sys.stderr.reconfigure(errors="replace")
+except AttributeError:
+    pass
+
+
 # ============================================================
 # НАСТРОЙКИ
 # ============================================================
 
-FILE_NAME = Path(__file__).resolve().parents[1] / "data" / "degradation.xlsx"
+FILE_NAME = (
+    Path(__file__).resolve().parents[1]
+    / "data"
+    / "СызТЭЦ ГТ-11 2кв 2026.xlsm"
+)
+
+# Правило 0.2: читаем только первый лист — "Данные"
+SHEET_NAME = "Данные"
 
 MAX_DELTA_T = 1.0      # °C
 MAX_DELTA_P = 0.1      # мбар
 
 TOP_INTERVALS = 10
+
+
+# ============================================================
+# МАППИНГ КОЛОНОК
+#
+# Взят из scr/merge_data.py (COLUMN_MAP). Оставлены только те
+# колонки, которые нужны расчёту:
+#   - VNA_full: дата, Тнк, Pнк, ВНА, Ткк, Ркк;
+#   - RH_raschet (будет вызываться отсюда): Nприв, Вприв.
+# Ключи — как встречаются в шапке Excel (регистр не важен),
+# значения — канонические имена.
+# ============================================================
+
+COLUMN_MAP = {
+    # --- дата ---
+    "дата": "Дата", "date": "Дата", "time": "Дата", "дата/время": "Дата",
+
+    # --- VNA_full ---
+    "pатм.": "Pатм.", "pатм": "Pатм.", "ратм": "Pатм.", "pатм, па": "Pатм.",
+    "тнк": "Тнк", "tнк": "Тнк", "тнк, °с": "Тнк",
+    "pнк": "Pнк", "рнк": "Pнк", "pнк, мбар": "Pнк",
+    "вна": "ВНА",
+    "ткк": "Ткк", "tкк": "Ткк", "ткк, °с": "Ткк",
+    "pкк": "Ркк", "ркк": "Ркк", "ркк, бар": "Ркк",
+
+    # --- RH_raschet ---
+    "nприв": "Nприв", "nприв, мвт": "Nприв", "n прив": "Nприв",
+    "nприв,мвт": "Nприв", "nприв (мвт)": "Nприв",
+    "приведенная мощность": "Nприв", "приведённая мощность": "Nприв",
+
+    "bприв": "Вприв", "вприв": "Вприв", "bприв, нм3/ч": "Вприв",
+    "bприв, нм³/ч": "Вприв", "вприв, нм3/ч": "Вприв", "вприв, нм³/ч": "Вприв",
+    "b прив": "Вприв", "bприв,нм3/ч": "Вприв",
+    "приведенный расход газа": "Вприв", "приведённый расход газа": "Вприв",
+    "приведенный расход": "Вприв", "приведённый расход": "Вприв",
+    "расход газа": "Расход газа",
+}
+COLUMN_MAP = {k.strip().lower(): v for k, v in COLUMN_MAP.items()}
+
+
+# Короткие имена, под которыми колонки живут внутри расчёта.
+# У одной короткой колонки может быть несколько канонических вариантов —
+# берём первый найденный.
+SHORT_NAMES = {
+    "date": ["Дата"],
+    "t": ["Тнк"],
+    "vna": ["ВНА"],
+    "tkk": ["Ткк"],
+
+    # источники для приведения к единицам расчёта (см. ниже)
+    "p_atm_pa": ["Pатм."],
+    "p_nk_pa": ["Pнк"],
+    "p_kk_mpa": ["Ркк"],
+
+    # для будущего вызова RH_raschet
+    "power": ["Nприв"],
+    "fuel": ["Вприв", "Расход газа"],
+}
+
+
+# Без этих колонок расчёт ВНА невозможен
+REQUIRED_SHORT_NAMES = [
+    "date",
+    "t",
+    "vna",
+    "tkk",
+    "p_atm_pa",
+    "p_nk_pa",
+    "p_kk_mpa",
+]
+
+
+# ============================================================
+# ЧТЕНИЕ ШАПКИ (логика из scr/merge_data.py)
+# ============================================================
+
+def make_unique_headers(headers: list) -> list:
+    seen: dict[str, int] = {}
+    unique_headers = []
+    for h in headers:
+        if h in seen:
+            seen[h] += 1
+            unique_headers.append(f"{h}_{seen[h]}")
+        else:
+            seen[h] = 0
+            unique_headers.append(h)
+    return unique_headers
+
+
+def normalize_and_map_headers(raw_headers: list, column_map: dict) -> tuple[list, list]:
+    mapped_headers = []
+    unmapped_raw = []
+    for col in raw_headers:
+        col_str = "" if (col is None or pd.isna(col)) else str(col).strip()
+
+        clean_full = re.sub(r"\s+", " ", col_str.replace("\n", " ")).strip().lower()
+        clean_short = re.split(r"[,]", clean_full)[0].strip()
+
+        if clean_full in column_map:
+            mapped_headers.append(column_map[clean_full])
+        elif clean_short in column_map:
+            mapped_headers.append(column_map[clean_short])
+        else:
+            mapped_headers.append(clean_full if clean_full else "unnamed")
+            if clean_full:
+                unmapped_raw.append(col_str.replace("\n", " "))
+
+    return make_unique_headers(mapped_headers), unmapped_raw
+
+
+def find_header_row_by_map(
+    file_path: Path,
+    sheet_name: str,
+    column_map: dict,
+    min_matches: int = 2,
+    max_rows: int = 25,
+) -> int | None:
+    """Ищет строку шапки в первых max_rows строках листа.
+
+    Строка считается шапкой, если в ней встретилось минимум min_matches
+    названий из маппинга.
+    """
+    try:
+        df_head = pd.read_excel(
+            file_path,
+            sheet_name=sheet_name,
+            header=None,
+            nrows=max_rows,
+            engine="calamine",
+        )
+        map_keys = set(column_map.keys())
+        for idx, row in df_head.iterrows():
+            vals = set()
+            for v in row:
+                if pd.notna(v):
+                    v_str = str(v).strip().lower()
+                    clean_full = re.sub(r"\s+", " ", v_str.replace("\n", " ")).strip()
+                    clean_short = re.split(r"[,]", clean_full)[0].strip()
+                    vals.add(clean_full)
+                    vals.add(clean_short)
+            if len(vals.intersection(map_keys)) >= min_matches:
+                return idx
+    except Exception as e:
+        print(f"Ошибка поиска шапки на листе '{sheet_name}': {e}")
+    return None
 
 
 # ============================================================
@@ -47,6 +212,18 @@ def calculate_compressor_efficiency(t, p, tkk, pkk):
 
     T2 = tkk + 273.15
     P2 = pkk * 1e5
+
+    # --------------------------------------------------------
+    # Проверка точки на физическую корректность
+    #
+    # В данных есть строки останова — отрицательные/нулевые
+    # давления. На них CoolProp падает с ValueError и роняет
+    # весь расчёт. Такие точки помечаем как NaN.
+    # --------------------------------------------------------
+
+    if P1 <= 0 or P2 <= 0:
+
+        return np.nan, np.nan, np.nan, np.nan
 
     # --------------------------------------------------------
     # Опорная энтальпия
@@ -136,12 +313,150 @@ def calculate_compressor_efficiency(t, p, tkk, pkk):
 # ЧТЕНИЕ EXCEL
 # ============================================================
 
-df = pd.read_excel(
+# ============================================================
+# ЧТЕНИЕ EXCEL
+# ============================================================
+
+xl = pd.ExcelFile(
     FILE_NAME,
-    usecols=["date", "t", "p", "vna", "tkk", "pkk"]
+    engine="calamine"
 )
 
-df.columns = df.columns.str.strip().str.lower()
+first_sheet = xl.sheet_names[0]
+
+if str(first_sheet).strip() != SHEET_NAME:
+
+    raise ValueError(
+        f"Первый лист книги называется "
+        f"'{first_sheet}', а ожидается "
+        f"'{SHEET_NAME}'."
+    )
+
+
+header_row = find_header_row_by_map(
+    FILE_NAME,
+    SHEET_NAME,
+    COLUMN_MAP
+)
+
+if header_row is None:
+
+    raise ValueError(
+        f"Не найдена строка шапки на листе "
+        f"'{SHEET_NAME}' в файле {FILE_NAME.name}"
+    )
+
+
+head = pd.read_excel(
+    FILE_NAME,
+    sheet_name=SHEET_NAME,
+    header=None,
+    nrows=header_row + 1,
+    engine="calamine"
+)
+
+raw_headers = (
+    head
+    .iloc[header_row]
+    .tolist()
+)
+
+
+raw = pd.read_excel(
+    FILE_NAME,
+    sheet_name=SHEET_NAME,
+    header=None,
+    skiprows=header_row + 1,
+    engine="calamine"
+)
+
+min_cols = min(
+    raw.shape[1],
+    len(raw_headers)
+)
+
+raw = raw.iloc[:, :min_cols]
+raw_headers = raw_headers[:min_cols]
+
+
+file_headers, unmapped_headers = (
+    normalize_and_map_headers(
+        raw_headers,
+        COLUMN_MAP
+    )
+)
+
+if unmapped_headers:
+
+    print(
+        f"Нераспознанные столбцы: "
+        f"{', '.join(unmapped_headers)}"
+    )
+
+
+raw.columns = file_headers
+raw = raw.dropna(how="all")
+
+
+df = pd.DataFrame(index=raw.index)
+
+for short_name, canonical_names in SHORT_NAMES.items():
+
+    for canonical_name in canonical_names:
+
+        if canonical_name in raw.columns:
+
+            df[short_name] = raw[canonical_name]
+            break
+
+
+missing = [
+    name
+    for name in REQUIRED_SHORT_NAMES
+    if name not in df.columns
+]
+
+if missing:
+
+    raise ValueError(
+        f"Не найдены обязательные колонки: "
+        f"{missing}. "
+        f"Распознанные заголовки: "
+        f"{list(raw.columns)}"
+    )
+
+
+# ============================================================
+# ПРИВЕДЕНИЕ К ЕДИНИЦАМ РАСЧЁТА
+#
+# В книге:
+#   Pатм, Па   — атмосферное давление
+#   Pнк,  Па   — потеря давления на входе
+#   Ркк, МПа   — абсолютное давление на выходе
+#
+# calculate_compressor_efficiency ждёт:
+#   p   — абсолютное давление на входе, мбар
+#   pkk — абсолютное давление на выходе, бар
+#
+# Что вход именно (Pатм − Pнк), подтверждает колонка πк книги:
+#   πк = Ркк / (Pатм − Pнк) — сходится точно.
+# ============================================================
+
+df["p"] = (
+    pd.to_numeric(df["p_atm_pa"], errors="coerce")
+    - pd.to_numeric(df["p_nk_pa"], errors="coerce")
+) / 100.0
+
+df["pkk"] = (
+    pd.to_numeric(df["p_kk_mpa"], errors="coerce") * 10.0
+)
+
+df = df.drop(
+    columns=["p_atm_pa", "p_nk_pa", "p_kk_mpa"]
+)
+
+
+df = df.copy()
 
 
 # ============================================================

@@ -34,8 +34,16 @@ SHEET_NAME = "Данные"
 
 LOW_POWER = 10
 
-# 7 суток × 48 записей/сутки
-GAP_SIZE = 7 * 48
+# Порог «долгого останова»: сколько записей подряд с мощностью <= LOW_POWER
+# считать остановом ГТУ. 7 суток × 48 записей/сутки — было, не ловило
+# простой 01-07.11.2025 (6.5 сут).
+#
+# Проверено на книге «СызТЭЦ ГТ-11 2кв 2026»: реальные простои в ней —
+# 3.5, 5.0, 5.6, 6.5, 9.6, 14.8 и 37.8 сут, а самые длинные паузы ВНУТРИ
+# работы — 1.5 и 1.8 сут. Любое значение от 2 до 6 суток даёт одни и те же
+# 4 периода; 7 суток склеивает два периода в один,
+# 1 сутки — лишний раз режет (даёт 5).
+GAP_SIZE = 3 * 48
 
 # 24 часа = 48 записей
 WORK_CONFIRM_SIZE = 48
@@ -444,8 +452,8 @@ def main():
         for row in periods_df.itertuples(index=False):
             print(
                 f"  Период {int(row.period)}: "
-                f"{row.date_start:%Y-%m-%d %H:%M} "
-                f"→ {row.date_end:%Y-%m-%d %H:%M} "
+                f"{row.date_start:%d-%m-%Y %H:%M} "
+                f"→ {row.date_end:%d-%m-%Y %H:%M} "
                 f"| {row.duration_days:.2f} сут "
                 f"| {row.records} записей"
             )
@@ -473,7 +481,7 @@ def main():
         print()
         print("-" * 70)
         print(f"Период {period_number}: {n} записей")
-        print(f"  Даты: {period_start:%Y-%m-%d %H:%M} → {period_end:%Y-%m-%d %H:%M}")
+        print(f"  Даты: {period_start:%d-%m-%Y %H:%M} → {period_end:%d-%m-%Y %H:%M}")
         print(f"  Длительность: {period_days:.2f} сут")
         print(f"  Зона анализа: {zone_size} записей ({zone_days:.2f} сут)")
         print("-" * 70)
@@ -545,9 +553,9 @@ def main():
 
             print()
             print(f"  Вариант №{rank}")
-            print(f"    Период: {period_start:%Y-%m-%d %H:%M} → {period_end:%Y-%m-%d %H:%M}")
-            print(f"    START: {row.start_begin} → {row.start_end}")
-            print(f"    END:   {row.end_begin} → {row.end_end}")
+            print(f"    Период: {period_start:%d-%m-%Y %H:%M} → {period_end:%d-%m-%Y %H:%M}")
+            print(f"    START: {row.start_begin:%d-%m-%Y %H:%M} → {row.start_end:%d-%m-%Y %H:%M}")
+            print(f"    END:   {row.end_begin:%d-%m-%Y %H:%M} → {row.end_end:%d-%m-%Y %H:%M}")
             print(f"    Δk = {float(row.delta_k_pct):.3f}%")
             print(f"    Δb = {float(row.delta_b_pct):.3f}%")
             print(f"    k_start = {float(row.k_start):.10f}")
@@ -620,8 +628,8 @@ import matplotlib.pyplot as plt
 # ============================================================
 
 Y_LIMITS = {
-    1: (10000, 30000),
-    2: (10000, 30000),
+    1: None,
+    2: None,
 }
 
 
@@ -632,14 +640,36 @@ Y_LIMITS = {
 # ============================================================
 
 X_LIMITS = {
-    1: (70, 78),
+    1: None,
     2: None,
 }
 
 
 # ============================================================
 # ПОСТРОЕНИЕ ГРАФИКОВ
+#
+# Все варианты показываются ОДНОЙ картинкой в сетке — так их
+# удобно сравнивать между собой и выбирать лучший.
 # ============================================================
+
+PLOT_COLS = 3          # колонок в сетке графиков
+PLOT_CELL_W = 6.0      # ширина одной ячейки, дюймов
+PLOT_CELL_H = 4.5      # высота одной ячейки, дюймов
+
+
+def maximize_window():
+    """Разворачивает окно на весь экран, если бэкенд это умеет."""
+    try:
+        plt.get_current_fig_manager().full_screen_toggle()
+        return
+    except Exception:
+        pass
+
+    try:
+        plt.get_current_fig_manager().window.showMaximized()
+    except Exception:
+        pass
+
 
 def plot_selected_windows():
 
@@ -647,12 +677,28 @@ def plot_selected_windows():
         print("Нет найденных результатов.")
         return
 
+    n = len(results)
+    ncols = min(PLOT_COLS, n)
+    nrows = int(np.ceil(n / ncols))
+
     print(
         f"Построение графиков: "
-        f"{len(results)} вариантов"
+        f"{len(results)} вариантов одной картинкой "
+        f"({nrows}x{ncols})"
     )
 
-    for result in results:
+    fig, axes = plt.subplots(
+        nrows,
+        ncols,
+        figsize=(PLOT_CELL_W * ncols, PLOT_CELL_H * nrows),
+        squeeze=False
+    )
+
+    flat_axes = axes.ravel()
+
+    for position, result in enumerate(results):
+
+        ax = flat_axes[position]
 
         period = result["period"]
         rank = result["rank"]
@@ -684,6 +730,7 @@ def plot_selected_windows():
                 f"Период {period}, вариант {rank}: "
                 f"данные не найдены"
             )
+            ax.axis("off")
             continue
 
         # ====================================================
@@ -697,27 +744,21 @@ def plot_selected_windows():
         b_end = result["b_end"]
 
         # ====================================================
-        # ГРАФИК
+        # ТОЧКИ
         # ====================================================
 
-        fig, ax = plt.subplots(
-            figsize=(11, 7)
-        )
-
-        # START
         ax.scatter(
             start_data["power"],
             start_data["fuel"],
-            s=25,
+            s=14,
             alpha=0.65,
             label="START"
         )
 
-        # END
         ax.scatter(
             end_data["power"],
             end_data["fuel"],
-            s=25,
+            s=14,
             alpha=0.65,
             label="END"
         )
@@ -731,41 +772,32 @@ def plot_selected_windows():
             end_data["power"]
         ])
 
-        x_min = all_power.min()
-        x_max = all_power.max()
-
         x_line = np.linspace(
-            x_min,
-            x_max,
+            all_power.min(),
+            all_power.max(),
             100
-        )
-
-        y_start = (
-            k_start * x_line +
-            b_start
-        )
-
-        y_end = (
-            k_end * x_line +
-            b_end
         )
 
         ax.plot(
             x_line,
-            y_start,
-            linewidth=2,
+            k_start * x_line + b_start,
+            linewidth=1.4,
             label="Регрессия START"
         )
 
         ax.plot(
             x_line,
-            y_end,
-            linewidth=2,
+            k_end * x_line + b_end,
+            linewidth=1.4,
             label="Регрессия END"
         )
 
         # ====================================================
-        # РУЧНОЙ / АВТОМАТИЧЕСКИЙ Y
+        # РУЧНОЙ / АВТОМАТИЧЕСКИЙ МАСШТАБ
+        #
+        # None в Y_LIMITS / X_LIMITS = matplotlib сам
+        # подбирает масштаб. Чтобы задать вручную, впиши в
+        # словарь кортеж (мин, макс), например: 1: (70, 78).
         # ====================================================
 
         if Y_LIMITS.get(period) is not None:
@@ -774,10 +806,6 @@ def plot_selected_windows():
                 Y_LIMITS[period][0],
                 Y_LIMITS[period][1]
             )
-
-        # ====================================================
-        # РУЧНОЙ / АВТОМАТИЧЕСКИЙ X
-        # ====================================================
 
         if X_LIMITS.get(period) is not None:
 
@@ -790,13 +818,14 @@ def plot_selected_windows():
         # ПОДПИСИ
         # ====================================================
 
-        ax.set_xlabel("Мощность")
-        ax.set_ylabel("Расход топлива")
+        ax.set_xlabel("Мощность", fontsize=8)
+        ax.set_ylabel("Расход топлива", fontsize=8)
 
         ax.set_title(
             f"Период {period} — вариант №{rank}\n"
-            f"START: {start_begin} → {start_end}\n"
-            f"END: {end_begin} → {end_end}"
+            f"START: {start_begin:%d-%m-%Y %H:%M} → {start_end:%d-%m-%Y %H:%M}\n"
+            f"END:   {end_begin:%d-%m-%Y %H:%M} → {end_end:%d-%m-%Y %H:%M}",
+            fontsize=9
         )
 
         # ====================================================
@@ -820,6 +849,7 @@ def plot_selected_windows():
             text,
             transform=ax.transAxes,
             verticalalignment="top",
+            fontsize=6.5,
             bbox=dict(
                 boxstyle="round",
                 alpha=0.85
@@ -831,10 +861,19 @@ def plot_selected_windows():
             alpha=0.25
         )
 
-        ax.legend()
+        ax.tick_params(labelsize=7)
+        ax.legend(fontsize=7, loc="lower right")
 
-        plt.tight_layout()
-        plt.show()
+    # ========================================================
+    # ГАСИМ НЕИСПОЛЬЗОВАННЫЕ ЯЧЕЙКИ СЕТКИ
+    # ========================================================
+
+    for ax in flat_axes[n:]:
+        ax.axis("off")
+
+    fig.tight_layout()
+    maximize_window()
+    plt.show()
 
 
 plot_selected_windows()

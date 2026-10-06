@@ -481,6 +481,14 @@ def maximize_window():
         pass
 
 
+# Цвета кривых: синий, зелёный, фиолетовый — для перепадов.
+# Оранжевый и чёрный намеренно не используются.
+PRESSURE_COLORS = ["#1f77b4", "#2ca02c", "#9467bd"]
+
+# Мощность N — красный
+POWER_COLOR = "#d62728"
+
+
 def plot_pressure_drops(df, periods_df):
     """Перепады давления (ВЛО / ФГО / ФТО / ФГО+ФТО) и мощность N.
 
@@ -505,7 +513,7 @@ def plot_pressure_drops(df, periods_df):
 
     fig, ax = plt.subplots(figsize=(20, 9))
 
-    for key, title in series:
+    for index, (key, title) in enumerate(series):
 
         ax.plot(
             df["date"],
@@ -513,12 +521,16 @@ def plot_pressure_drops(df, periods_df):
             ".",
             markersize=3,
             alpha=0.7,
+            color=PRESSURE_COLORS[index % len(PRESSURE_COLORS)],
             label=f"Перепад {title}, Па"
         )
 
     ax.set_xlabel("Дата")
     ax.set_ylabel("Перепад давления, Па")
     ax.grid(True, alpha=0.25)
+
+    # Отрицательный перепад — баг датчика. Снизу шкала строго от нуля.
+    ax.set_ylim(bottom=0)
 
     handles, labels = ax.get_legend_handles_labels()
 
@@ -535,12 +547,13 @@ def plot_pressure_drops(df, periods_df):
             df["power_n"],
             ".",
             markersize=3,
-            alpha=0.35,
-            color="black",
+            alpha=0.5,
+            color=POWER_COLOR,
             label="N, МВт"
         )
 
         ax_power.set_ylabel("N, МВт")
+        ax_power.set_ylim(bottom=0)
 
         power_handles, power_labels = ax_power.get_legend_handles_labels()
 

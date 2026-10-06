@@ -1,12 +1,16 @@
 # -*- coding: utf-8 -*-
-"""Запуск обоих расчётов подряд: сначала ВНА, затем расходная характеристика.
+"""Центральный запуск расчётов.
 
-Каждый скрипт запускается ОТДЕЛЬНЫМ процессом. Так они не мешают друг
-другу: у каждого свои глобальные переменные, свой вывод и свои графики,
-и падение одного не тянет за собой второй.
+Здесь живёт ПУТЬ К КНИГЕ С ДАННЫМИ — его получают оба расчёта,
+VNA_full и RH_raschet, аргументами `--file` и `--sheet`.
+Чтобы посчитать другую книгу, менять нужно только здесь.
+
+Каждый скрипт запускается ОТДЕЛЬНЫМ процессом: так они не мешают друг
+другу — свои глобальные переменные, свой вывод, свои графики, падение
+одного не тянет второй.
 
 ЗАПУСК:
-    py src/raschet.py
+    py scr/raschet.py
 """
 from __future__ import annotations
 
@@ -16,9 +20,8 @@ from pathlib import Path
 
 # Windows-консоль по умолчанию работает в cp1251 и падает на некоторых
 # символах. Заменяем невыводимые символы, чтобы лог не ронял скрипт.
-#
-# line_buffering=True — иначе при перенаправлении вывода в файл строки
-# нашего лога и строки дочерних процессов перемешиваются.
+# line_buffering=True — иначе при перенаправлении вывода строки нашего
+# лога и строки дочерних процессов перемешиваются.
 try:
     sys.stdout.reconfigure(errors="replace", line_buffering=True)
     sys.stderr.reconfigure(errors="replace", line_buffering=True)
@@ -26,7 +29,21 @@ except AttributeError:
     pass
 
 
-SCR_DIR = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parents[1]
+SCR_DIR = ROOT / "scr"
+
+
+# ============================================================
+# КНИГА С ДАННЫМИ — единственное место, где она задаётся
+# ============================================================
+
+INPUT_FILE = "НКТЭЦ ГТ1 2 квартальный 2026.xlsx"
+SHEET_NAME = "Данные"
+
+
+# ============================================================
+# ЧТО ЗАПУСКАЕМ
+# ============================================================
 
 SCRIPTS = [
     ("VNA_full.py", "Расчёт ВНА (КПД компрессора)"),
@@ -36,20 +53,30 @@ SCRIPTS = [
 LINE = "#" * 78
 
 
-def run_script(name: str, title: str) -> int:
+def run_script(name: str, title: str, data_file: Path) -> int:
     script = SCR_DIR / name
 
     print()
     print(LINE)
     print(f"### {title}")
-    print(f"### {script}")
+    print(f"### {script.name}")
+    print(f"### данные: {data_file.name}, лист '{SHEET_NAME}'")
     print(LINE)
 
     if not script.exists():
         print(f"!!! Файл не найден: {script}")
         return 1
 
-    result = subprocess.run([sys.executable, str(script)])
+    if not data_file.exists():
+        print(f"!!! Книга не найдена: {data_file}")
+        return 1
+
+    result = subprocess.run([
+        sys.executable,
+        str(script),
+        "--file", str(data_file),
+        "--sheet", SHEET_NAME,
+    ])
 
     print()
     if result.returncode == 0:
@@ -61,10 +88,16 @@ def run_script(name: str, title: str) -> int:
 
 
 def main() -> int:
+    data_file = ROOT / "data" / INPUT_FILE
+
+    print()
+    print(f"Книга с данными: {data_file}")
+    print(f"Лист: {SHEET_NAME}")
+
     failed = []
 
     for name, title in SCRIPTS:
-        if run_script(name, title) != 0:
+        if run_script(name, title, data_file) != 0:
             failed.append(name)
 
     print()

@@ -5,6 +5,7 @@
 
 
 import sys
+from pathlib import Path
 
 import pandas as pd
 import numpy as np
@@ -24,7 +25,11 @@ except AttributeError:
 # НАСТРОЙКИ
 # ============================================================
 
-INPUT_FILE = r"C:\Users\user\Desktop\НКТЭЦ ГТ1 1+2 квартальный 2026.xlsx"
+INPUT_FILE = (
+    Path(__file__).resolve().parents[1]
+    / "data"
+    / "СызТЭЦ ГТ-11 2кв 2026.xlsm"
+)
 SHEET_NAME = "Данные"
 
 LOW_POWER = 10

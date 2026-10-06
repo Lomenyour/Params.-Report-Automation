@@ -1174,11 +1174,6 @@ result_df = pd.DataFrame(results)
 # Округляем все числовые столбцы до 3 знаков
 result_df = result_df.round(3)
 
-result_df = pd.DataFrame(results)
-
-# Округляем числовые столбцы
-result_df = result_df.round(3)
-
 # Сортировка:
 # 1) по максимальной разнице в днях
 # 2) при равенстве - по максимальной delta_eta
@@ -1187,13 +1182,38 @@ result_df = result_df.sort_values(
     ascending=[False, False]
 ).reset_index(drop=True)
 
+
+# ============================================================
+# ТАБЛИЦА ДЛЯ ВЫВОДА
+#
+# Даты — в читаемом виде (дд-мм-гггг чч:мм).
+# Колонка доли времени share_percent убрана, чтобы таблица
+# влезала в терминал. Полные данные остаются в result_df.
+# ============================================================
+
+display_df = (
+    result_df
+    .drop(columns=["share_percent"])
+    .copy()
+)
+
+for column in ["date_1", "date_2"]:
+
+    if column in display_df.columns:
+
+        display_df[column] = (
+            pd.to_datetime(display_df[column])
+            .dt.strftime("%d-%m-%Y %H:%M")
+        )
+
+
 print()
 print("=" * 160)
 print("ИТОГОВАЯ ТАБЛИЦА ПО TOP-10 ИНТЕРВАЛАМ VNA")
 print("=" * 160)
 
 print(
-    result_df.to_string(
+    display_df.to_string(
         index=False
     )
 )

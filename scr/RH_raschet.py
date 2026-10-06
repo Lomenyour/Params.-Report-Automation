@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pandas as pd
 import numpy as np
+import matplotlib.pyplot as plt
 
 
 # Windows-консоль по умолчанию работает в cp1251 и падает
@@ -28,22 +29,26 @@ except AttributeError:
 INPUT_FILE = (
     Path(__file__).resolve().parents[1]
     / "data"
-    / "СызТЭЦ ГТ-11 2кв 2026.xlsm"
+    / "НКТЭЦ ГТ1 2 квартальный 2026.xlsx"
 )
 SHEET_NAME = "Данные"
 
 LOW_POWER = 10
 
 # Порог «долгого останова»: сколько записей подряд с мощностью <= LOW_POWER
-# считать остановом ГТУ. 7 суток × 48 записей/сутки — было, не ловило
-# простой 01-07.11.2025 (6.5 сут).
+# считать остановом ГТУ. 6 суток × 48 записей/сутки.
 #
-# Проверено на книге «СызТЭЦ ГТ-11 2кв 2026»: реальные простои в ней —
-# 3.5, 5.0, 5.6, 6.5, 9.6, 14.8 и 37.8 сут, а самые длинные паузы ВНУТРИ
-# работы — 1.5 и 1.8 сут. Любое значение от 2 до 6 суток даёт одни и те же
-# 4 периода; 7 суток склеивает два периода в один,
-# 1 сутки — лишний раз режет (даёт 5).
-GAP_SIZE = 3 * 48
+# Проверено на двух книгах:
+#
+#   СызТЭЦ: простои 3.5, 5.0, 5.6, 6.5, 9.6, 14.8, 37.8 сут;
+#           паузы внутри работы — 1.5 и 1.8 сут. 4 периода при 2..6 сут.
+#   НКТЭЦ:  мелкие остановы 2.3 .. 4.3 сут (за периоды их считать не надо),
+#           реальные 11.5, 11.9, 12.1, 33.5 сут.
+#           При 5..7 сут — 3 периода, при 4 сут уже 4, при 3 сут — 7.
+#
+# Пересечение: 5 или 6 суток дают правильную разбивку на обеих книгах.
+# Взято 6 — и у НКТЭЦ запас до мелких остановов (4.3 сут) больше.
+GAP_SIZE = 6 * 48
 
 # 24 часа = 48 записей
 WORK_CONFIRM_SIZE = 48
@@ -80,6 +85,28 @@ COLUMN_ALIASES = {
     "fuel": ["Bприв", "Bприв, нм3/ч", "Расход газа"],
 }
 
+# Необязательные колонки — нужны только для графика перепадов давления.
+# Если колонки в книге нет, она просто не рисуется.
+#
+# У станций набор разный:
+#   НКТЭЦ — отдельные «ВЛО, Па», «ФГО, Па», «ФТО,Па»;
+#   СызТЭЦ — «ВЛО, Па» и совмещённая «ФГО+ФТО, Па».
+OPTIONAL_ALIASES = {
+    "vlo": ["ВЛО"],
+    "fgo": ["ФГО"],
+    "fto": ["ФТО"],
+    "fgo_fto": ["ФГО+ФТО"],
+    "power_n": ["N"],
+}
+
+OPTIONAL_TITLES = {
+    "vlo": "ВЛО",
+    "fgo": "ФГО",
+    "fto": "ФТО",
+    "fgo_fto": "ФГО+ФТО",
+    "power_n": "N",
+}
+
 
 def find_column(columns, aliases, parameter_name):
     normalized_columns = {}
@@ -101,6 +128,14 @@ def find_column(columns, aliases, parameter_name):
     )
 
 
+def find_optional_column(columns, aliases):
+    """Как find_column, но возвращает None, если колонки в книге нет."""
+    try:
+        return find_column(columns, aliases, aliases[0])
+    except ValueError:
+        return None
+
+
 def load_data():
     print("Загрузка данных...")
 
@@ -118,12 +153,30 @@ def load_data():
     print(f"  Мощность     → {power_col}")
     print(f"  Расход газа  → {fuel_col}")
 
-    df = raw_df[[date_col, power_col, fuel_col]].copy()
-    df.columns = ["date", "power", "fuel"]
+    # Необязательные колонки для графика перепадов
+    optional_columns = {}
+
+    for key, aliases in OPTIONAL_ALIASES.items():
+
+        found = find_optional_column(raw_df.columns, aliases)
+
+        if found is not None:
+
+            optional_columns[key] = found
+            print(f"  {OPTIONAL_TITLES[key]:<12} → {found}")
+
+    source_columns = [date_col, power_col, fuel_col, *optional_columns.values()]
+    short_names = ["date", "power", "fuel", *optional_columns.keys()]
+
+    df = raw_df[source_columns].copy()
+    df.columns = short_names
 
     df["date"] = pd.to_datetime(df["date"], errors="coerce")
     df["power"] = pd.to_numeric(df["power"], errors="coerce")
     df["fuel"] = pd.to_numeric(df["fuel"], errors="coerce")
+
+    for column in optional_columns:
+        df[column] = pd.to_numeric(df[column], errors="coerce")
 
     df = df.dropna(subset=["date"])
     df = df.sort_values("date").reset_index(drop=True)
@@ -404,6 +457,141 @@ def describe_periods(df):
 
 
 # ============================================================
+# ГРАФИК ПЕРЕПАДОВ ДАВЛЕНИЯ И МОЩНОСТИ
+#
+# Нужен, чтобы ГЛАЗАМИ проверить разбивку на периоды.
+# Вертикальными линиями отмечаются найденные периоды,
+# снизу подписываются их даты.
+#
+# Если разбивка неверная — правим GAP_SIZE либо задаём
+# периоды вручную (см. список PERIOD_OVERRIDES).
+# ============================================================
+
+def maximize_window():
+    """Разворачивает окно на весь экран, если бэкенд это умеет."""
+    try:
+        plt.get_current_fig_manager().full_screen_toggle()
+        return
+    except Exception:
+        pass
+
+    try:
+        plt.get_current_fig_manager().window.showMaximized()
+    except Exception:
+        pass
+
+
+def plot_pressure_drops(df, periods_df):
+    """Перепады давления (ВЛО / ФГО / ФТО / ФГО+ФТО) и мощность N.
+
+    Рисуются только те кривые, колонки для которых есть в книге.
+    Вертикальные линии — границы найденных периодов работы.
+    """
+
+    series = [
+        (key, OPTIONAL_TITLES[key])
+        for key in OPTIONAL_TITLES
+        if key != "power_n" and key in df.columns
+    ]
+
+    has_power_n = "power_n" in df.columns
+
+    if not series:
+        print("Нет колонок перепадов давления — график пропущен.")
+        return
+
+    print()
+    print("Построение графика перепадов давления...")
+
+    fig, ax = plt.subplots(figsize=(20, 9))
+
+    for key, title in series:
+
+        ax.plot(
+            df["date"],
+            df[key],
+            ".",
+            markersize=3,
+            alpha=0.7,
+            label=f"Перепад {title}, Па"
+        )
+
+    ax.set_xlabel("Дата")
+    ax.set_ylabel("Перепад давления, Па")
+    ax.grid(True, alpha=0.25)
+
+    handles, labels = ax.get_legend_handles_labels()
+
+    # --------------------------------------------------------
+    # Мощность N — на второй оси (другие единицы, МВт)
+    # --------------------------------------------------------
+
+    if has_power_n:
+
+        ax_power = ax.twinx()
+
+        ax_power.plot(
+            df["date"],
+            df["power_n"],
+            ".",
+            markersize=3,
+            alpha=0.35,
+            color="black",
+            label="N, МВт"
+        )
+
+        ax_power.set_ylabel("N, МВт")
+
+        power_handles, power_labels = ax_power.get_legend_handles_labels()
+
+        handles = handles + power_handles
+        labels = labels + power_labels
+
+    ax.legend(handles, labels, fontsize=9, loc="upper left")
+
+    # --------------------------------------------------------
+    # ГРАНИЦЫ ПЕРИОДОВ
+    # --------------------------------------------------------
+
+    if periods_df is not None and not periods_df.empty:
+
+        for row in periods_df.itertuples(index=False):
+
+            ax.axvline(
+                row.date_start,
+                color="red",
+                linewidth=1.2,
+                alpha=0.85
+            )
+
+            ax.annotate(
+                f"П{int(row.period)} {row.date_start:%d-%m-%Y}",
+                xy=(row.date_start, 0),
+                xycoords=("data", "axes fraction"),
+                xytext=(0, -34),
+                textcoords="offset points",
+                rotation=90,
+                ha="center",
+                va="top",
+                fontsize=8,
+                color="red",
+                annotation_clip=False
+            )
+
+        # конец последнего периода
+        ax.axvline(
+            periods_df["date_end"].iloc[-1],
+            color="red",
+            linewidth=1.2,
+            alpha=0.85
+        )
+
+    fig.tight_layout()
+    maximize_window()
+    plt.show()
+
+
+# ============================================================
 # ПОСТРОЕНИЕ 48-СТРОЧНЫХ ФРЕЙМОВ ДЛЯ КОНКРЕТНОЙ ПАРЫ
 # ============================================================
 
@@ -459,6 +647,9 @@ def main():
             )
 
     print("=" * 70)
+
+    # График перепадов давления — глазами проверить разбивку на периоды
+    plot_pressure_drops(df, periods_df)
 
     df = df[(df["period"] > 0) & (df["power"] > LOW_POWER)].copy()
     df = df.reset_index(drop=True)
@@ -611,12 +802,6 @@ if __name__ == "__main__":
     df, periods_df, results, all_windows = main()
 
 
-# In[5]:
-
-
-import matplotlib.pyplot as plt
-
-
 # ============================================================
 # НАСТРОЙКИ МАСШТАБА
 #
@@ -655,20 +840,6 @@ X_LIMITS = {
 PLOT_COLS = 3          # колонок в сетке графиков
 PLOT_CELL_W = 6.0      # ширина одной ячейки, дюймов
 PLOT_CELL_H = 4.5      # высота одной ячейки, дюймов
-
-
-def maximize_window():
-    """Разворачивает окно на весь экран, если бэкенд это умеет."""
-    try:
-        plt.get_current_fig_manager().full_screen_toggle()
-        return
-    except Exception:
-        pass
-
-    try:
-        plt.get_current_fig_manager().window.showMaximized()
-    except Exception:
-        pass
 
 
 def plot_selected_windows():

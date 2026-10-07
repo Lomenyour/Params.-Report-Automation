@@ -593,41 +593,36 @@ def build_pair_frames(period_df, zone_size, start_id, end_id):
 # ОСНОВНАЯ ПРОГРАММА
 # ============================================================
 
-# ============================================================
-# ПАРАМЕТРЫ В ГРАНИЧНЫХ ТОЧКАХ ПЕРИОДА
-#
-# После списка периодов печатаем значения в строке, ближайшей к
-# началу и к концу каждого периода. Выводятся только те колонки,
-# которые есть в книге; нет колонки — прочерк.
-# ============================================================
+# Порог «номинального режима» для выбора граничных точек.
+# Значения на границах периода берём не в первом/последнем ряду
+# (там турбина ещё выходит на режим), а в первом и последнем ряду,
+# где ВНА >= 85 — то есть когда турбина реально на номинале.
+VNA_NOMINAL = 85.0
 
 BOUNDARY_PARAMETERS = [
-    ("vlo", "ΔPвло"),
-    ("fgo", "ΔPфго"),
-    ("fto", "ΔPфто"),
-    ("fgo_fto", "ΔPфго+фто"),
+    ("vlo", "ВЛО"),
+    ("fgo", "ФГО"),
+    ("fto", "ФТО"),
+    ("fgo_fto", "ФГО+ФТО"),
     ("vna", "ВНА"),
     ("power_n", "N"),
 ]
 
 
-def parameters_at_date(df, timestamp):
-    """Значения BOUNDARY_PARAMETERS в строке, ближайшей к timestamp."""
+def nominal_row(df, start, end, first):
+    """Первый/последний ряд в [start, end], где ВНА >= VNA_NOMINAL."""
 
-    position = (df["date"] - timestamp).abs().to_numpy().argmin()
+    mask = (df["date"] >= start) & (df["date"] <= end)
 
-    row = df.iloc[position]
+    if "vna" in df.columns:
+        mask &= (pd.to_numeric(df["vna"], errors="coerce") >= VNA_NOMINAL)
 
-    values = {}
+    sub = df[mask]
 
-    for key, title in BOUNDARY_PARAMETERS:
+    if sub.empty:
+        return None
 
-        if key in df.columns:
-            values[title] = row[key]
-        else:
-            values[title] = None
-
-    return values
+    return sub.iloc[0] if first else sub.iloc[-1]
 
 
 def format_boundary_value(value):
@@ -640,6 +635,47 @@ def format_boundary_value(value):
         return "—"
 
     return f"{value:.1f}"
+
+
+def build_boundary_table(df, periods_df):
+    """Таблица параметров на номинале по границам периодов."""
+
+    columns = ["Период", "дата"] + [title for _, title in BOUNDARY_PARAMETERS]
+
+    rows = []
+
+    for row in periods_df.itertuples(index=False):
+
+        number = int(row.period)
+
+        start_row = nominal_row(df, row.date_start, row.date_end, first=True)
+        end_row = nominal_row(df, row.date_start, row.date_end, first=False)
+
+        for tag, boundary in (("нач", start_row), ("кон", end_row)):
+
+            record = {"Период": f"{number} {tag}"}
+
+            if boundary is None:
+
+                record["дата"] = "—"
+
+                for _, title in BOUNDARY_PARAMETERS:
+                    record[title] = "—"
+
+            else:
+
+                record["дата"] = f"{boundary['date']:%d-%m-%Y %H:%M}"
+
+                for key, title in BOUNDARY_PARAMETERS:
+                    record[title] = (
+                        format_boundary_value(boundary[key])
+                        if key in df.columns
+                        else "—"
+                    )
+
+            rows.append(record)
+
+    return pd.DataFrame(rows, columns=columns)
 
 
 def main():
@@ -673,31 +709,16 @@ def main():
 
     print("=" * 70)
 
-    # Параметры в граничных точках каждого периода
+    # Параметры на номинальном режиме по границам периодов
     if not periods_df.empty:
 
         print()
-        print("Параметры в граничных точках периодов:")
+        print("Параметры на границах периодов (ВНА ≥ 85):")
+        print()
 
-        for row in periods_df.itertuples(index=False):
+        boundary_table = build_boundary_table(df, periods_df)
 
-            number = int(row.period)
-
-            start_values = parameters_at_date(df, row.date_start)
-            end_values = parameters_at_date(df, row.date_end)
-
-            start_str = "  ".join(
-                f"{title}={format_boundary_value(value)}"
-                for title, value in start_values.items()
-            )
-            end_str = "  ".join(
-                f"{title}={format_boundary_value(value)}"
-                for title, value in end_values.items()
-            )
-
-            print(f"  Период {number}:")
-            print(f"    нач {row.date_start:%d-%m-%Y %H:%M}: {start_str}")
-            print(f"    кон {row.date_end:%d-%m-%Y %H:%M}: {end_str}")
+        print(boundary_table.to_string(index=False))
 
     print_period_overrides_template(periods_df, PERIOD_OVERRIDES)
 

@@ -121,6 +121,7 @@ OPTIONAL_ALIASES = {
     "fgo": ["ФГО"],
     "fto": ["ФТО"],
     "fgo_fto": ["ФГО+ФТО"],
+    "vna": ["ВНА"],
     "power_n": ["N"],
 }
 
@@ -129,8 +130,12 @@ OPTIONAL_TITLES = {
     "fgo": "ФГО",
     "fto": "ФТО",
     "fgo_fto": "ФГО+ФТО",
+    "vna": "ВНА",
     "power_n": "N",
 }
+
+# На графике перепадов рисуем ТОЛЬКО перепады — не ВНА и не мощность.
+PRESSURE_SERIES = ["vlo", "fgo", "fto", "fgo_fto"]
 
 
 def find_column(columns, aliases, parameter_name):
@@ -443,8 +448,8 @@ def plot_pressure_drops(df, periods_df):
 
     series = [
         (key, OPTIONAL_TITLES[key])
-        for key in OPTIONAL_TITLES
-        if key != "power_n" and key in df.columns
+        for key in PRESSURE_SERIES
+        if key in df.columns
     ]
 
     has_power_n = "power_n" in df.columns
@@ -588,6 +593,55 @@ def build_pair_frames(period_df, zone_size, start_id, end_id):
 # ОСНОВНАЯ ПРОГРАММА
 # ============================================================
 
+# ============================================================
+# ПАРАМЕТРЫ В ГРАНИЧНЫХ ТОЧКАХ ПЕРИОДА
+#
+# После списка периодов печатаем значения в строке, ближайшей к
+# началу и к концу каждого периода. Выводятся только те колонки,
+# которые есть в книге; нет колонки — прочерк.
+# ============================================================
+
+BOUNDARY_PARAMETERS = [
+    ("vlo", "ΔPвло"),
+    ("fgo", "ΔPфго"),
+    ("fto", "ΔPфто"),
+    ("fgo_fto", "ΔPфго+фто"),
+    ("vna", "ВНА"),
+    ("power_n", "N"),
+]
+
+
+def parameters_at_date(df, timestamp):
+    """Значения BOUNDARY_PARAMETERS в строке, ближайшей к timestamp."""
+
+    position = (df["date"] - timestamp).abs().to_numpy().argmin()
+
+    row = df.iloc[position]
+
+    values = {}
+
+    for key, title in BOUNDARY_PARAMETERS:
+
+        if key in df.columns:
+            values[title] = row[key]
+        else:
+            values[title] = None
+
+    return values
+
+
+def format_boundary_value(value):
+    """Число с одним знаком после запятой; пусто/NaN — прочерк."""
+
+    if value is None:
+        return "—"
+
+    if pd.isna(value):
+        return "—"
+
+    return f"{value:.1f}"
+
+
 def main():
     df = load_data()
 
@@ -618,6 +672,32 @@ def main():
             )
 
     print("=" * 70)
+
+    # Параметры в граничных точках каждого периода
+    if not periods_df.empty:
+
+        print()
+        print("Параметры в граничных точках периодов:")
+
+        for row in periods_df.itertuples(index=False):
+
+            number = int(row.period)
+
+            start_values = parameters_at_date(df, row.date_start)
+            end_values = parameters_at_date(df, row.date_end)
+
+            start_str = "  ".join(
+                f"{title}={format_boundary_value(value)}"
+                for title, value in start_values.items()
+            )
+            end_str = "  ".join(
+                f"{title}={format_boundary_value(value)}"
+                for title, value in end_values.items()
+            )
+
+            print(f"  Период {number}:")
+            print(f"    нач {row.date_start:%d-%m-%Y %H:%M}: {start_str}")
+            print(f"    кон {row.date_end:%d-%m-%Y %H:%M}: {end_str}")
 
     print_period_overrides_template(periods_df, PERIOD_OVERRIDES)
 

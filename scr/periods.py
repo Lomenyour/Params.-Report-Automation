@@ -73,7 +73,10 @@ PERIOD_OVERRIDES: list[tuple[str, str]] = []
 def detect_periods(df):
     """Размечает периоды работы ГТУ автоматически, по GAP_SIZE."""
 
-    df = df.copy()
+    # Индекс сбрасываем: ниже строки адресуются позиционно (df.loc[i]),
+    # а у вызывающей стороны индекс может быть с дырками — например,
+    # в VNA_full после dropna. Без сброса падает с KeyError.
+    df = df.reset_index(drop=True).copy()
     df["period"] = 0
 
     current_period = 1

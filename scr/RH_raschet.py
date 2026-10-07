@@ -36,22 +36,21 @@ except AttributeError:
 # НАСТРОЙКИ
 # ============================================================
 
-INPUT_FILE = (
-    Path(__file__).resolve().parents[1]
-    / "data"
-    / "СызТЭЦ ГТ-11 2кв 2026.xlsm"
-)
+# ============================================================
+# КНИГА С ДАННЫМИ ПРИХОДИТ АРГУМЕНТОМ
+#
+# Книгу задаёт ЕДИНСТВЕННОЕ место — центральный scr/raschet.py:
+#     python scr/RH_raschet.py --file "data\книга.xlsx" --sheet "Данные"
+#
+# Своего файла по умолчанию здесь НЕТ намеренно: иначе RH_raschet
+# и VNA_full могли бы молча посчитать разные книги за один прогон.
+# ============================================================
+
+INPUT_FILE = None
+
+# Правило 0.2: читаем только первый лист — "Данные"
 SHEET_NAME = "Данные"
 
-
-# ============================================================
-# ПУТЬ К КНИГЕ МОЖНО ПЕРЕДАТЬ АРГУМЕНТОМ
-#
-# Так делает scr/raschet.py — он хранит путь к книге и передаёт его
-# обоим расчётам:
-#     python scr/RH_raschet.py --file "data\книга.xlsx" --sheet "Данные"
-# Без аргументов используется книга по умолчанию выше.
-# ============================================================
 
 def apply_cli_overrides():
     global INPUT_FILE, SHEET_NAME
@@ -65,6 +64,15 @@ def apply_cli_overrides():
             INPUT_FILE = Path(arguments[index + 1])
         elif argument == "--sheet":
             SHEET_NAME = arguments[index + 1]
+
+    if INPUT_FILE is None:
+        raise SystemExit(
+            "Не задана книга с данными.\n"
+            "Запускай расчёт через центральный скрипт:\n"
+            "    py scr/raschet.py\n"
+            "либо передай путь явно:\n"
+            "    py scr/RH_raschet.py --file \"data\\книга.xlsx\""
+        )
 
 
 apply_cli_overrides()
@@ -386,15 +394,34 @@ def find_pairs(start_windows, end_windows):
 # ============================================================
 
 def maximize_window():
-    """Разворачивает окно на весь экран, если бэкенд это умеет."""
+    """Разворачивает окно ПОЧТИ на весь экран.
+
+    Полноэкранный режим (full_screen_toggle) НЕ используем: в нём
+    пропадает заголовок окна вместе с кнопкой закрытия, и закрыть
+    график можно только через панель управления.
+    """
+
+    manager = plt.get_current_fig_manager()
+
+    # Qt-бэкенд: развернуть окно, заголовок и крестик остаются
     try:
-        plt.get_current_fig_manager().full_screen_toggle()
+        manager.window.showMaximized()
         return
     except Exception:
         pass
 
+    # Tk-бэкенд: растянуть на 90% экрана и отцентровать
     try:
-        plt.get_current_fig_manager().window.showMaximized()
+        screen_w = manager.window.winfo_screenwidth()
+        screen_h = manager.window.winfo_screenheight()
+
+        width = int(screen_w * 0.9)
+        height = int(screen_h * 0.9)
+
+        left = int((screen_w - width) / 2)
+        top = int((screen_h - height) / 2)
+
+        manager.window.geometry(f"{width}x{height}+{left}+{top}")
     except Exception:
         pass
 

@@ -13,11 +13,12 @@ import matplotlib.pyplot as plt
 
 # Разбивка на периоды — общая логика, живёт в scr/periods.py,
 # потому что нужна и RH_raschet, и VNA_full.
+import periods as periods_mod
 from periods import (
     LOW_POWER,
-    PERIOD_OVERRIDES,
     build_periods,
     describe_periods,
+    parse_periods_arg,
     print_period_overrides_template,
 )
 
@@ -64,6 +65,8 @@ def apply_cli_overrides():
             INPUT_FILE = Path(arguments[index + 1])
         elif argument == "--sheet":
             SHEET_NAME = arguments[index + 1]
+        elif argument == "--periods":
+            periods_mod.PERIOD_OVERRIDES = parse_periods_arg(arguments[index + 1])
 
     if INPUT_FILE is None:
         raise SystemExit(
@@ -76,6 +79,12 @@ def apply_cli_overrides():
 
 
 apply_cli_overrides()
+
+
+# Режим «только периоды»: показать разметку + график и выйти, не считая
+# окна и пары. Так делает центральный raschet.py перед вопросом
+# пользователю, одобрять ли разметку.
+PERIODS_ONLY = "--periods-only" in sys.argv
 
 
 # Окна анализа
@@ -681,7 +690,7 @@ def build_boundary_table(df, periods_df):
 def main():
     df = load_data()
 
-    if PERIOD_OVERRIDES:
+    if periods_mod.PERIOD_OVERRIDES:
         print()
         print(
             "Периоды заданы ВРУЧНУЮ (PERIOD_OVERRIDES) — "
@@ -720,10 +729,13 @@ def main():
 
         print(boundary_table.to_string(index=False))
 
-    print_period_overrides_template(periods_df, PERIOD_OVERRIDES)
+    print_period_overrides_template(periods_df, periods_mod.PERIOD_OVERRIDES)
 
     # График перепадов давления — глазами проверить разбивку на периоды
     plot_pressure_drops(df, periods_df)
+
+    if PERIODS_ONLY:
+        return df, periods_df, [], []
 
     df = df[(df["period"] > 0) & (df["power"] > LOW_POWER)].copy()
     df = df.reset_index(drop=True)
@@ -1121,5 +1133,6 @@ def plot_selected_windows():
     plt.show()
 
 
-plot_selected_windows()
+if not PERIODS_ONLY:
+    plot_selected_windows()
 

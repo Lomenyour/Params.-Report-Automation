@@ -1,13 +1,15 @@
 # -*- coding: utf-8 -*-
 """Центральный запуск расчётов.
 
-Здесь живёт ПУТЬ К КНИГЕ С ДАННЫМИ — его получают оба расчёта,
-VNA_full и RH_raschet, аргументами `--file` и `--sheet`.
-Чтобы посчитать другую книгу, менять нужно только здесь.
+Здесь живёт ПУТЬ К КНИГЕ С ДАННЫМИ (INPUT_FILE, SHEET_NAME) — его
+получают оба расчёта аргументами --file и --sheet. Чтобы посчитать
+другую книгу, менять нужно только здесь.
 
-Каждый скрипт запускается ОТДЕЛЬНЫМ процессом: так они не мешают друг
-другу — свои глобальные переменные, свой вывод, свои графики, падение
-одного не тянет второй.
+Порядок работы:
+  1) показываем авторазметку периодов (таблица + график) — без расчёта;
+  2) спрашиваем в консоли: ок или нет;
+  3) если «нет» — вводим периоды вручную: дата1;дата2, по одному на строку;
+  4) запускаем VNA_full и RH_raschet, каждый отдельным процессом.
 
 ЗАПУСК:
     py scr/raschet.py
@@ -20,8 +22,6 @@ from pathlib import Path
 
 # Windows-консоль по умолчанию работает в cp1251 и падает на некоторых
 # символах. Заменяем невыводимые символы, чтобы лог не ронял скрипт.
-# line_buffering=True — иначе при перенаправлении вывода строки нашего
-# лога и строки дочерних процессов перемешиваются.
 try:
     sys.stdout.reconfigure(errors="replace", line_buffering=True)
     sys.stderr.reconfigure(errors="replace", line_buffering=True)
@@ -52,8 +52,11 @@ SCRIPTS = [
 
 LINE = "#" * 78
 
+YES = {"", "ок", "да", "yes", "y"}
+NO = {"нет", "no", "n"}
 
-def run_script(name: str, title: str, data_file: Path) -> int:
+
+def run_script(name: str, title: str, data_file: Path, extra: list[str] | None = None) -> int:
     script = SCR_DIR / name
 
     print()
@@ -71,12 +74,16 @@ def run_script(name: str, title: str, data_file: Path) -> int:
         print(f"!!! Книга не найдена: {data_file}")
         return 1
 
-    result = subprocess.run([
+    command = [
         sys.executable,
         str(script),
         "--file", str(data_file),
         "--sheet", SHEET_NAME,
-    ])
+    ]
+    if extra:
+        command.extend(extra)
+
+    result = subprocess.run(command)
 
     print()
     if result.returncode == 0:
@@ -87,6 +94,66 @@ def run_script(name: str, title: str, data_file: Path) -> int:
     return result.returncode
 
 
+def ask_periods() -> list[tuple[str, str]] | None:
+    """Спрашивает, ок ли разметка.
+
+    Возвращает список (start, end), если пользователь ввёл свои периоды,
+    либо None, если согласен с автоопределением.
+    """
+
+    while True:
+        print()
+        try:
+            answer = input(
+                "Периоды ок?  (ок/да/yes — едем дальше;  нет/no — правим): "
+            ).strip().lower()
+        except EOFError:
+            # запуск без терминала — считаем, что всё ок, едем дальше
+            return None
+
+        if answer in YES:
+            return None
+
+        if answer not in NO:
+            print("  Не понял ответ — напиши 'ок' или 'нет'.")
+            continue
+
+        print()
+        print("Введи периоды: по одному на строку, формат  дата1;дата2")
+        print("  пример: 11-12-2024 14:00;01-06-2025 00:30")
+        print("Пустая строка — закончить ввод.")
+        print()
+
+        periods: list[tuple[str, str]] = []
+
+        while True:
+            try:
+                line = input().strip()
+            except EOFError:
+                line = ""
+
+            if not line:
+                break
+
+            if ";" not in line:
+                print(f"  пропущено (нет ';'): {line}")
+                continue
+
+            start, end = [part.strip() for part in line.split(";", 1)]
+            periods.append((start, end))
+            print(f"  + период {len(periods)}: {start} ; {end}")
+
+        if periods:
+            return periods
+
+        print("  Не введено ни одного периода — повторяю вопрос.")
+
+
+def encode_periods(periods: list[tuple[str, str]]) -> str:
+    """Сворачивает периоды в строку для аргумента --periods."""
+    return "|".join(f"{start};{end}" for start, end in periods)
+
+
 def main() -> int:
     data_file = ROOT / "data" / INPUT_FILE
 
@@ -94,10 +161,29 @@ def main() -> int:
     print(f"Книга с данными: {data_file}")
     print(f"Лист: {SHEET_NAME}")
 
+    # 1) предпросмотр разметки периодов (таблица + график), без расчёта
+    run_script(
+        "RH_raschet.py",
+        "Разметка периодов (предпросмотр)",
+        data_file,
+        extra=["--periods-only"],
+    )
+
+    # 2) спрашиваем пользователя
+    periods = ask_periods()
+
+    extra: list[str] = []
+
+    if periods:
+        extra = ["--periods", encode_periods(periods)]
+        print()
+        print(f"Используем {len(periods)} периодов вручную.")
+
+    # 3) расчёты
     failed = []
 
     for name, title in SCRIPTS:
-        if run_script(name, title, data_file) != 0:
+        if run_script(name, title, data_file, extra=extra) != 0:
             failed.append(name)
 
     print()

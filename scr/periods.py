@@ -143,6 +143,33 @@ def detect_periods(df):
     return df
 
 
+def parse_periods_arg(value):
+    """Разбирает строку 'д1;д2|д3;д4|...' в список пар (start, end).
+
+    Используется для передачи периодов между скриптами аргументом
+    `--periods`: каждая пара — начало и конец через ';', пары — через '|'.
+    """
+
+    periods = []
+
+    for chunk in value.split("|"):
+
+        chunk = chunk.strip()
+
+        if not chunk:
+            continue
+
+        if ";" not in chunk:
+            raise ValueError(
+                f"Не разобрать период: '{chunk}' (нужно 'дата1;дата2')"
+            )
+
+        start, end = [part.strip() for part in chunk.split(";", 1)]
+        periods.append((start, end))
+
+    return periods
+
+
 def apply_period_overrides(df, overrides):
     """Размечает периоды по списку, заданному в PERIOD_OVERRIDES.
 

@@ -9,9 +9,10 @@ from pathlib import Path
 from CoolProp.CoolProp import PropsSI
 
 # Разбивка на периоды — общая логика, живёт в scr/periods.py.
+import periods as periods_mod
 from periods import (
-    PERIOD_OVERRIDES,
     build_periods,
+    parse_periods_arg,
     print_period_overrides_template,
 )
 
@@ -58,6 +59,8 @@ def apply_cli_overrides():
             FILE_NAME = Path(arguments[index + 1])
         elif argument == "--sheet":
             SHEET_NAME = arguments[index + 1]
+        elif argument == "--periods":
+            periods_mod.PERIOD_OVERRIDES = parse_periods_arg(arguments[index + 1])
 
     if FILE_NAME is None:
         raise SystemExit(
@@ -585,7 +588,7 @@ for _row in periods_df.itertuples(index=False):
 
 print("=" * 80)
 
-print_period_overrides_template(periods_df, PERIOD_OVERRIDES)
+print_period_overrides_template(periods_df, periods_mod.PERIOD_OVERRIDES)
 
 def analyze_period(df, period_number):
     """Полный расчёт ВНА внутри одного периода работы ГТУ."""

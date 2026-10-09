@@ -224,15 +224,65 @@ def describe_periods(df):
         date_end = period_df["date"].iloc[-1]
         duration_days = (date_end - date_start).total_seconds() / 86400
 
+        if "excel_row" in period_df.columns:
+            row_start = period_df["excel_row"].iloc[0]
+            row_end = period_df["excel_row"].iloc[-1]
+            row_start = int(row_start) if pd.notna(row_start) else None
+            row_end = int(row_end) if pd.notna(row_end) else None
+        else:
+            row_start = None
+            row_end = None
+
         rows.append({
             "period": period_number,
             "date_start": date_start,
             "date_end": date_end,
+            "excel_row_start": row_start,
+            "excel_row_end": row_end,
             "duration_days": duration_days,
             "records": len(period_df),
         })
 
     return pd.DataFrame(rows)
+
+
+def make_periods_display_table(periods_df):
+    """Готовит компактную таблицу периодов для вывода в лог."""
+
+    if periods_df is None or periods_df.empty:
+        return pd.DataFrame()
+
+    table = periods_df[
+        [
+            "period",
+            "date_start",
+            "date_end",
+            "excel_row_start",
+            "excel_row_end",
+            "duration_days",
+            "records",
+        ]
+    ].copy()
+
+    table["date_start"] = pd.to_datetime(table["date_start"]).dt.strftime(
+        "%d-%m-%Y %H:%M"
+    )
+    table["date_end"] = pd.to_datetime(table["date_end"]).dt.strftime(
+        "%d-%m-%Y %H:%M"
+    )
+
+    table = table.rename(
+        columns={
+            "period": "Период",
+            "date_start": "Начало",
+            "date_end": "Конец",
+            "excel_row_start": "Строка начала Excel",
+            "excel_row_end": "Строка конца Excel",
+            "duration_days": "Длительность, сут",
+            "records": "Записей",
+        }
+    )
+    return table
 
 
 def build_periods(df):

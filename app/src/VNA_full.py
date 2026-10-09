@@ -1,3 +1,4 @@
+import heapq
 import re
 import sys
 
@@ -12,6 +13,7 @@ from CoolProp.CoolProp import PropsSI
 import periods as periods_mod
 from periods import (
     build_periods,
+    make_periods_display_table,
     parse_periods_arg,
     print_period_overrides_template,
 )
@@ -75,6 +77,13 @@ def apply_cli_overrides():
 
 MAX_DELTA_T = 1.0      # °C
 MAX_DELTA_P = 0.1      # мбар
+
+# Поиск интервалов ВНА выполняется по сетке 0,1°. Ширина интервала
+# меняется от 0,1° до 1,0°. Гистограмма ниже остаётся с шагом 1°:
+# она нужна как обзор распределения и не участвует в выборе TOP-10.
+VNA_INTERVAL_STEP = 0.1
+VNA_MIN_INTERVAL_WIDTH = 0.1
+VNA_MAX_INTERVAL_WIDTH = 1.0
 
 TOP_INTERVALS = 10
 
@@ -290,14 +299,10 @@ def run_vna(data, show_plots=True):
     print("ПЕРИОДЫ РАБОТЫ ГТУ")
     print("=" * 80)
 
-    for row in periods_df.itertuples(index=False):
-        print(
-            f"  Период {int(row.period)}: "
-            f"{row.date_start:%d-%m-%Y %H:%M} "
-            f"→ {row.date_end:%d-%m-%Y %H:%M} "
-            f"| {row.duration_days:.2f} сут "
-            f"| {row.records} записей"
-        )
+    if periods_df.empty:
+        print("  Периоды не найдены.")
+    else:
+        print(make_periods_display_table(periods_df).to_string(index=False))
 
     print("=" * 80)
     print_period_overrides_template(periods_df, periods_mod.PERIOD_OVERRIDES)
@@ -323,11 +328,232 @@ def run_vna(data, show_plots=True):
     return df, periods_df, results, figures
 
 
+def _build_pair_result(interval_df, dates, temperatures, pressures,
+                       vna_values, tkk_values, pkk_values, i, j):
+    """Формирует результат для уже найденной допустимой пары точек."""
+
+    date1 = pd.Timestamp(dates[i])
+    date2 = pd.Timestamp(dates[j])
+
+    t1 = temperatures[i]
+    p1 = pressures[i]
+    vna1 = vna_values[i]
+    tkk1 = tkk_values[i]
+    pkk1 = pkk_values[i]
+
+    t2 = temperatures[j]
+    p2 = pressures[j]
+    vna2 = vna_values[j]
+    tkk2 = tkk_values[j]
+    pkk2 = pkk_values[j]
+
+    delta_t = abs(t2 - t1)
+    delta_p = abs(p2 - p1)
+    delta_days = (date2 - date1).total_seconds() / 86400
+
+    eta1, h1_1, h2_1, h2s_1 = calculate_compressor_efficiency(
+        t1, p1, tkk1, pkk1
+    )
+    eta2, h1_2, h2_2, h2s_2 = calculate_compressor_efficiency(
+        t2, p2, tkk2, pkk2
+    )
+
+    return {
+        "date_1": date1,
+        "t_1": t1,
+        "p_1": p1,
+        "vna_1": vna1,
+        "tkk_1": tkk1,
+        "pkk_1": pkk1,
+        "eta_1": eta1,
+        "h1_1": h1_1,
+        "h2_1": h2_1,
+        "h2s_1": h2s_1,
+        "date_2": date2,
+        "t_2": t2,
+        "p_2": p2,
+        "vna_2": vna2,
+        "tkk_2": tkk2,
+        "pkk_2": pkk2,
+        "eta_2": eta2,
+        "h1_2": h1_2,
+        "h2_2": h2_2,
+        "h2s_2": h2s_2,
+        "delta_t": delta_t,
+        "delta_p": delta_p,
+        "delta_days": delta_days,
+        "delta_eta": abs(eta2 - eta1),
+    }
+
+
+def _find_flexible_vna_intervals(df):
+    """Находит пары для всех окон ВНА на сетке 0,1°.
+
+    Окна имеют ширину от 0,1° до 1,0°. Для каждого окна сохраняется
+    наиболее удалённая по времени допустимая пара. Перекрывающиеся окна
+    с разными наборами строк сохраняются, а полностью эквивалентные окна
+    объединяются.
+
+    Поиск пар выполняется одним проходом для каждой ширины окна. При
+    сдвиге окна старые пары удаляются лениво из max-heap, а для новой
+    точки добавляются только пары с крайними по времени совместимыми
+    точками. Этого достаточно для максимальной разницы дат и не требует
+    повторного полного O(n²) поиска для каждого из тысяч окон.
+    """
+
+    interval_df = df.sort_values("date").reset_index(drop=True)
+
+    dates = interval_df["date"].to_numpy(dtype="datetime64[ns]")
+    date_ns = dates.astype("int64")
+    temperatures = interval_df["t"].to_numpy(dtype=float)
+    pressures = interval_df["p"].to_numpy(dtype=float)
+    vna_values = interval_df["vna"].to_numpy(dtype=float)
+    tkk_values = interval_df["tkk"].to_numpy(dtype=float)
+    pkk_values = interval_df["pkk"].to_numpy(dtype=float)
+
+    if len(interval_df) < 2:
+        return []
+
+    # Каждая точка попадает в десятую долю градуса. Правая граница
+    # интервала открыта, как и в прежнем поиске по гистограмме.
+    vna_cells = np.floor(
+        np.clip(vna_values, 0, 100 - 1e-9) / VNA_INTERVAL_STEP
+    ).astype(int)
+    vna_cells = np.clip(vna_cells, 0, 1000 - 1)
+    groups = [np.flatnonzero(vna_cells == cell) for cell in range(1000)]
+
+    min_cell = int(vna_cells.min())
+    max_cell = int(vna_cells.max())
+    # Несколько разных границ могут выбрать один и тот же набор строк,
+    # если между ними нет измерений. Храним только один представитель
+    # каждого набора; при совпадении оставляем самое узкое окно.
+    unique_candidates = {}
+
+    for width_cells in range(
+        int(round(VNA_MIN_INTERVAL_WIDTH / VNA_INTERVAL_STEP)),
+        int(round(VNA_MAX_INTERVAL_WIDTH / VNA_INTERVAL_STEP)) + 1,
+    ):
+        start_min = min_cell
+        start_max = min(max_cell, 1000 - width_cells)
+        if start_min > start_max:
+            continue
+
+        active_flags = np.zeros(len(interval_df), dtype=bool)
+        active_lists = [[] for _ in range(1000)]
+        pair_heap = []
+        active_count = 0
+
+        def add_cell(cell):
+            nonlocal active_count
+
+            if cell < 0 or cell >= len(groups):
+                return
+
+            for new_index in groups[cell]:
+                # Все точки текущего окна, включая уже добавленные точки
+                # этой же ячейки, являются возможными партнёрами.
+                parts = [
+                    active_lists[current_cell]
+                    for current_cell in range(
+                        current_start,
+                        current_start + width_cells,
+                    )
+                    if active_lists[current_cell]
+                ]
+
+                if parts:
+                    other_indices = np.asarray(
+                        [index for part in parts for index in part],
+                        dtype=int,
+                    )
+                    valid = (
+                        np.abs(temperatures[other_indices] - temperatures[new_index])
+                        <= MAX_DELTA_T
+                    ) & (
+                        np.abs(pressures[other_indices] - pressures[new_index])
+                        <= MAX_DELTA_P
+                    )
+                    valid_indices = other_indices[valid]
+
+                    if valid_indices.size:
+                        # Для максимальной разницы дат достаточно самой
+                        # ранней и самой поздней совместимой точки.
+                        extremes = {
+                            int(valid_indices[np.argmin(date_ns[valid_indices])]),
+                            int(valid_indices[np.argmax(date_ns[valid_indices])]),
+                        }
+                        for other_index in extremes:
+                            left, right = sorted((int(other_index), int(new_index)))
+                            delta_ns = int(date_ns[right] - date_ns[left])
+                            heapq.heappush(
+                                pair_heap,
+                                (-delta_ns, left, right),
+                            )
+
+                active_flags[new_index] = True
+                active_lists[cell].append(int(new_index))
+                active_count += 1
+
+        for current_start in range(start_min, start_max + 1):
+            if current_start == start_min:
+                for cell in range(current_start, current_start + width_cells):
+                    add_cell(cell)
+            else:
+                # В предыдущей позиции окна уже были подготовлены все
+                # точки, кроме входящей справа ячейки. Здесь меняем окно
+                # на одну десятую и добавляем эту ячейку в его контексте.
+                leaving_cell = current_start - 1
+                leaving_indices = groups[leaving_cell]
+                if leaving_indices.size:
+                    active_flags[leaving_indices] = False
+                    active_count -= int(leaving_indices.size)
+                active_lists[leaving_cell].clear()
+                add_cell(current_start + width_cells - 1)
+
+            # Сначала убираем из heap пары, у которых хотя бы одна точка
+            # уже вышла за левую границу окна.
+            while pair_heap and (
+                not active_flags[pair_heap[0][1]]
+                or not active_flags[pair_heap[0][2]]
+            ):
+                heapq.heappop(pair_heap)
+
+            if pair_heap:
+                _, best_i, best_j = pair_heap[0]
+                start_value = current_start * VNA_INTERVAL_STEP
+                end_value = (current_start + width_cells) * VNA_INTERVAL_STEP
+                pair = _build_pair_result(
+                    interval_df,
+                    dates,
+                    temperatures,
+                    pressures,
+                    vna_values,
+                    tkk_values,
+                    pkk_values,
+                    best_i,
+                    best_j,
+                )
+                pair.update({
+                    "vna_from": start_value,
+                    "vna_to": end_value,
+                    "vna_interval": f"{start_value:.1f}-{end_value:.1f}",
+                    "count": int(active_count),
+                    "share_percent": active_count / len(interval_df) * 100,
+                })
+                row_signature = tuple(np.flatnonzero(active_flags).tolist())
+                candidate_key = (width_cells, current_start)
+                previous = unique_candidates.get(row_signature)
+                if previous is None or candidate_key < previous[0]:
+                    unique_candidates[row_signature] = (candidate_key, pair)
+
+    return [pair for _, pair in unique_candidates.values()]
+
 
 def analyze_period(df, period_number, show_plot=True):
-    """Полный расчёт ВНА внутри одного периода работы ГТУ."""
+    """Считает распределение и гибкие интервалы ВНА внутри периода."""
 
     print()
+    print("ДЕГРАДАЦИЯ")
     print("#" * 80)
     print(
         f"### ПЕРИОД {period_number}: "
@@ -337,587 +563,131 @@ def analyze_period(df, period_number, show_plot=True):
     )
     print("#" * 80)
 
-    # ============================================================
-    # ФИЛЬТР VNA
-    # ============================================================
-
     df = df[
         (df["vna"] >= 0)
-        &
-        (df["vna"] <= 100)
+        & (df["vna"] <= 100)
     ].copy()
-
-
     if df.empty:
-        raise ValueError(
-            "Нет корректных данных."
-        )
-
+        raise ValueError("Нет корректных данных.")
 
     print()
     print("=" * 80)
     print("ИСХОДНЫЕ ДАННЫЕ")
     print("=" * 80)
+    print(f"Количество строк: {len(df)}")
+    print(f"Минимум VNA: {df['vna'].min():.3f}")
+    print(f"Максимум VNA: {df['vna'].max():.3f}")
 
-    print(
-        f"Количество строк: {len(df)}"
-    )
-
-    print(
-        f"Минимум VNA: {df['vna'].min():.3f}"
-    )
-
-    print(
-        f"Максимум VNA: {df['vna'].max():.3f}"
-    )
-
-
-    # ============================================================
-    # РАСПРЕДЕЛЕНИЕ VNA
-    # ============================================================
-
-    bins = np.arange(
-        0,
-        101,
-        1
-    )
-
-
-    counts, edges = np.histogram(
-        df["vna"],
-        bins=bins
-    )
-
-
+    # Обзорная гистограмма остаётся с шагом 1°.
+    bins = np.arange(0, 101, 1)
+    counts, edges = np.histogram(df["vna"], bins=bins)
     distribution = pd.DataFrame({
-
         "vna_from": edges[:-1],
-
         "vna_to": edges[1:],
-
-        "count": counts
+        "count": counts,
     })
-
-
     distribution["interval"] = (
-        distribution["vna_from"]
-        .astype(int)
-        .astype(str)
-        +
-        "-"
-        +
-        distribution["vna_to"]
-        .astype(int)
-        .astype(str)
+        distribution["vna_from"].astype(int).astype(str)
+        + "-"
+        + distribution["vna_to"].astype(int).astype(str)
     )
-
-
     distribution["share_percent"] = (
-        distribution["count"]
-        /
-        distribution["count"].sum()
-        *
-        100
+        distribution["count"] / distribution["count"].sum() * 100
     )
 
-
-    # ============================================================
-    # TOP-10 ИНТЕРВАЛОВ
-    # ============================================================
-
-    top_intervals = (
-        distribution
-        .sort_values(
-            "count",
-            ascending=False
-        )
-        .head(TOP_INTERVALS)
-        .reset_index(drop=True)
-    )
-
-
-    print()
-    print("=" * 80)
-    print("TOP-10 ИНТЕРВАЛОВ VNA")
-    print("=" * 80)
-
-    print(
-        top_intervals[
-            [
-                "interval",
-                "count",
-                "share_percent"
-            ]
-        ].to_string(
-            index=False
-        )
-    )
-
-
-    # ============================================================
-    # ГИСТОГРАММА
-    # ============================================================
-
-    figure = plt.figure(
-        figsize=(14, 7)
-    )
-
+    figure = plt.figure(figsize=(14, 7))
     plt.bar(
         distribution["vna_from"],
         distribution["count"],
         width=1,
         align="edge",
-        edgecolor="black"
+        edgecolor="black",
     )
-
-    plt.xlabel(
-        "VNA, %"
-    )
-
-    plt.ylabel(
-        "Количество измерений"
-    )
-
-    plt.title(
-        "Распределение времени работы ГТУ "
-        "по положению VNA"
-    )
-
-    plt.xticks(
-        np.arange(
-            0,
-            101,
-            5
-        )
-    )
-
-    plt.grid(
-        axis="y",
-        alpha=0.3
-    )
-
+    plt.xlabel("VNA, %")
+    plt.ylabel("Количество измерений")
+    plt.title("Распределение времени работы ГТУ по положению VNA")
+    plt.xticks(np.arange(0, 101, 5))
+    plt.grid(axis="y", alpha=0.3)
     plt.tight_layout()
-
     if show_plot:
         plt.show()
 
-
-    # ============================================================
-    # ФУНКЦИЯ ПОИСКА ЛУЧШЕЙ ПАРЫ
-    # ============================================================
-
-    def find_best_pair(interval_df):
-
-        interval_df = (
-            interval_df
-            .sort_values("date")
-            .reset_index(drop=True)
-        )
-
-
-        if len(interval_df) < 2:
-            return None
-
-
-        dates = (
-            interval_df["date"]
-            .to_numpy()
-        )
-
-        temperatures = (
-            interval_df["t"]
-            .to_numpy(dtype=float)
-        )
-
-        pressures = (
-            interval_df["p"]
-            .to_numpy(dtype=float)
-        )
-
-        vna_values = (
-            interval_df["vna"]
-            .to_numpy(dtype=float)
-        )
-
-        tkk_values = (
-            interval_df["tkk"]
-            .to_numpy(dtype=float)
-        )
-
-        pkk_values = (
-            interval_df["pkk"]
-            .to_numpy(dtype=float)
-        )
-
-
-        n = len(interval_df)
-
-
-        best_i = None
-        best_j = None
-        best_delta_ns = -1
-
-
-        # ========================================================
-        # ПОИСК САМОЙ ДАЛЕКОЙ ПО ВРЕМЕНИ ПАРЫ
-        # ========================================================
-
-        for i in range(n - 1):
-
-            valid = (
-
-                (
-                    np.abs(
-                        temperatures[i + 1:]
-                        -
-                        temperatures[i]
-                    )
-                    <= MAX_DELTA_T
-                )
-
-                &
-
-                (
-                    np.abs(
-                        pressures[i + 1:]
-                        -
-                        pressures[i]
-                    )
-                    <= MAX_DELTA_P
-                )
-
-            )
-
-
-            valid_indices = np.flatnonzero(
-                valid
-            )
-
-
-            if valid_indices.size == 0:
-                continue
-
-
-            # Самая поздняя допустимая точка
-            local_j = valid_indices[-1]
-
-            j = i + 1 + local_j
-
-
-            delta_time = (
-                dates[j]
-                -
-                dates[i]
-            )
-
-
-            delta_ns = (
-                delta_time
-                .astype("timedelta64[ns]")
-                .astype(np.int64)
-            )
-
-
-            if delta_ns > best_delta_ns:
-
-                best_delta_ns = int(delta_ns)
-
-                best_i = i
-                best_j = j
-
-
-        if best_i is None:
-            return None
-
-
-        i = best_i
-        j = best_j
-
-
-        # ========================================================
-        # ДАННЫЕ ТОЧКИ 1
-        # ========================================================
-
-        date1 = pd.Timestamp(
-            dates[i]
-        )
-
-        t1 = temperatures[i]
-        p1 = pressures[i]
-        vna1 = vna_values[i]
-
-        tkk1 = tkk_values[i]
-        pkk1 = pkk_values[i]
-
-
-        # ========================================================
-        # ДАННЫЕ ТОЧКИ 2
-        # ========================================================
-
-        date2 = pd.Timestamp(
-            dates[j]
-        )
-
-        t2 = temperatures[j]
-        p2 = pressures[j]
-        vna2 = vna_values[j]
-
-        tkk2 = tkk_values[j]
-        pkk2 = pkk_values[j]
-
-
-        # ========================================================
-        # РАЗНИЦЫ
-        # ========================================================
-
-        delta_t = abs(
-            t2 - t1
-        )
-
-        delta_p = abs(
-            p2 - p1
-        )
-
-
-        delta_time = (
-            date2 - date1
-        )
-
-
-        delta_days = (
-            delta_time.total_seconds()
-            /
-            86400
-        )
-
-
-        # ========================================================
-        # РАСЧЕТ КПД ТОЧКИ 1
-        # ========================================================
-
-        eta1, h1_1, h2_1, h2s_1 = (
-            calculate_compressor_efficiency(
-                t1,
-                p1,
-                tkk1,
-                pkk1
-            )
-        )
-
-
-        # ========================================================
-        # РАСЧЕТ КПД ТОЧКИ 2
-        # ========================================================
-
-        eta2, h1_2, h2_2, h2s_2 = (
-            calculate_compressor_efficiency(
-                t2,
-                p2,
-                tkk2,
-                pkk2
-            )
-        )
-
-
-        # ========================================================
-        # ДЕЛЬТА КПД
-        # ========================================================
-
-        delta_eta = abs(
-            eta2 - eta1
-        )
-
-
-        return {
-
-            "date_1": date1,
-
-            "t_1": t1,
-            "p_1": p1,
-            "vna_1": vna1,
-
-            "tkk_1": tkk1,
-            "pkk_1": pkk1,
-
-            "eta_1": eta1,
-
-            "h1_1": h1_1,
-            "h2_1": h2_1,
-            "h2s_1": h2s_1,
-
-
-            "date_2": date2,
-
-            "t_2": t2,
-            "p_2": p2,
-            "vna_2": vna2,
-
-            "tkk_2": tkk2,
-            "pkk_2": pkk2,
-
-            "eta_2": eta2,
-
-            "h1_2": h1_2,
-            "h2_2": h2_2,
-            "h2s_2": h2s_2,
-
-
-            "delta_t": delta_t,
-
-            "delta_p": delta_p,
-
-            "delta_days": delta_days,
-
-            "delta_eta": delta_eta
-        }
-
-
-    # ============================================================
-    # ПОИСК ДЛЯ КАЖДОГО ИЗ TOP-10 ИНТЕРВАЛОВ
-    # ============================================================
-
-    results = []
-
-
-    for rank, row in top_intervals.iterrows():
-
-        vna_min = row["vna_from"]
-        vna_max = row["vna_to"]
-
-        interval_name = row["interval"]
-
-        count = int(row["count"])
-        share = float(row["share_percent"])
-
-        interval_df = df[
-            (df["vna"] >= vna_min)
-            &
-            (df["vna"] < vna_max)
-        ].copy()
-
-        best_pair = find_best_pair(interval_df)
-
-        if best_pair is None:
-
-            results.append({
-                "rank": rank + 1,
-                "vna_interval": interval_name,
-                "count": count,
-                "share_percent": share,
-
-                "date_1": None,
-                "t_1": None,
-                "p_1": None,
-                "vna_1": None,
-                "tkk_1": None,
-                "pkk_1": None,
-                "eta_1": None,
-
-                "date_2": None,
-                "t_2": None,
-                "p_2": None,
-                "vna_2": None,
-                "tkk_2": None,
-                "pkk_2": None,
-                "eta_2": None,
-
-                "delta_t": None,
-                "delta_p": None,
-                "delta_days": None,
-                "delta_eta": None
-            })
-
-            continue
-
-
-        # ========================================================
-        # ДОБАВЛЯЕМ В ИТОГОВУЮ ТАБЛИЦУ
-        # ========================================================
-
-        results.append({
-            "rank": rank + 1,
-            "vna_interval": interval_name,
-            "count": count,
-            "share_percent": share,
-
-            "date_1": best_pair["date_1"],
-            "t_1": best_pair["t_1"],
-            "p_1": best_pair["p_1"],
-            "vna_1": best_pair["vna_1"],
-            "tkk_1": best_pair["tkk_1"],
-            "pkk_1": best_pair["pkk_1"],
-            "eta_1": best_pair["eta_1"],
-
-            "date_2": best_pair["date_2"],
-            "t_2": best_pair["t_2"],
-            "p_2": best_pair["p_2"],
-            "vna_2": best_pair["vna_2"],
-            "tkk_2": best_pair["tkk_2"],
-            "pkk_2": best_pair["pkk_2"],
-            "eta_2": best_pair["eta_2"],
-
-            "delta_t": best_pair["delta_t"],
-            "delta_p": best_pair["delta_p"],
-            "delta_days": best_pair["delta_days"],
-            "delta_eta": best_pair["delta_eta"]
-        })
-
-
-    # ============================================================
-    # ИТОГОВАЯ ТАБЛИЦА В ТЕРМИНАЛЕ
-    # ============================================================
-
-    result_df = pd.DataFrame(results)
+    candidates = _find_flexible_vna_intervals(df)
+    result_df = pd.DataFrame(candidates)
+
+    if result_df.empty:
+        print()
+        print("TOP-10 ИНТЕРВАЛОВ VNA ПО МАКСИМАЛЬНОМУ РАССТОЯНИЮ")
+        print("Подходящих пар точек не найдено.")
+        return result_df, figure
+
+    result_df = result_df.drop(columns=["vna_from", "vna_to"])
+    result_df = result_df.sort_values(
+        by=["delta_days", "count", "delta_eta"],
+        ascending=[False, False, True],
+    ).head(TOP_INTERVALS).reset_index(drop=True)
+    result_df.insert(0, "rank", np.arange(1, len(result_df) + 1))
+
+    # Сохраняем прежний состав и порядок полей итоговой таблицы. Внутренние
+    # энтальпии нужны только для расчёта КПД и в отчёт не выводятся.
+    result_df = result_df[
+        [
+            "rank",
+            "vna_interval",
+            "count",
+            "share_percent",
+            "date_1",
+            "t_1",
+            "p_1",
+            "vna_1",
+            "tkk_1",
+            "pkk_1",
+            "eta_1",
+            "date_2",
+            "t_2",
+            "p_2",
+            "vna_2",
+            "tkk_2",
+            "pkk_2",
+            "eta_2",
+            "delta_t",
+            "delta_p",
+            "delta_days",
+            "delta_eta",
+        ]
+    ]
+
+    print()
+    print("=" * 100)
+    print("TOP-10 ИНТЕРВАЛОВ VNA ПО МАКСИМАЛЬНОМУ РАССТОЯНИЮ")
+    print("=" * 100)
+    print(
+        result_df[
+            ["rank", "vna_interval", "count", "share_percent", "delta_days"]
+        ].to_string(index=False)
+    )
 
     # Округляем только числовые столбцы. Даты и timedelta округлять через
     # DataFrame.round нельзя: pandas выдаёт предупреждение.
     numeric_columns = result_df.select_dtypes(include="number").columns
     result_df[numeric_columns] = result_df[numeric_columns].round(3)
 
-    # Сортировка по двум столбцам:
-    # 1) по максимальной разнице в днях (сначала самые длинные)
-    # 2) при равенстве - по МИНИМАЛЬНОЙ delta_eta: нужна самая мелкая
-    #    разница КПД между точками
-    result_df = result_df.sort_values(
-        by=["delta_days", "delta_eta"],
-        ascending=[False, True]
-    ).reset_index(drop=True)
-
-
-    # ============================================================
-    # ТАБЛИЦА ДЛЯ ВЫВОДА
-    #
-    # Даты — в читаемом виде (дд-мм-гггг чч:мм).
-    # Колонка доли времени share_percent убрана, чтобы таблица
-    # влезала в терминал. Полные данные остаются в result_df.
-    # ============================================================
-
-    display_df = (
-        result_df
-        .drop(columns=["share_percent"])
-        .copy()
-    )
-
+    display_df = result_df.drop(columns=["share_percent"]).copy()
     for column in ["date_1", "date_2"]:
+        display_df[column] = pd.to_datetime(display_df[column]).dt.strftime(
+            "%d-%m-%Y %H:%M"
+        )
 
-        if column in display_df.columns:
-
-            display_df[column] = (
-                pd.to_datetime(display_df[column])
-                .dt.strftime("%d-%m-%Y %H:%M")
-            )
-
+    # Разделители группируют метаданные, точку 1, точку 2 и дельты.
+    display_df.insert(3, "│₁", "│")
+    display_df.insert(display_df.columns.get_loc("eta_1") + 1, "║", "║")
+    display_df.insert(display_df.columns.get_loc("eta_2") + 1, "│₂", "│")
 
     print()
     print("=" * 160)
     print("ИТОГОВАЯ ТАБЛИЦА ПО TOP-10 ИНТЕРВАЛАМ VNA")
     print("=" * 160)
-
-    print(
-        display_df.to_string(
-            index=False
-        )
-    )
+    print(display_df.to_string(index=False))
 
     return result_df, figure
 

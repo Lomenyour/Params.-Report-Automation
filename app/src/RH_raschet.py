@@ -20,6 +20,7 @@ from periods import (
     describe_periods,
     parse_periods_arg,
     print_period_overrides_template,
+    make_periods_display_table,
 )
 from data_loader import load_source_data, prepare_rh_data
 
@@ -787,7 +788,7 @@ def print_boundary_delta_table(df, periods_df, vna_data=None):
     """Печатает таблицу изменения параметров по границам периодов."""
 
     if periods_df.empty:
-        return
+        return pd.DataFrame()
 
     print()
     print("Дельты по регрессиям от часов наработки:")
@@ -797,6 +798,7 @@ def print_boundary_delta_table(df, periods_df, vna_data=None):
 
     table = build_boundary_delta_table(df, periods_df, vna_data=vna_data)
     print(table.to_string(index=False))
+    return table
 
 
 def print_hours_consistency_check(df):
@@ -830,7 +832,8 @@ def print_hours_consistency_check(df):
         )
 
 
-def main(data=None, periods_only=False, show_plots=True, vna_data=None):
+def main(data=None, periods_only=False, show_plots=True, vna_data=None,
+         output_tables=None):
     df = load_data(source=data)
 
     if not periods_only:
@@ -853,14 +856,7 @@ def main(data=None, periods_only=False, show_plots=True, vna_data=None):
     if periods_df.empty:
         print("  Периоды не найдены.")
     else:
-        for row in periods_df.itertuples(index=False):
-            print(
-                f"  Период {int(row.period)}: "
-                f"{row.date_start:%d-%m-%Y %H:%M} "
-                f"→ {row.date_end:%d-%m-%Y %H:%M} "
-                f"| {row.duration_days:.2f} сут "
-                f"| {row.records} записей"
-            )
+        print(make_periods_display_table(periods_df).to_string(index=False))
 
     print("=" * 70)
 
@@ -877,7 +873,12 @@ def main(data=None, periods_only=False, show_plots=True, vna_data=None):
         boundary_table = build_boundary_table(df, periods_df)
 
         print(boundary_table.to_string(index=False))
-        print_boundary_delta_table(df, periods_df, vna_data=vna_data)
+        delta_table = print_boundary_delta_table(
+            df, periods_df, vna_data=vna_data
+        )
+        if output_tables is not None:
+            output_tables["boundary"] = boundary_table
+            output_tables["delta"] = delta_table
 
     print_period_overrides_template(periods_df, periods_mod.PERIOD_OVERRIDES)
 

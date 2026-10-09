@@ -184,6 +184,11 @@ def load_source_data(file_path: str | Path, sheet_name: str = "Данные") ->
         result["hours_input"] = pd.to_numeric(raw.iloc[:, 0], errors="coerce")
     else:
         result["hours_input"] = np.nan
+    # Номер физической строки Excel: первая строка данных — 2,
+    # если заголовок расположен в первой строке листа.
+    result["excel_row"] = (
+        raw.index.to_numpy(dtype=int) + header_row + 2
+    )
     result["hours"] = result.index.to_numpy(dtype=float) * 0.5
 
     print(f"Загружено строк: {len(result)}")
@@ -196,7 +201,7 @@ def prepare_rh_data(source: pd.DataFrame) -> pd.DataFrame:
     columns += [
         name for name in [
             "fuel_specific", "gas_pressure", "gas_temperature", "q_lower",
-            "hours", "hours_input", "vlo", "fgo", "fto", "fgo_fto", "vna",
+            "hours", "hours_input", "excel_row", "vlo", "fgo", "fto", "fgo_fto", "vna",
             "power_n"
         ]
         if name in source.columns

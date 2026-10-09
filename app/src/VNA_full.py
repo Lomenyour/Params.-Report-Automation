@@ -78,9 +78,9 @@ def apply_cli_overrides():
 MAX_DELTA_T = 1.0      # °C
 MAX_DELTA_P = 0.1      # мбар
 
-# Поиск интервалов ВНА выполняется по сетке 0,1°. Ширина интервала
-# меняется от 0,1° до 1,0°. Гистограмма ниже остаётся с шагом 1°:
-# она нужна как обзор распределения и не участвует в выборе TOP-10.
+# На main используется проверенный поиск по фиксированным окнам 1°.
+# Эксперимент с шагом 0,1° сохранён в ветке vna-step-0.1-dedup-test.
+# Параметры ниже нужны только оставленной для сравнения функции поиска.
 VNA_INTERVAL_STEP = 0.1
 VNA_MIN_INTERVAL_WIDTH = 0.1
 VNA_MAX_INTERVAL_WIDTH = 1.0
@@ -549,8 +549,71 @@ def _find_flexible_vna_intervals(df):
     return [pair for _, pair in unique_candidates.values()]
 
 
+def _find_fixed_vna_intervals(df, distribution):
+    """Прежний поиск: TOP-10 неперекрывающихся окон 1° по числу точек."""
+
+    top_intervals = (
+        distribution.sort_values("count", ascending=False)
+        .head(TOP_INTERVALS)
+        .reset_index(drop=True)
+    )
+    results = []
+
+    for rank, row in top_intervals.iterrows():
+        interval_df = (
+            df[(df["vna"] >= row["vna_from"]) & (df["vna"] < row["vna_to"])]
+            .sort_values("date")
+            .reset_index(drop=True)
+        )
+
+        metadata = {
+            "rank": rank + 1,
+            "vna_interval": row["interval"],
+            "count": int(row["count"]),
+            "share_percent": float(row["share_percent"]),
+        }
+        if len(interval_df) < 2:
+            results.append(metadata)
+            continue
+
+        dates = interval_df["date"].to_numpy(dtype="datetime64[ns]")
+        temperatures = interval_df["t"].to_numpy(dtype=float)
+        pressures = interval_df["p"].to_numpy(dtype=float)
+        vna_values = interval_df["vna"].to_numpy(dtype=float)
+        tkk_values = interval_df["tkk"].to_numpy(dtype=float)
+        pkk_values = interval_df["pkk"].to_numpy(dtype=float)
+
+        best_i = best_j = None
+        best_delta_ns = -1
+        for i in range(len(interval_df) - 1):
+            valid = (
+                (np.abs(temperatures[i + 1:] - temperatures[i]) <= MAX_DELTA_T)
+                & (np.abs(pressures[i + 1:] - pressures[i]) <= MAX_DELTA_P)
+            )
+            valid_indices = np.flatnonzero(valid)
+            if valid_indices.size == 0:
+                continue
+
+            j = i + 1 + int(valid_indices[-1])
+            delta_ns = int((dates[j] - dates[i]).astype("timedelta64[ns]").astype(np.int64))
+            if delta_ns > best_delta_ns:
+                best_i, best_j, best_delta_ns = i, j, delta_ns
+
+        if best_i is None:
+            results.append(metadata)
+            continue
+
+        pair = _build_pair_result(
+            interval_df, dates, temperatures, pressures, vna_values,
+            tkk_values, pkk_values, best_i, best_j,
+        )
+        results.append({**metadata, **pair})
+
+    return results
+
+
 def analyze_period(df, period_number, show_plot=True):
-    """Считает распределение и гибкие интервалы ВНА внутри периода."""
+    """Считает распределение и фиксированные интервалы ВНА внутри периода."""
 
     print()
     print("ДЕГРАДАЦИЯ")
@@ -612,21 +675,25 @@ def analyze_period(df, period_number, show_plot=True):
     if show_plot:
         plt.show()
 
-    candidates = _find_flexible_vna_intervals(df)
+    candidates = _find_fixed_vna_intervals(df, distribution)
     result_df = pd.DataFrame(candidates)
 
     if result_df.empty:
         print()
-        print("TOP-10 ИНТЕРВАЛОВ VNA ПО МАКСИМАЛЬНОМУ РАССТОЯНИЮ")
+        print("TOP-10 ИНТЕРВАЛОВ VNA ПО КОЛИЧЕСТВУ ТОЧЕК")
         print("Подходящих пар точек не найдено.")
         return result_df, figure
 
-    result_df = result_df.drop(columns=["vna_from", "vna_to"])
+    result_df = result_df.reindex(columns=[
+        "rank", "vna_interval", "count", "share_percent",
+        "date_1", "t_1", "p_1", "vna_1", "tkk_1", "pkk_1", "eta_1",
+        "date_2", "t_2", "p_2", "vna_2", "tkk_2", "pkk_2", "eta_2",
+        "delta_t", "delta_p", "delta_days", "delta_eta",
+    ])
     result_df = result_df.sort_values(
-        by=["delta_days", "count", "delta_eta"],
-        ascending=[False, False, True],
-    ).head(TOP_INTERVALS).reset_index(drop=True)
-    result_df.insert(0, "rank", np.arange(1, len(result_df) + 1))
+        by=["delta_days", "delta_eta"],
+        ascending=[False, True],
+    ).reset_index(drop=True)
 
     # Сохраняем прежний состав и порядок полей итоговой таблицы. Внутренние
     # энтальпии нужны только для расчёта КПД и в отчёт не выводятся.
@@ -659,12 +726,12 @@ def analyze_period(df, period_number, show_plot=True):
 
     print()
     print("=" * 100)
-    print("TOP-10 ИНТЕРВАЛОВ VNA ПО МАКСИМАЛЬНОМУ РАССТОЯНИЮ")
+    print("TOP-10 ИНТЕРВАЛОВ VNA ПО КОЛИЧЕСТВУ ТОЧЕК")
     print("=" * 100)
     print(
         result_df[
             ["rank", "vna_interval", "count", "share_percent", "delta_days"]
-        ].to_string(index=False)
+        ].sort_values("rank").to_string(index=False)
     )
 
     # Округляем только числовые столбцы. Даты и timedelta округлять через

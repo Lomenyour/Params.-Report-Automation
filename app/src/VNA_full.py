@@ -84,6 +84,7 @@ MAX_DELTA_P = 0.1      # мбар
 VNA_INTERVAL_STEP = 0.1
 VNA_MIN_INTERVAL_WIDTH = 0.1
 VNA_MAX_INTERVAL_WIDTH = 1.0
+MAX_DELTA_ETA = 0.8    # п.п.; в TOP-10 проходят только delta_eta < 0.8
 
 TOP_INTERVALS = 10
 
@@ -614,6 +615,16 @@ def analyze_period(df, period_number, show_plot=True):
 
     candidates = _find_flexible_vna_intervals(df)
     result_df = pd.DataFrame(candidates)
+
+    if not result_df.empty:
+        candidates_before_eta_filter = len(result_df)
+        result_df = result_df[
+            result_df["delta_eta"] < MAX_DELTA_ETA
+        ].copy()
+        print(
+            f"Фильтр TOP-10: Δη < {MAX_DELTA_ETA:.1f} п.п.; "
+            f"осталось {len(result_df)} из {candidates_before_eta_filter} кандидатов"
+        )
 
     if result_df.empty:
         print()

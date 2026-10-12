@@ -694,6 +694,24 @@ def _regression_delta(slope, hours_start, hours_end):
     return max(0.0, raw_delta), raw_delta
 
 
+def _regression_value(slope, intercept, hours):
+    """Вычисляет значение регрессии в заданный час наработки."""
+
+    if any(pd.isna(value) for value in (slope, intercept, hours)):
+        return np.nan
+
+    return float(slope * hours + intercept)
+
+
+def _relative_delta(delta, initial_value):
+    """Возвращает дельту в процентах от значения в начале периода."""
+
+    if pd.isna(delta) or pd.isna(initial_value) or abs(initial_value) < 1e-12:
+        return np.nan
+
+    return float(delta / initial_value * 100.0)
+
+
 def _equation(slope, intercept):
     if pd.isna(slope) or pd.isna(intercept):
         return "нет данных"
@@ -705,6 +723,7 @@ def build_boundary_delta_table(df, periods_df, vna_data=None):
     """Строит таблицу дельт по регрессиям в доминирующем интервале ВНА."""
 
     rows = []
+    period_start_values = {}
 
     for row in periods_df.itertuples(index=False):
         period_number = int(row.period)
@@ -751,6 +770,16 @@ def build_boundary_delta_table(df, periods_df, vna_data=None):
         delta_eta, raw_eta = _regression_delta(
             regressions["eta"][0], hours_start, hours_end
         )
+        start_n = _regression_value(
+            regressions["N"][0], regressions["N"][1], hours_start
+        )
+        start_b = _regression_value(
+            regressions["b"][0], regressions["b"][1], hours_start
+        )
+        period_start_values[period_number] = {
+            "N": start_n,
+            "b": start_b,
+        }
 
         rows.append({
             "Период": period_number,
@@ -761,8 +790,10 @@ def build_boundary_delta_table(df, periods_df, vna_data=None):
             "k_bприв": regressions["b"][0],
             "k_ηГТУ": regressions["eta"][0],
             "Δbприв": delta_b,
+            "Δbприв, %": _relative_delta(delta_b, start_b),
             "Δbприв до отсечки": raw_b,
             "ΔNприв": delta_n,
+            "ΔNприв, %": _relative_delta(delta_n, start_n),
             "ΔNприв до отсечки": raw_n,
             "Δη, п.п.": delta_eta,
             "Δη до отсечки": raw_eta,
@@ -778,10 +809,52 @@ def build_boundary_delta_table(df, periods_df, vna_data=None):
         print(f"  ηГТУ  = {_equation(*regressions['eta'][:2])}")
 
     result = pd.DataFrame(rows)
+    result.attrs["period_start_values"] = period_start_values
+    result.attrs["weighted_summary"] = (
+        build_weighted_delta_summary(result) if not result.empty else None
+    )
     if not result.empty:
         numeric_columns = result.select_dtypes(include="number").columns
         result[numeric_columns] = result[numeric_columns].round(3)
     return result
+
+
+def build_weighted_delta_summary(table):
+    """Считает средневзвешенные дельты и итоговый процент деградации."""
+
+    if table is None or table.empty:
+        return None
+
+    duration = pd.to_numeric(table["Часы конца"], errors="coerce") - pd.to_numeric(
+        table["Часы начала"], errors="coerce"
+    )
+    valid = (
+        np.isfinite(duration)
+        & (duration > 0)
+        & np.isfinite(pd.to_numeric(table["ΔNприв"], errors="coerce"))
+        & np.isfinite(pd.to_numeric(table["Δbприв"], errors="coerce"))
+    )
+    if not valid.any():
+        return None
+
+    weights = duration[valid]
+    total_hours = float(weights.sum())
+    delta_n = pd.to_numeric(table.loc[valid, "ΔNприв"], errors="coerce")
+    delta_b = pd.to_numeric(table.loc[valid, "Δbприв"], errors="coerce")
+    weighted_n = float((weights * delta_n).sum() / total_hours)
+    weighted_b = float((weights * delta_b).sum() / total_hours)
+
+    start_values = table.attrs.get("period_start_values", {})
+    first_period = int(table.loc[valid, "Период"].min())
+    first_start = start_values.get(first_period, {})
+
+    return {
+        "hours": total_hours,
+        "delta_n": weighted_n,
+        "delta_b": weighted_b,
+        "delta_n_percent": _relative_delta(weighted_n, first_start.get("N")),
+        "delta_b_percent": _relative_delta(weighted_b, first_start.get("b")),
+    }
 
 
 def print_boundary_delta_table(df, periods_df, vna_data=None):
@@ -798,6 +871,19 @@ def print_boundary_delta_table(df, periods_df, vna_data=None):
 
     table = build_boundary_delta_table(df, periods_df, vna_data=vna_data)
     print(table.to_string(index=False))
+    summary = table.attrs.get("weighted_summary")
+    if summary is None:
+        summary = build_weighted_delta_summary(table)
+    if summary is None:
+        print("Средневзвешенное: нет достаточных данных.")
+    else:
+        print(
+            "Средневзвешенное: "
+            f"ΔNприв = {summary['delta_n']:.3f} "
+            f"({summary['delta_n_percent']:.3f} %), "
+            f"Δbприв = {summary['delta_b']:.3f} "
+            f"({summary['delta_b_percent']:.3f} %)"
+        )
     return table
 
 

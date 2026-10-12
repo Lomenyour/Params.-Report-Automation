@@ -21,6 +21,7 @@ COLUMN_MAP = {
     "вна": "ВНА",
     "ткк": "Ткк", "tкк": "Ткк", "ткк, °с": "Ткк",
     "pкк": "Ркк", "ркк": "Ркк", "ркк, бар": "Ркк",
+    "πк": "πк", "pi_k": "πк",
     "nприв": "Nприв", "nприв, мвт": "Nприв", "n прив": "Nприв",
     "nприв,мвт": "Nприв", "nприв (мвт)": "Nприв",
     "приведенная мощность": "Nприв", "приведённая мощность": "Nприв",
@@ -52,6 +53,7 @@ SHORT_NAMES = {
     "p_atm_pa": ["Pатм."],
     "p_nk_pa": ["Pнк"],
     "p_kk_mpa": ["Ркк"],
+    "pi_k": ["πк"],
     "power": ["Nприв"],
     "fuel": ["Вприв", "Расход газа"],
     "fuel_specific": ["bприв"],
@@ -233,10 +235,15 @@ def prepare_vna_data(source: pd.DataFrame) -> pd.DataFrame:
 
     result["p"] = inlet_pa / 100.0
     result["pkk"] = p_kk * 10.0
+    # Степень повышения давления πк нужна в отчётной таблице ВНА.
+    # Если колонка есть в исходной книге, сохраняем именно её значение.
+    # Для книг без этой колонки используем тот же физический расчёт.
+    if "pi_k" not in result.columns:
+        result["pi_k"] = (p_kk * 1_000_000.0) / inlet_pa
     result = result.drop(columns=["p_atm_pa", "p_nk_pa", "p_kk_mpa"])
     result["date"] = pd.to_datetime(result["date"], errors="coerce")
-    for column in ["t", "p", "vna", "tkk", "pkk"]:
+    for column in ["t", "p", "vna", "tkk", "pkk", "pi_k"]:
         result[column] = pd.to_numeric(result[column], errors="coerce")
     return result.dropna(
-        subset=["date", "t", "p", "vna", "tkk", "pkk"]
+        subset=["date", "t", "p", "vna", "tkk", "pkk", "pi_k"]
     ).reset_index(drop=True)

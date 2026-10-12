@@ -330,7 +330,7 @@ def run_vna(data, show_plots=True):
 
 
 def _build_pair_result(interval_df, dates, temperatures, pressures,
-                       vna_values, tkk_values, pkk_values, i, j):
+                       vna_values, tkk_values, pkk_values, pi_k_values, i, j):
     """Формирует результат для уже найденной допустимой пары точек."""
 
     date1 = pd.Timestamp(dates[i])
@@ -341,12 +341,14 @@ def _build_pair_result(interval_df, dates, temperatures, pressures,
     vna1 = vna_values[i]
     tkk1 = tkk_values[i]
     pkk1 = pkk_values[i]
+    pi_k1 = pi_k_values[i]
 
     t2 = temperatures[j]
     p2 = pressures[j]
     vna2 = vna_values[j]
     tkk2 = tkk_values[j]
     pkk2 = pkk_values[j]
+    pi_k2 = pi_k_values[j]
 
     delta_t = abs(t2 - t1)
     delta_p = abs(p2 - p1)
@@ -365,7 +367,7 @@ def _build_pair_result(interval_df, dates, temperatures, pressures,
         "p_1": p1,
         "vna_1": vna1,
         "tkk_1": tkk1,
-        "pkk_1": pkk1,
+        "pi_k_1": pi_k1,
         "eta_1": eta1,
         "h1_1": h1_1,
         "h2_1": h2_1,
@@ -375,7 +377,7 @@ def _build_pair_result(interval_df, dates, temperatures, pressures,
         "p_2": p2,
         "vna_2": vna2,
         "tkk_2": tkk2,
-        "pkk_2": pkk2,
+        "pi_k_2": pi_k2,
         "eta_2": eta2,
         "h1_2": h1_2,
         "h2_2": h2_2,
@@ -411,6 +413,7 @@ def _find_flexible_vna_intervals(df):
     vna_values = interval_df["vna"].to_numpy(dtype=float)
     tkk_values = interval_df["tkk"].to_numpy(dtype=float)
     pkk_values = interval_df["pkk"].to_numpy(dtype=float)
+    pi_k_values = interval_df["pi_k"].to_numpy(dtype=float)
 
     if len(interval_df) < 2:
         return []
@@ -531,6 +534,7 @@ def _find_flexible_vna_intervals(df):
                     vna_values,
                     tkk_values,
                     pkk_values,
+                    pi_k_values,
                     best_i,
                     best_j,
                 )
@@ -652,14 +656,14 @@ def analyze_period(df, period_number, show_plot=True):
             "p_1",
             "vna_1",
             "tkk_1",
-            "pkk_1",
+            "pi_k_1",
             "eta_1",
             "date_2",
             "t_2",
             "p_2",
             "vna_2",
             "tkk_2",
-            "pkk_2",
+            "pi_k_2",
             "eta_2",
             "delta_t",
             "delta_p",

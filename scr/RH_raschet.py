@@ -825,6 +825,16 @@ def build_weighted_delta_summary(table):
     if table is None or table.empty:
         return None
 
+    required_columns = {
+        "Период",
+        "Часы начала",
+        "Часы конца",
+        "ΔNприв",
+        "Δbприв",
+    }
+    if not required_columns.issubset(table.columns):
+        return None
+
     duration = pd.to_numeric(table["Часы конца"], errors="coerce") - pd.to_numeric(
         table["Часы начала"], errors="coerce"
     )

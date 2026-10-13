@@ -37,6 +37,9 @@ COLUMN_MAP = {
     "bприв": "bприв", "b прив": "bприв",
     "pгаз": "Pгаз", "pгаз, мпа": "Pгаз", "ргаз": "Pгаз",
     "тгаз": "Тгаз", "tгаз": "Тгаз", "tгаз, с": "Тгаз",
+    "токр.воздуха": "Токр.воздуха", "tокр.воздуха": "Токр.воздуха",
+    "токр": "Токр.воздуха", "tокр": "Токр.воздуха",
+    "токр, °с": "Токр.воздуха", "tокр, °с": "Токр.воздуха",
     "qнр": "Qнр", "qнр, мдж/м3": "Qнр", "qнр, мдж/м³": "Qнр",
     "вло": "ВЛО", "вло, па": "ВЛО",
     "фго": "ФГО", "фго, па": "ФГО",
@@ -63,6 +66,7 @@ SHORT_NAMES = {
     "fuel_specific": ["bприв"],
     "gas_pressure": ["Pгаз"],
     "gas_temperature": ["Тгаз"],
+    "ambient_temperature": ["Токр.воздуха"],
     "q_lower": ["Qнр"],
     "vlo": ["ВЛО"],
     "fgo": ["ФГО"],
@@ -207,6 +211,7 @@ def prepare_rh_data(source: pd.DataFrame) -> pd.DataFrame:
     columns += [
         name for name in [
             "fuel_specific", "gas_pressure", "gas_temperature", "q_lower",
+            "ambient_temperature",
             "hours", "hours_input", "excel_row", "vlo", "fgo", "fto", "fgo_fto", "vna",
             "power_n"
         ]

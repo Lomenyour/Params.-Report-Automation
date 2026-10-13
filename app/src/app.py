@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import queue
 import threading
+import time
 import traceback
 from pathlib import Path
 
@@ -24,11 +25,13 @@ from tkinter import filedialog, messagebox, ttk
 import periods as periods_mod
 from data_loader import load_source_data, prepare_rh_data, prepare_vna_data
 from RH_raschet import (
+    calculate_nominal_hours,
     main as run_rh,
     plot_pressure_drops,
     plot_selected_windows,
 )
 from VNA_full import run_vna
+from economics import calculate_economics, print_economics
 from periods import parse_periods_arg
 
 
@@ -177,6 +180,8 @@ class CalculationApp(tk.Tk):
         self.output_queue: queue.Queue = queue.Queue()
         self.selected_file: Path | None = None
         self.figure_views = []
+        self.gas_tariff_var = tk.StringVar(value="0")
+        self.electricity_tariff_var = tk.StringVar(value="0")
 
         self._build_widgets()
         self.after(100, self._poll_output)
@@ -289,6 +294,24 @@ class CalculationApp(tk.Tk):
         )
         self.run_button.pack(side="left", padx=(10, 0))
 
+        ttk.Label(controls, text="Газ, руб/нм³:").pack(
+            side="left", padx=(18, 4)
+        )
+        ttk.Entry(
+            controls,
+            textvariable=self.gas_tariff_var,
+            width=10,
+        ).pack(side="left")
+
+        ttk.Label(controls, text="ЭЭ, руб/МВт·ч:").pack(
+            side="left", padx=(12, 4)
+        )
+        ttk.Entry(
+            controls,
+            textvariable=self.electricity_tariff_var,
+            width=10,
+        ).pack(side="left")
+
         self.file_label = ttk.Label(
             controls,
             text="Файл не выбран",
@@ -351,6 +374,7 @@ class CalculationApp(tk.Tk):
             ("boundary", "Параметры на границах"),
             ("top10", "TOP-10 ВНА"),
             ("delta", "Дельты по регрессиям"),
+            ("economics", "Экономика"),
             ("rh", "Графики RH"),
         ):
             frame = ttk.Frame(self.chart_tabs)
@@ -377,6 +401,17 @@ class CalculationApp(tk.Tk):
         if self.selected_file is None:
             return
 
+        try:
+            gas_tariff = self._parse_tariff(
+                self.gas_tariff_var.get(), "тарифа газа"
+            )
+            electricity_tariff = self._parse_tariff(
+                self.electricity_tariff_var.get(), "тарифа электроэнергии"
+            )
+        except ValueError as error:
+            messagebox.showerror("Ошибка тарифа", str(error), parent=self)
+            return
+
         self._clear_log()
         self._clear_charts()
         self.choose_button.configure(state="disabled")
@@ -385,13 +420,34 @@ class CalculationApp(tk.Tk):
 
         worker = threading.Thread(
             target=self._calculation_worker,
-            args=(self.selected_file,),
+            args=(self.selected_file, gas_tariff, electricity_tariff),
             daemon=True,
         )
         worker.start()
 
-    def _calculation_worker(self, file_path: Path):
+    @staticmethod
+    def _parse_tariff(value, title):
+        text = str(value).strip().replace(",", ".")
+        if not text:
+            raise ValueError(f"Введите значение для {title}.")
+        try:
+            tariff = float(text)
+        except ValueError as error:
+            raise ValueError(
+                f"{title.capitalize()} должен быть числом."
+            ) from error
+        if not np.isfinite(tariff) or tariff < 0:
+            raise ValueError(f"{title.capitalize()} не может быть отрицательным.")
+        return tariff
+
+    def _calculation_worker(
+        self,
+        file_path: Path,
+        gas_tariff: float,
+        electricity_tariff: float,
+    ):
         writer = QueueWriter(self.output_queue)
+        calculation_started = None
 
         try:
             with contextlib.redirect_stdout(writer), contextlib.redirect_stderr(writer):
@@ -427,6 +483,7 @@ class CalculationApp(tk.Tk):
                 }
                 self.output_queue.put(("period_choice", period_choice))
                 period_choice["event"].wait()
+                calculation_started = time.perf_counter()
 
                 periods_mod.PERIOD_OVERRIDES = period_choice["overrides"] or []
                 if periods_mod.PERIOD_OVERRIDES:
@@ -472,6 +529,17 @@ class CalculationApp(tk.Tk):
                     output_tables=output_tables,
                 )
 
+                nominal_hours = calculate_nominal_hours(rh_df)
+                economics_result = calculate_economics(
+                    rh_df,
+                    rh_periods,
+                    gas_price_rub_per_m3=gas_tariff,
+                    electricity_price_rub_per_mwh=electricity_tariff,
+                    power_threshold=nominal_hours["power_threshold"],
+                    vna_data=vna_df,
+                )
+                print_economics(economics_result)
+
                 pressure_figure = plot_pressure_drops(
                     rh_df,
                     rh_periods,
@@ -490,8 +558,14 @@ class CalculationApp(tk.Tk):
                     "pressure_figure": pressure_figure,
                     "boundary_table": output_tables.get("boundary"),
                     "delta_table": output_tables.get("delta"),
+                    "economics_table": economics_result["table"],
                     "rh_figure": windows_figure,
                 }))
+                if calculation_started is not None:
+                    print(
+                        "Время вычислительной части после выбора периодов: "
+                        f"{time.perf_counter() - calculation_started:.2f} с"
+                    )
                 print()
                 print("=" * 78)
                 print("ВСЁ ГОТОВО: расчёт завершён.")
@@ -825,6 +899,7 @@ class CalculationApp(tk.Tk):
         self._show_table("boundary", results.get("boundary_table"))
         self._show_top10_tables(results.get("vna_results", []))
         self._show_table("delta", results.get("delta_table"))
+        self._show_table("economics", results.get("economics_table"))
         self._show_figure("rh", results.get("rh_figure"))
 
 

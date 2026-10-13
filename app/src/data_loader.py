@@ -13,6 +13,10 @@ import numpy as np
 import pandas as pd
 
 
+# В исходных данных одна запись соответствует получасу наработки.
+RECORD_HOURS = 0.5
+
+
 COLUMN_MAP = {
     "дата": "Дата", "date": "Дата", "time": "Дата", "дата/время": "Дата",
     "pатм.": "Pатм.", "pатм": "Pатм.", "ратм": "Pатм.", "pатм, па": "Pатм.",
@@ -191,7 +195,7 @@ def load_source_data(file_path: str | Path, sheet_name: str = "Данные") ->
     result["excel_row"] = (
         raw.index.to_numpy(dtype=int) + header_row + 2
     )
-    result["hours"] = result.index.to_numpy(dtype=float) * 0.5
+    result["hours"] = result.index.to_numpy(dtype=float) * RECORD_HOURS
 
     print(f"Загружено строк: {len(result)}")
     return result.reset_index(drop=True)

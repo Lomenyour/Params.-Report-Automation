@@ -22,7 +22,7 @@ from periods import (
     print_period_overrides_template,
     make_periods_display_table,
 )
-from data_loader import load_source_data, prepare_rh_data
+from data_loader import RECORD_HOURS, load_source_data, prepare_rh_data
 
 
 # Windows-консоль по умолчанию работает в cp1251 и падает
@@ -563,11 +563,18 @@ def build_pair_frames(period_df, zone_size, start_id, end_id):
 # ОСНОВНАЯ ПРОГРАММА
 # ============================================================
 
-# Порог «номинального режима» для выбора граничных точек.
+# Порог «номинального режима» для выбора граничных точек и подсчёта
+# наработки по ВНА.
 # Значения на границах периода берём не в первом/последнем ряду
 # (там турбина ещё выходит на режим), а в первом и последнем ряду,
-# где ВНА не ниже 85 % — то есть когда турбина реально на номинале.
-VNA_NOMINAL_PERCENT = 85.0
+# где ВНА выше 80 % — то есть когда турбина реально на номинале.
+VNA_NOMINAL_PERCENT = 80.0
+
+# Порог мощности определяется по распределению рабочих значений:
+# из него исключаются строки, которые уже считаются остановом, затем
+# верхние интервалы набираются до 80 % рабочих записей.
+POWER_DISTRIBUTION_BIN_MW = 10.0
+NOMINAL_POWER_TIME_SHARE = 0.80
 
 BOUNDARY_PARAMETERS = [
     ("vlo", "ВЛО"),
@@ -582,14 +589,14 @@ BOUNDARY_PARAMETERS = [
 
 
 def nominal_row(df, start, end, first):
-    """Первый/последний ряд в [start, end], где ВНА >= 85 %."""
+    """Первый/последний ряд в [start, end], где ВНА > 80 %."""
 
     mask = (df["date"] >= start) & (df["date"] <= end)
 
     if "vna" in df.columns:
         mask &= (
             pd.to_numeric(df["vna"], errors="coerce")
-            >= VNA_NOMINAL_PERCENT
+            > VNA_NOMINAL_PERCENT
         )
 
     sub = df[mask]
@@ -598,6 +605,146 @@ def nominal_row(df, start, end, first):
         return None
 
     return sub.iloc[0] if first else sub.iloc[-1]
+
+
+def build_power_distribution(
+    df,
+    bin_width=POWER_DISTRIBUTION_BIN_MW,
+    min_power=LOW_POWER,
+):
+    """Строит распределение рабочих мощностей и выбирает номинальный порог.
+
+    Строки с мощностью <= min_power не участвуют, чтобы длительные остановы
+    не определяли номинальный режим. Интервалы берутся от максимальной
+    мощности вниз до тех пор, пока в них не попадёт заданная доля рабочих
+    записей. Нижняя граница последнего вошедшего интервала становится
+    порогом номинальной мощности.
+    """
+
+    columns = [
+        "Мощность от, МВт",
+        "Мощность до, МВт",
+        "Записей",
+        "Часов",
+        "Доля, %",
+        "Накопленная доля сверху, %",
+    ]
+
+    if "power" not in df.columns:
+        return pd.DataFrame(columns=columns), None
+
+    power = pd.to_numeric(df["power"], errors="coerce")
+    operating = power[power > min_power].dropna()
+    if operating.empty:
+        return pd.DataFrame(columns=columns), None
+
+    bin_starts = np.floor(operating / bin_width) * bin_width
+    counts = bin_starts.value_counts().sort_index()
+    total_records = int(counts.sum())
+
+    distribution = pd.DataFrame({
+        "Мощность от, МВт": counts.index.astype(float),
+        "Записей": counts.to_numpy(dtype=int),
+    })
+    distribution["Мощность до, МВт"] = (
+        distribution["Мощность от, МВт"] + bin_width
+    )
+    distribution["Часов"] = distribution["Записей"] * RECORD_HOURS
+    distribution["Доля, %"] = (
+        distribution["Записей"] / total_records * 100.0
+    )
+
+    descending = distribution.sort_values(
+        "Мощность от, МВт", ascending=False
+    ).copy()
+    descending["Накопленная доля сверху, %"] = (
+        descending["Записей"].cumsum() / total_records * 100.0
+    )
+    distribution = distribution.merge(
+        descending[["Мощность от, МВт", "Накопленная доля сверху, %"]],
+        on="Мощность от, МВт",
+        how="left",
+    )
+    distribution = distribution[columns]
+
+    target_percent = NOMINAL_POWER_TIME_SHARE * 100.0
+    selected = descending[
+        descending["Накопленная доля сверху, %"] >= target_percent
+    ]
+    threshold = float(selected.iloc[0]["Мощность от, МВт"])
+    return (
+        distribution.sort_values("Мощность от, МВт").reset_index(drop=True),
+        threshold,
+    )
+
+
+def calculate_nominal_hours(df):
+    """Считает часы выше динамического порога мощности и ВНА > 80 %."""
+
+    distribution, power_threshold = build_power_distribution(df)
+    power = pd.to_numeric(df.get("power"), errors="coerce")
+    working = power > LOW_POWER
+
+    if power_threshold is None:
+        power_mask = pd.Series(False, index=df.index)
+    else:
+        power_mask = power > power_threshold
+
+    if "vna" in df.columns:
+        vna = pd.to_numeric(df["vna"], errors="coerce")
+        vna_mask = working & (vna > VNA_NOMINAL_PERCENT)
+    else:
+        vna_mask = pd.Series(False, index=df.index)
+
+    return {
+        "distribution": distribution,
+        "power_threshold": power_threshold,
+        "power_records": int(power_mask.sum()),
+        "power_hours": float(power_mask.sum() * RECORD_HOURS),
+        "vna_records": int(vna_mask.sum()),
+        "vna_hours": float(vna_mask.sum() * RECORD_HOURS),
+    }
+
+
+def print_nominal_hours_summary(df):
+    """Печатает распределение мощности и часы номинальной наработки."""
+
+    summary = calculate_nominal_hours(df)
+
+    print()
+    print("РАСПРЕДЕЛЕНИЕ МОЩНОСТИ И НАРАБОТКА НА НОМИНАЛЬНОМ РЕЖИМЕ")
+    print("=" * 78)
+
+    distribution = summary["distribution"]
+    if distribution.empty:
+        print("Рабочих значений мощности выше порога останова не найдено.")
+    else:
+        display = distribution.copy()
+        numeric_columns = display.select_dtypes(include="number").columns
+        display[numeric_columns] = display[numeric_columns].round(2)
+        print(display.to_string(index=False))
+
+        threshold = summary["power_threshold"]
+        print()
+        print(
+            "Динамический порог номинальной мощности: "
+            f"Nприв > {threshold:.1f} МВт "
+            f"(верхние {NOMINAL_POWER_TIME_SHARE:.0%} рабочих записей "
+            f"по интервалам {POWER_DISTRIBUTION_BIN_MW:.0f} МВт)."
+        )
+
+    print(
+        f"Наработка при Nприв выше порога: "
+        f"{summary['power_hours']:.1f} ч "
+        f"({summary['power_records']} записей)."
+    )
+    print(
+        f"Наработка при ВНА > {VNA_NOMINAL_PERCENT:.0f} %: "
+        f"{summary['vna_hours']:.1f} ч "
+        f"({summary['vna_records']} записей)."
+    )
+    print("=" * 78)
+    return summary
 
 
 def format_boundary_value(value):
@@ -685,13 +832,13 @@ def _fit_time_regression(data, value_column):
 
 
 def _regression_delta(slope, hours_start, hours_end):
-    """Возвращает исходную и отсечённую по Excel-формуле дельту."""
+    """Возвращает знаковое изменение от начала периода к его концу."""
 
     if pd.isna(slope) or pd.isna(hours_start) or pd.isna(hours_end):
         return np.nan, np.nan
 
-    raw_delta = float(slope * (hours_start - hours_end))
-    return max(0.0, raw_delta), raw_delta
+    delta = float(slope * (hours_end - hours_start))
+    return delta, delta
 
 
 def _regression_value(slope, intercept, hours):
@@ -875,8 +1022,8 @@ def print_boundary_delta_table(df, periods_df, vna_data=None):
 
     print()
     print("Дельты по регрессиям от часов наработки:")
-    print("Итоговая дельта = max(0; k × (часы начала − часы конца)).")
-    print("Колонки «до отсечки» показывают исходное значение до ЕСЛИ(...;0).")
+    print("Итоговая дельта = k × (часы конца − часы начала).")
+    print("Дельты знаковые: отрицательное значение означает снижение параметра.")
     print()
 
     table = build_boundary_delta_table(df, periods_df, vna_data=vna_data)
@@ -962,7 +1109,7 @@ def main(data=None, periods_only=False, show_plots=True, vna_data=None,
         print()
         print(
             "Параметры на границах периодов "
-            f"(ВНА >= {VNA_NOMINAL_PERCENT:.0f} %):"
+            f"(ВНА > {VNA_NOMINAL_PERCENT:.0f} %):"
         )
         print()
 
@@ -984,6 +1131,14 @@ def main(data=None, periods_only=False, show_plots=True, vna_data=None,
 
     if periods_only:
         return df, periods_df, [], []
+
+    nominal_hours = print_nominal_hours_summary(df)
+    if output_tables is not None:
+        output_tables["nominal_hours"] = pd.DataFrame([{
+            "Порог Nприв, МВт": nominal_hours["power_threshold"],
+            "Часы Nприв выше порога": nominal_hours["power_hours"],
+            "Часы ВНА выше 80 %": nominal_hours["vna_hours"],
+        }])
 
     df = df[(df["period"] > 0) & (df["power"] > LOW_POWER)].copy()
     df = df.reset_index(drop=True)

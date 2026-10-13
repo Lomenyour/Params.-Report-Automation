@@ -8,9 +8,17 @@
 * перевод натуральных величин в рубли по тарифам, введённым пользователем;
 * сводную таблицу по периодам и строку ИТОГО.
 
-Порог мощности берётся из общего распределения мощности и правила 80 %
-рабочих записей, а порог ВНА — из общего распределения ВНА с шагом 1°.
-Оба порога одинаковы для всех периодов данного прогона.
+Регрессия строится отдельно для каждого периода в его самом частом
+однопроцентном интервале ВНА. Полученная потеря рассчитывается для каждой
+рабочей строки всего периода, затем соседние получасовые значения усредняются
+в часовое значение и эти средние складываются. Такой порядок соответствует
+структуре расчёта в исходной книге: там промежуточные колонки содержат
+среднее двух соседних получасовых потерь.
+
+Порог ВНА берётся из общего распределения ВНА с шагом 1° и покрытием 80 %
+рабочих записей. Динамический порог мощности используется для отдельного
+расчёта часов номинального режима, а экономические потери суммируются по
+всему рабочему времени периода.
 """
 from __future__ import annotations
 
@@ -22,8 +30,8 @@ from periods import LOW_POWER
 
 # Входные данные идут с шагом 30 минут.
 DT_HOURS = 0.5
-HOURLY_WINDOW = 3
-HOURLY_STEP = 2
+PAIR_WINDOW = 2
+PAIR_STEP = 2
 
 # Принятые фильтры качества измерений. Границы сохраняем строгими, как в
 # исходной методике: выбросы на самих границах не проходят.
@@ -89,12 +97,12 @@ def _ols(y: np.ndarray, x: np.ndarray) -> tuple[float, float, int]:
 
 
 def _hourly_mean_sum(values: np.ndarray) -> float:
-    """Интегрирует поток по часовым окнам из трёх получасовых точек."""
+    """Суммирует средние двух соседних получасовых значений."""
 
     values = np.asarray(values, dtype=float)
     total = 0.0
-    for start in range(0, len(values) - HOURLY_WINDOW + 1, HOURLY_STEP):
-        mean = np.nanmean(values[start:start + HOURLY_WINDOW])
+    for start in range(0, len(values) - PAIR_WINDOW + 1, PAIR_STEP):
+        mean = np.nanmean(values[start:start + PAIR_WINDOW])
         if np.isfinite(mean) and mean > 0.0:
             total += float(mean)
     return total
@@ -201,6 +209,40 @@ def _merge_vna(data: pd.DataFrame, vna_data: pd.DataFrame | None) -> pd.DataFram
     )
 
 
+def _period_vna_data(
+    vna_data: pd.DataFrame | None,
+    period_number: int,
+    period_row,
+) -> pd.DataFrame:
+    """Возвращает ВНА-строки конкретного периода для выбора интервала."""
+
+    if vna_data is None or "vna" not in vna_data.columns:
+        return pd.DataFrame()
+    if "period" in vna_data.columns:
+        return vna_data[vna_data["period"] == period_number].copy()
+
+    dates = pd.to_datetime(vna_data["date"], errors="coerce")
+    return vna_data[
+        (dates >= period_row.date_start) & (dates <= period_row.date_end)
+    ].copy()
+
+
+def _dominant_vna_interval(period_data: pd.DataFrame):
+    """Возвращает самый частый интервал ВНА шириной 1 градус."""
+
+    if period_data.empty:
+        return None
+    values = pd.to_numeric(period_data["vna"], errors="coerce")
+    values = values[(values >= 0.0) & (values <= 100.0)].dropna()
+    if values.empty:
+        return None
+
+    starts = np.floor(values).astype(int).clip(upper=99)
+    counts = starts.value_counts()
+    start = int(counts.index[0])
+    return float(start), float(start + 1), int(counts.iloc[0])
+
+
 def calculate_economics(
     data: pd.DataFrame,
     periods_df: pd.DataFrame,
@@ -208,11 +250,14 @@ def calculate_economics(
     electricity_price_rub_per_mwh: float,
     power_threshold: float,
     vna_data: pd.DataFrame | None = None,
+    electricity_cost_rub_per_mwh: float = 0.0,
 ) -> dict:
     """Считает натуральные и денежные потери по каждому периоду.
 
     power_threshold передаётся из уже выполненного общего распределения
     мощности в RH. Порог ВНА рассчитывается здесь один раз по всей книге.
+    Регрессия для каждого периода строится в его самом частом интервале ВНА
+    шириной 1°.
     """
 
     combined = _merge_vna(data, vna_data)
@@ -230,6 +275,14 @@ def calculate_economics(
 
     if vna_threshold is None:
         vna_threshold = np.nan
+
+    try:
+        electricity_cost_rub_per_mwh = float(electricity_cost_rub_per_mwh)
+    except (TypeError, ValueError):
+        electricity_cost_rub_per_mwh = 0.0
+    electricity_margin = (
+        float(electricity_price_rub_per_mwh) - electricity_cost_rub_per_mwh
+    )
 
     periods = []
     for period_row in periods_df.itertuples(index=False):
@@ -258,32 +311,58 @@ def calculate_economics(
         b_p = b[order]
         vna_p = vna[order]
         temperature_p = temperature[order]
-        if np.isfinite(power_threshold):
-            nominal_quality = _power_quality_mask(
-                power_p, b_p, temperature_p, power_threshold
-            )
-        else:
-            nominal_quality = np.zeros(len(order), dtype=bool)
-        vna_quality = np.isfinite(vna_p) & (vna_p > vna_threshold)
-        combined_quality = nominal_quality & vna_quality
 
-        k_b, _, b_count = _ols(
-            b_p[combined_quality], tau[combined_quality]
+        interval = _dominant_vna_interval(
+            _period_vna_data(vna_data, period_number, period_row)
         )
-        k_n, _, n_count = _ols(
-            power_p[combined_quality], tau[combined_quality]
+        if interval is None:
+            k_b, k_n = np.nan, np.nan
+            b_count = n_count = 0
+            interval_label = "нет данных"
+        else:
+            vna_start, vna_end, vna_count = interval
+            regression_mask = (
+                np.isfinite(vna_p)
+                & (vna_p >= vna_start)
+                & (vna_p < vna_end)
+            )
+            k_b, _, b_count = _ols(
+                b_p[regression_mask], tau[regression_mask]
+            )
+            k_n, _, n_count = _ols(
+                power_p[regression_mask], tau[regression_mask]
+            )
+            interval_label = (
+                f"{vna_start:.0f}–{vna_end:.0f} % ({vna_count})"
+            )
+
+        # Потери суммируются по всему рабочему времени периода. Порог ВНА
+        # берётся из общего распределения, а выбросы bприв и температуры
+        # отбрасываются теми же физическими ограничениями, что и раньше.
+        temperature_ok = ~np.isfinite(temperature_p) | (
+            (temperature_p > T_MIN) & (temperature_p < T_MAX)
         )
+        working_quality = (
+            np.isfinite(power_p)
+            & (power_p > LOW_POWER)
+            & np.isfinite(b_p)
+            & (b_p > B_MIN)
+            & (b_p < B_MAX)
+            & temperature_ok
+        )
+        vna_quality = np.isfinite(vna_p) & (vna_p > vna_threshold)
+        loss_quality = working_quality & vna_quality
 
         # Рост bприв означает перерасход топлива. Снижение Nприв означает
         # недовыработку. Поэтому в экономике берём только положительную
         # величину соответствующей потери; знаковые дельты отчёта не меняются.
         fuel_loss_rate = np.where(
-            np.isfinite(k_b) & combined_quality,
+            np.isfinite(k_b) & loss_quality,
             np.clip(k_b * tau, 0.0, None) * power_p,
             0.0,
         )
         power_loss_rate = np.where(
-            np.isfinite(k_n) & combined_quality,
+            np.isfinite(k_n) & loss_quality,
             np.clip(-k_n * tau, 0.0, None),
             0.0,
         )
@@ -291,7 +370,7 @@ def calculate_economics(
         fuel_nm3 = _hourly_mean_sum(fuel_loss_rate)
         power_mwh = _hourly_mean_sum(power_loss_rate)
         gas_rub = fuel_nm3 * float(gas_price_rub_per_m3)
-        electricity_rub = power_mwh * float(electricity_price_rub_per_mwh)
+        electricity_rub = power_mwh * electricity_margin
 
         periods.append({
             "Период": period_number,
@@ -306,6 +385,7 @@ def calculate_economics(
             "k_bприв": k_b,
             "точек регрессии N": n_count,
             "точек регрессии b": b_count,
+            "VNA-интервал регрессии": interval_label,
         })
 
     table = pd.DataFrame(periods)
@@ -336,6 +416,8 @@ def calculate_economics(
         "power_threshold": float(power_threshold),
         "gas_price_rub_per_m3": float(gas_price_rub_per_m3),
         "electricity_price_rub_per_mwh": float(electricity_price_rub_per_mwh),
+        "electricity_cost_rub_per_mwh": electricity_cost_rub_per_mwh,
+        "electricity_margin_rub_per_mwh": electricity_margin,
     }
 
 
@@ -361,7 +443,15 @@ def print_economics(result: dict) -> None:
     print(
         f"Тариф газа: {result['gas_price_rub_per_m3']:.4f} руб/нм³; "
         f"тариф электроэнергии: "
-        f"{result['electricity_price_rub_per_mwh']:.2f} руб/МВт·ч"
+        f"{result['electricity_price_rub_per_mwh']:.2f} руб/МВт·ч; "
+        f"себестоимость ЭЭ: {result['electricity_cost_rub_per_mwh']:.2f} "
+        f"руб/МВт·ч; маржа: "
+        f"{result['electricity_margin_rub_per_mwh']:.2f} руб/МВт·ч"
+    )
+    print(
+        "Метод экономики: регрессия в самом частом интервале ВНА 1°; "
+        "средние двух соседних получасовых потерь суммируются за весь "
+        "рабочий период."
     )
     print(
         f"Фильтры качества: {B_MIN:g} < bприв < {B_MAX:g}; "

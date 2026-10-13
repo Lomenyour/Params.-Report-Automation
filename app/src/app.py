@@ -182,6 +182,7 @@ class CalculationApp(tk.Tk):
         self.figure_views = []
         self.gas_tariff_var = tk.StringVar(value="0")
         self.electricity_tariff_var = tk.StringVar(value="0")
+        self.electricity_cost_var = tk.StringVar(value="0")
 
         self._build_widgets()
         self.after(100, self._poll_output)
@@ -215,6 +216,14 @@ class CalculationApp(tk.Tk):
         style.configure("TLabel",
                         background=self.colors["panel"],
                         foreground=self.colors["text"])
+        style.configure(
+            "TEntry",
+            foreground="#111111",
+            fieldbackground="#ffffff",
+            insertcolor="#111111",
+            selectforeground="#ffffff",
+            selectbackground=self.colors["selection"],
+        )
         style.configure("TButton",
                         background="#3a3d43",
                         foreground=self.colors["text"],
@@ -309,6 +318,15 @@ class CalculationApp(tk.Tk):
         ttk.Entry(
             controls,
             textvariable=self.electricity_tariff_var,
+            width=10,
+        ).pack(side="left")
+
+        ttk.Label(controls, text="Себестоимость ЭЭ, руб/МВт·ч:").pack(
+            side="left", padx=(12, 4)
+        )
+        ttk.Entry(
+            controls,
+            textvariable=self.electricity_cost_var,
             width=10,
         ).pack(side="left")
 
@@ -408,6 +426,9 @@ class CalculationApp(tk.Tk):
             electricity_tariff = self._parse_tariff(
                 self.electricity_tariff_var.get(), "тарифа электроэнергии"
             )
+            electricity_cost = self._parse_tariff(
+                self.electricity_cost_var.get(), "себестоимости электроэнергии"
+            )
         except ValueError as error:
             messagebox.showerror("Ошибка тарифа", str(error), parent=self)
             return
@@ -420,7 +441,12 @@ class CalculationApp(tk.Tk):
 
         worker = threading.Thread(
             target=self._calculation_worker,
-            args=(self.selected_file, gas_tariff, electricity_tariff),
+            args=(
+                self.selected_file,
+                gas_tariff,
+                electricity_tariff,
+                electricity_cost,
+            ),
             daemon=True,
         )
         worker.start()
@@ -445,6 +471,7 @@ class CalculationApp(tk.Tk):
         file_path: Path,
         gas_tariff: float,
         electricity_tariff: float,
+        electricity_cost: float,
     ):
         writer = QueueWriter(self.output_queue)
         calculation_started = None
@@ -535,6 +562,7 @@ class CalculationApp(tk.Tk):
                     rh_periods,
                     gas_price_rub_per_m3=gas_tariff,
                     electricity_price_rub_per_mwh=electricity_tariff,
+                    electricity_cost_rub_per_mwh=electricity_cost,
                     power_threshold=nominal_hours["power_threshold"],
                     vna_data=vna_df,
                 )

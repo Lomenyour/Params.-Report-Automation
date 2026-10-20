@@ -11,26 +11,31 @@ from openpyxl.chart import Reference, ScatterChart, Series
 from openpyxl.chart.label import DataLabelList
 from openpyxl.chart.legend import LegendEntry
 from openpyxl.chart.layout import Layout, ManualLayout
-from openpyxl.chart.axis import NumericAxis
+from openpyxl.chart.axis import ChartLines, NumericAxis
 from openpyxl.chart.data_source import NumData, NumVal
 from openpyxl.chart.shapes import GraphicalProperties
 from openpyxl.chart.text import RichText
-from openpyxl.drawing.text import CharacterProperties, Paragraph, ParagraphProperties
+from openpyxl.drawing.line import LineEndProperties, LineProperties
+from openpyxl.drawing.text import (
+    CharacterProperties, Font as DrawingFont, Paragraph, ParagraphProperties,
+    RichTextProperties,
+)
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 from openpyxl.utils.datetime import to_excel
 from openpyxl.worksheet.worksheet import Worksheet
 
 from data_loader import SHORT_NAMES, _map_headers
+from chart_events import ChartEvent
 
 
 PRESSURE_CHANNELS = {
-    "vlo": ("ВЛО, Па", "1F77B4"),
-    "fgo": ("ФГО, Па", "2CA02C"),
-    "fto": ("ФТО, Па", "17BECF"),
-    "fgo_fto": ("ФГО+ФТО, Па", "2CA02C"),
+    "vlo": ("ВЛО, Па", "0070C0"),
+    "fgo": ("ФГО, Па", "00B050"),
+    "fto": ("ФТО, Па", "00B0F0"),
+    "fgo_fto": ("ФГО+ФТО, Па", "00B050"),
 }
-POWER_COLOR = "D62728"
+POWER_COLOR = "C00000"
 CHART_WIDTH_CM = 42
 CHART_HEIGHT_CM = 18
 TABLE_START_ROW = 40
@@ -43,6 +48,7 @@ class PressureChartData:
     values: pd.DataFrame
     periods: pd.DataFrame
     boundaries: pd.DataFrame | None
+    events: tuple[ChartEvent, ...] = ()
 
 
 def _number(frame, key):
@@ -76,10 +82,36 @@ def _source_columns(headers):
     return result
 
 
-def _text(size=1000, bold=False):
-    return RichText(p=[Paragraph(r=[], pPr=ParagraphProperties(
-        defRPr=CharacterProperties(sz=size, b=bold, solidFill="000000")
-    ), endParaRPr=CharacterProperties(lang="ru-RU"))])
+def _text(size=1000, bold=False, centered=False):
+    return RichText(
+        bodyPr=RichTextProperties(lIns=45000, rIns=45000, tIns=35000, bIns=35000),
+        p=[Paragraph(r=[], pPr=ParagraphProperties(
+            algn="ctr" if centered else None,
+            defRPr=CharacterProperties(
+                sz=size, b=bold, solidFill="000000",
+                latin=DrawingFont(typeface="Times New Roman"),
+            ),
+        ), endParaRPr=CharacterProperties(lang="ru-RU"))],
+    )
+
+
+def _grid(color, width):
+    return ChartLines(spPr=GraphicalProperties(
+        ln=LineProperties(solidFill=color, w=width),
+    ))
+
+
+def _axis_title(axis, title):
+    axis.title = title
+    axis.title.txPr = _text(1100, bold=True)
+    for paragraph in axis.title.tx.rich.p:
+        paragraph.pPr = ParagraphProperties(defRPr=CharacterProperties(
+            sz=1100, b=True, latin=DrawingFont(typeface="Times New Roman"),
+        ))
+        for run in paragraph.r:
+            run.rPr = CharacterProperties(
+                sz=1100, b=True, latin=DrawingFont(typeface="Times New Roman"),
+            )
 
 
 def _scale_max(values):
@@ -124,7 +156,7 @@ def _point_series(sheet, key, title, color, frame, index):
     return series
 
 
-def _period_series(sheet, row, points, title, label=False):
+def _period_series(sheet, row, points, title, label=False, arrow=False, vertical=False):
     count = len(points)
     x = Reference(sheet, min_col=PERIOD_HELPER_COLUMN, min_row=row, max_row=row + count - 1)
     y = Reference(sheet, min_col=PERIOD_HELPER_COLUMN + 1, min_row=row, max_row=row + count - 1)
@@ -136,12 +168,67 @@ def _period_series(sheet, row, points, title, label=False):
         series.graphicalProperties.line.noFill = True
         series.dLbls = DataLabelList(
             showSerName=True, showVal=False, showCatName=False,
-            showLegendKey=False, dLblPos="t", txPr=_text(1100, bold=True),
+            showLegendKey=False, dLblPos="ctr", txPr=_text(1000, centered=True),
+            spPr=GraphicalProperties(
+                solidFill="FFFFFF", ln=LineProperties(solidFill="000000", w=12700),
+            ),
         )
+        if vertical:
+            series.dLbls.txPr.bodyPr.rot = -5400000
     else:
         series.graphicalProperties.line.solidFill = "000000"
         series.graphicalProperties.line.width = 15240
+        if arrow:
+            series.graphicalProperties.line.headEnd = LineEndProperties(type="triangle", w="sm", len="sm")
+            series.graphicalProperties.line.tailEnd = LineEndProperties(type="triangle", w="sm", len="sm")
     return series
+
+
+def _boundary_record(boundaries, number, tag):
+    if boundaries is None or boundaries.empty:
+        return None
+    found = boundaries[boundaries["Период"].astype(str) == f"{number} {tag}"]
+    return None if found.empty else found.iloc[0]
+
+
+def _callout(record, keys):
+    if record is None or str(record.get("дата", "—")) == "—":
+        return "Нет номинальной точки\nВНА ≥ 80 %"
+    date = _boundary_value(record.get("дата"), is_date=True)
+    lines = [date.strftime("%d.%m.%Y") if isinstance(date, pd.Timestamp) else str(date)]
+
+    def value(key):
+        raw = record.get(key)
+        parsed = pd.to_numeric(raw, errors="coerce")
+        return f"{parsed:.1f}".replace(".", ",") if pd.notna(parsed) else "—"
+
+    for key in keys:
+        title = PRESSURE_CHANNELS[key][0].removesuffix(", Па")
+        lines.append(f"ΔP {title} = {value(title)} Па;")
+    lines += [f"ВНА = {value('ВНА')} %;", f"Nгту = {value('N')} МВт."]
+    return "\n".join(lines)
+
+
+def _callout_dates(periods, lower, upper):
+    """Раздвигает близкие блоки, сохраняя порядок границ по времени."""
+    dates = [pd.Timestamp(moment) for period in periods.itertuples(index=False)
+             for moment in (period.date_start, period.date_end)]
+    if not dates:
+        return []
+    span = upper - lower
+    desired = np.array([(moment - lower) / span for moment in dates], dtype=float)
+    margin = 0.065
+    gap = min(0.13, (1 - 2 * margin) / max(1, len(dates) - 1))
+    order = np.argsort(desired, kind="stable")
+    positions = np.clip(desired[order], margin, 1 - margin)
+    for index in range(1, len(positions)):
+        positions[index] = max(positions[index], positions[index - 1] + gap)
+    positions[-1] = min(positions[-1], 1 - margin)
+    for index in range(len(positions) - 2, -1, -1):
+        positions[index] = min(positions[index], positions[index + 1] - gap)
+    restored = np.empty(len(positions))
+    restored[order] = positions
+    return [lower + span * float(position) for position in restored]
 
 
 def _table_cell(sheet, value, kind="body"):
@@ -196,11 +283,7 @@ def _boundary_tables(sheet, periods, boundaries):
             merge(top + 1, column, column + 4)
             put(top + 1, column, title, "header")
             sheet.row_dimensions[top + 1].height = 23
-            record = None
-            if boundaries is not None and not boundaries.empty:
-                found = boundaries[boundaries["Период"].astype(str) == f"{number} {tag}"]
-                if not found.empty:
-                    record = found.iloc[0]
+            record = _boundary_record(boundaries, number, tag)
             parameters = [key for key in boundaries.columns if key != "Период"] if boundaries is not None else ["дата"]
             for row_offset, key in enumerate(parameters, start=2):
                 row = top + row_offset
@@ -234,9 +317,15 @@ def write_pressure_sheet(book, headers, header_row, row_count, source: PressureC
         sheet.append(["Перепады давления: нет исходных данных для диаграммы."])
         return sheet
     series_keys = keys + (["power_n"] if "power_n" in columns and np.isfinite(_number(frame, "power_n")).any() else [])
-    pressure_max = _scale_max(pd.concat([_number(frame, key) for key in keys], ignore_index=True))
+    pressure_max = max(500, math.ceil(_scale_max(pd.concat(
+        [_number(frame, key) for key in keys], ignore_index=True,
+    )) / 50) * 50)
     chart = ScatterChart()
-    chart.title = "Перепады давления и мощность"
+    chart.title = None
+    chart.roundedCorners = False
+    chart.graphical_properties = GraphicalProperties(
+        solidFill="FFFFFF", ln=LineProperties(noFill=True),
+    )
     chart.scatterStyle = "lineMarker"
     chart.width = CHART_WIDTH_CM
     chart.height = CHART_HEIGHT_CM
@@ -246,37 +335,41 @@ def write_pressure_sheet(book, headers, header_row, row_count, source: PressureC
     chart.y_axis.crossAx = 10
     chart.x_axis.delete = False
     chart.y_axis.delete = False
-    chart.x_axis.title = "Дата"
+    _axis_title(chart.x_axis, "Дата")
     chart.x_axis.axPos = "b"
-    chart.y_axis.title = "Перепад давления, Па"
-    chart.x_axis.numFmt = "dd-mm-yyyy"
+    _axis_title(chart.y_axis, "Перепады давления на СФ КВОУ ГТУ, Па")
+    chart.x_axis.numFmt = "dd.mm.yyyy"
     chart.x_axis.txPr = _text()
     chart.y_axis.txPr = _text()
     chart.y_axis.scaling.min = 0
     chart.y_axis.scaling.max = pressure_max
     chart.y_axis.numFmt = "0"
     chart.y_axis.tickLblPos = "nextTo"
-    chart.x_axis.majorGridlines = None
-    chart.y_axis.majorGridlines.spPr = GraphicalProperties()
-    chart.y_axis.majorGridlines.spPr.line.solidFill = "DEDEDE"
+    chart.y_axis.majorUnit = math.ceil(pressure_max / 500) * 50
+    chart.y_axis.minorUnit = chart.y_axis.majorUnit / 5
+    chart.y_axis.majorGridlines = _grid("000000", 12700)
+    chart.y_axis.minorGridlines = _grid("A6A6A6", 6350)
+    chart.x_axis.majorGridlines = _grid("000000", 12700)
+    chart.x_axis.minorGridlines = _grid("A6A6A6", 6350)
     lower, upper = frame["date"].iloc[[0, -1]]
+    padding = pd.Timedelta(days=max(1, math.ceil((upper - lower).total_seconds() / 86400 * 0.1)))
+    lower, upper = lower.normalize() - padding, upper.normalize() + padding
     chart.x_axis.scaling.min = to_excel(lower.to_pydatetime())
-    chart.x_axis.scaling.max = to_excel(upper.to_pydatetime()) if upper > lower else to_excel(lower.to_pydatetime()) + 1
+    chart.x_axis.scaling.max = to_excel(upper.to_pydatetime())
     span_days = max(1, (upper - lower).total_seconds() / 86400)
-    chart.x_axis.majorUnit = next((days for days in (1, 2, 7, 14, 30, 60, 90, 180, 365) if days >= span_days / 8), 365)
+    chart.x_axis.majorUnit = next((days for days in (1, 2, 5, 10, 20, 25, 50, 100, 150, 200, 365) if days >= span_days / 6), 365)
+    chart.x_axis.minorUnit = chart.x_axis.majorUnit / 5
     chart.x_axis.tickLblPos = "low"
     chart.y_axis.crosses = "min"
-    chart.legend.position = "t"
+    chart.legend.position = "b"
     chart.legend.overlay = False
     chart.legend.txPr = _text()
     chart.legend.layout = Layout(manualLayout=ManualLayout(
-        xMode="edge", yMode="edge", x=0.15, y=0.045, w=0.7, h=0.05,
+        xMode="edge", yMode="edge", x=0.15, y=0.93, w=0.7, h=0.05,
     ))
-    chart.title.overlay = False
-    chart.title.txPr = _text(1400, bold=True)
     chart.layout = Layout(manualLayout=ManualLayout(
         layoutTarget="inner", xMode="edge", yMode="edge",
-        x=0.075, y=0.15, w=0.845, h=0.72,
+        x=0.075, y=0.035, w=0.845, h=0.80,
     ))
     chart.visible_cells_only = False
     chart.display_blanks = "gap"
@@ -285,24 +378,46 @@ def write_pressure_sheet(book, headers, header_row, row_count, source: PressureC
         if key == "power_n":
             continue
         title, color = PRESSURE_CHANNELS[key]
-        chart.series.append(_point_series(sheet, key, title, color, frame, index))
+        chart.series.append(_point_series(
+            sheet, key, f"Перепад давления на {title.removesuffix(', Па')}",
+            color, frame, index,
+        ))
     helper_points = []
     hide_legend = []
     periods = source.periods if source.periods is not None else pd.DataFrame()
-    for period in periods.itertuples(index=False):
-        number = int(period.period)
-        for moment in (pd.Timestamp(period.date_start), pd.Timestamp(period.date_end)):
-            first = len(helper_points) + 2
-            points = [(moment, 0.0), (moment, pressure_max)]
-            helper_points.extend(points)
-            hide_legend.append(len(chart.series))
-            chart.series.append(_period_series(sheet, first, points, f"Граница периода {number}"))
+    callout_dates = _callout_dates(periods, lower, upper)
+
+    def add_helper(points, title, **kwargs):
         first = len(helper_points) + 2
-        midpoint = pd.Timestamp(period.date_start) + (pd.Timestamp(period.date_end) - pd.Timestamp(period.date_start)) / 2
-        points = [(midpoint, pressure_max * 0.94)]
         helper_points.extend(points)
         hide_legend.append(len(chart.series))
-        chart.series.append(_period_series(sheet, first, points, f"Период {number}", label=True))
+        chart.series.append(_period_series(sheet, first, points, title, **kwargs))
+
+    for index, period in enumerate(periods.itertuples(index=False)):
+        number = int(period.period)
+        for moment in (pd.Timestamp(period.date_start), pd.Timestamp(period.date_end)):
+            points = [(moment, 0.0), (moment, pressure_max)]
+            add_helper(points, f"Граница периода {number}")
+        arrow_y = pressure_max * 0.94
+        add_helper([(pd.Timestamp(period.date_start), arrow_y),
+                    (pd.Timestamp(period.date_end), arrow_y)],
+                   f"Диапазон периода {number}", arrow=True)
+        midpoint = pd.Timestamp(period.date_start) + (pd.Timestamp(period.date_end) - pd.Timestamp(period.date_start)) / 2
+        add_helper([(midpoint, arrow_y)],
+                   f"{number} период исследования\n"
+                   f"{period.date_start:%d.%m.%Y} - {period.date_end:%d.%m.%Y}", label=True)
+        for offset, tag in enumerate(("нач", "кон")):
+            add_helper([(callout_dates[index * 2 + offset], pressure_max * 0.78)],
+                       _callout(_boundary_record(source.boundaries, number, tag), keys), label=True)
+    grouped_events = {}
+    for event in source.events:
+        moment = pd.Timestamp(event.date)
+        if lower <= moment <= upper:
+            grouped_events.setdefault(moment, []).append(event.label)
+    for moment, labels in sorted(grouped_events.items()):
+        title = " / ".join(labels)
+        add_helper([(moment, 0.0), (moment, pressure_max)], f"Событие: {title}")
+        add_helper([(moment, pressure_max * 0.52)], title, label=True, vertical=True)
     chart.legend.legendEntry = [LegendEntry(idx=index, delete=True) for index in hide_legend]
 
     if "power_n" in series_keys:
@@ -316,15 +431,17 @@ def write_pressure_sheet(book, headers, header_row, row_count, source: PressureC
         power.y_axis.crossAx = 40
         power.y_axis.delete = False
         power.y_axis.axPos = "r"
-        power.y_axis.title = "N, МВт"
+        _axis_title(power.y_axis, "Мощность ГТУ, МВт")
         power.y_axis.crosses = "max"
-        power.y_axis.scaling.min = 0
-        power.y_axis.scaling.max = _scale_max(_number(frame, "power_n"))
+        max_power = _number(frame, "power_n").max()
+        power.y_axis.scaling.min = 0 if max_power < 50 else 50
+        power.y_axis.scaling.max = 100 if max_power <= 100 else _scale_max(_number(frame, "power_n"))
+        power.y_axis.majorUnit = 5 if power.y_axis.scaling.max <= 100 else 10
         power.y_axis.numFmt = "0"
         power.y_axis.tickLblPos = "nextTo"
         power.y_axis.txPr = _text()
         power.y_axis.majorGridlines = None
-        power.series.append(_point_series(sheet, "power_n", "N, МВт", POWER_COLOR,
+        power.series.append(_point_series(sheet, "power_n", "Nакт", POWER_COLOR,
                                           frame, series_keys.index("power_n") + 1))
         chart += power
     sheet.add_chart(chart, "A2")

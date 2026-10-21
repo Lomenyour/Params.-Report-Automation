@@ -871,6 +871,7 @@ def build_boundary_delta_table(df, periods_df, vna_data=None):
 
     rows = []
     period_start_values = {}
+    vna_intervals = {}
 
     for row in periods_df.itertuples(index=False):
         period_number = int(row.period)
@@ -894,6 +895,7 @@ def build_boundary_delta_table(df, periods_df, vna_data=None):
             continue
 
         vna_start, vna_end, vna_count = interval
+        vna_intervals[period_number] = interval
         selected = vna_period[
             (pd.to_numeric(vna_period["vna"], errors="coerce") >= vna_start)
             & (pd.to_numeric(vna_period["vna"], errors="coerce") < vna_end)
@@ -957,6 +959,7 @@ def build_boundary_delta_table(df, periods_df, vna_data=None):
 
     result = pd.DataFrame(rows)
     result.attrs["period_start_values"] = period_start_values
+    result.attrs["vna_intervals"] = vna_intervals
     result.attrs["weighted_summary"] = (
         build_weighted_delta_summary(result) if not result.empty else None
     )
@@ -998,8 +1001,10 @@ def build_weighted_delta_summary(table):
     total_hours = float(weights.sum())
     delta_n = pd.to_numeric(table.loc[valid, "ΔNприв"], errors="coerce")
     delta_b = pd.to_numeric(table.loc[valid, "Δbприв"], errors="coerce")
-    weighted_n = float((weights * delta_n).sum() / total_hours)
-    weighted_b = float((weights * delta_b).sum() / total_hours)
+    # В сводке учитываем только ухудшение: потерю мощности и рост расхода.
+    # Таблица периодов выше сохраняет исходные знаковые дельты без изменений.
+    weighted_n = float((weights * (-delta_n).clip(lower=0)).sum() / total_hours)
+    weighted_b = float((weights * delta_b.clip(lower=0)).sum() / total_hours)
 
     start_values = table.attrs.get("period_start_values", {})
     first_period = int(table.loc[valid, "Период"].min())
@@ -1035,10 +1040,10 @@ def print_boundary_delta_table(df, periods_df, vna_data=None):
         print("Средневзвешенное: нет достаточных данных.")
     else:
         print(
-            "Средневзвешенное: "
-            f"ΔNприв = {summary['delta_n']:.3f} "
+            "Средневзвешенная деградация: "
+            f"снижение Nприв = {summary['delta_n']:.3f} "
             f"({summary['delta_n_percent']:.3f} %), "
-            f"Δbприв = {summary['delta_b']:.3f} "
+            f"рост bприв = {summary['delta_b']:.3f} "
             f"({summary['delta_b_percent']:.3f} %)"
         )
     return table

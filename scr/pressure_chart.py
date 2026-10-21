@@ -27,6 +27,12 @@ from openpyxl.worksheet.worksheet import Worksheet
 
 from data_loader import SHORT_NAMES, _map_headers
 from chart_events import ChartEvent
+from degradation_chart import (
+    HELPER_COLUMN as DEGRADATION_HELPER_COLUMN,
+    HELPER_HEADERS as DEGRADATION_HELPER_HEADERS,
+    add_degradation_chart,
+    prepare_degradation_plot,
+)
 
 
 PRESSURE_CHANNELS = {
@@ -49,6 +55,8 @@ class PressureChartData:
     periods: pd.DataFrame
     boundaries: pd.DataFrame | None
     events: tuple[ChartEvent, ...] = ()
+    degradation_values: pd.DataFrame | None = None
+    degradation_deltas: pd.DataFrame | None = None
 
 
 def _number(frame, key):
@@ -314,7 +322,37 @@ def write_pressure_sheet(book, headers, header_row, row_count, source: PressureC
     columns = _source_columns(headers)
     keys = [key for key in pressure_channels(frame) if key in columns]
     if frame.empty or not keys:
+        plot = prepare_degradation_plot(
+            source.degradation_values, source.periods,
+            source.degradation_deltas,
+        )
+        if plot is None:
+            sheet.append(["Нет исходных данных для диаграмм."])
+            return sheet
+        cells, visible_bottom = add_degradation_chart(sheet, plot, 2)
+        sheet.column_dimensions.group("AM", "AQ", hidden=True)
+        for column in range(1, 24):
+            sheet.column_dimensions[get_column_letter(column)].width = 9.5
+        sheet.print_area = f"A1:W{visible_bottom}"
         sheet.append(["Перепады давления: нет исходных данных для диаграммы."])
+        for row in range(2, max(visible_bottom, len(plot.points) + 1) + 1):
+            values = {
+                column: _table_cell(sheet, value, kind)
+                for column, (value, kind) in cells.get(row, {}).items()
+            }
+            if row <= len(plot.points) + 1:
+                point = plot.points.iloc[row - 2]
+                values[DEGRADATION_HELPER_COLUMN] = point["date"].to_pydatetime()
+                for index, key in enumerate(
+                    ("power", "fuel_specific", "eta_gtu", "vna"), start=1,
+                ):
+                    value = point[key]
+                    values[DEGRADATION_HELPER_COLUMN + index] = (
+                        float(value) if pd.notna(value) else None
+                    )
+            if row > visible_bottom:
+                sheet.row_dimensions[row].hidden = True
+            sheet.append([values.get(column) for column in range(1, max(values) + 1)] if values else [])
         return sheet
     series_keys = keys + (["power_n"] if "power_n" in columns and np.isfinite(_number(frame, "power_n")).any() else [])
     pressure_max = max(500, math.ceil(_scale_max(pd.concat(
@@ -449,6 +487,17 @@ def write_pressure_sheet(book, headers, header_row, row_count, source: PressureC
         sheet.column_dimensions[get_column_letter(column)].width = 9.5
     sheet.column_dimensions.group("AA", "AK", hidden=True)
     table_cells, visible_bottom = _boundary_tables(sheet, periods, source.boundaries)
+    degradation_plot = prepare_degradation_plot(
+        source.degradation_values, periods, source.degradation_deltas,
+    )
+    if degradation_plot is not None:
+        degradation_cells, degradation_bottom = add_degradation_chart(
+            sheet, degradation_plot, visible_bottom + 3,
+        )
+        for row, cells in degradation_cells.items():
+            table_cells.setdefault(row, {}).update(cells)
+        visible_bottom = max(visible_bottom, degradation_bottom)
+        sheet.column_dimensions.group("AM", "AQ", hidden=True)
     sheet.print_options.horizontalCentered = True
     sheet.page_setup.orientation = "landscape"
     sheet.page_setup.paperSize = Worksheet.PAPERSIZE_A3
@@ -456,7 +505,10 @@ def write_pressure_sheet(book, headers, header_row, row_count, source: PressureC
     sheet.page_setup.fitToHeight = 0
     sheet.print_area = f"A1:W{visible_bottom}"
     sheet.sheet_properties.pageSetUpPr.fitToPage = True
-    last_row = max(visible_bottom, len(frame) + 1, len(helper_points) + 1)
+    last_row = max(
+        visible_bottom, len(frame) + 1, len(helper_points) + 1,
+        len(degradation_plot.points) + 1 if degradation_plot is not None else 0,
+    )
     for row in range(1, last_row + 1):
         values = {}
         if row in table_cells:
@@ -467,6 +519,9 @@ def write_pressure_sheet(book, headers, header_row, row_count, source: PressureC
                 values[HELPER_START_COLUMN + index] = title
             values[PERIOD_HELPER_COLUMN] = "Даты границ и подписей"
             values[PERIOD_HELPER_COLUMN + 1] = "Координата по оси Па"
+            if degradation_plot is not None:
+                for index, title in enumerate(DEGRADATION_HELPER_HEADERS):
+                    values[DEGRADATION_HELPER_COLUMN + index] = title
         if 2 <= row <= len(frame) + 1:
             record = frame.iloc[row - 2]
             excel_row = record.get("excel_row")
@@ -490,6 +545,14 @@ def write_pressure_sheet(book, headers, header_row, row_count, source: PressureC
             moment, value = helper_points[row - 2]
             values[PERIOD_HELPER_COLUMN] = moment.to_pydatetime()
             values[PERIOD_HELPER_COLUMN + 1] = value
+        if degradation_plot is not None and 2 <= row <= len(degradation_plot.points) + 1:
+            point = degradation_plot.points.iloc[row - 2]
+            values[DEGRADATION_HELPER_COLUMN] = point["date"].to_pydatetime()
+            for index, key in enumerate(("power", "fuel_specific", "eta_gtu", "vna"), start=1):
+                value = point[key]
+                values[DEGRADATION_HELPER_COLUMN + index] = (
+                    float(value) if pd.notna(value) else None
+                )
         if row > visible_bottom:
             sheet.row_dimensions[row].hidden = True
         if values:

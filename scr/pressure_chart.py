@@ -45,8 +45,10 @@ POWER_COLOR = "C00000"
 CHART_WIDTH_CM = 42
 CHART_HEIGHT_CM = 18
 TABLE_START_ROW = 40
-HELPER_START_COLUMN = 27  # AA: технические диапазоны этой же диаграммы.
-PERIOD_HELPER_COLUMN = 36  # AJ: вертикальные линии и подписи периодов.
+HELPER_START_COLUMN = 50  # AX:BH; правее видимых диаграмм и таблиц.
+PERIOD_HELPER_COLUMN = 59  # BG:BH: линии и подписи периодов.
+DEGRADATION_CHART_COLUMN = 26  # Z: с зазором справа от диаграммы перепадов.
+VISIBLE_LAST_COLUMN = DEGRADATION_CHART_COLUMN + 23  # AW: отступ для печати.
 
 
 @dataclass
@@ -330,7 +332,7 @@ def write_pressure_sheet(book, headers, header_row, row_count, source: PressureC
             sheet.append(["Нет исходных данных для диаграмм."])
             return sheet
         cells, visible_bottom = add_degradation_chart(sheet, plot, 2)
-        sheet.column_dimensions.group("AM", "AQ", hidden=True)
+        sheet.column_dimensions.group("BJ", "BN", hidden=True)
         for column in range(1, 24):
             sheet.column_dimensions[get_column_letter(column)].width = 9.5
         sheet.print_area = f"A1:W{visible_bottom}"
@@ -485,25 +487,33 @@ def write_pressure_sheet(book, headers, header_row, row_count, source: PressureC
     sheet.add_chart(chart, "A2")
     for column in range(1, 24):
         sheet.column_dimensions[get_column_letter(column)].width = 9.5
-    sheet.column_dimensions.group("AA", "AK", hidden=True)
+    sheet.column_dimensions.group("AX", "BH", hidden=True)
     table_cells, visible_bottom = _boundary_tables(sheet, periods, source.boundaries)
     degradation_plot = prepare_degradation_plot(
         source.degradation_values, periods, source.degradation_deltas,
     )
     if degradation_plot is not None:
         degradation_cells, degradation_bottom = add_degradation_chart(
-            sheet, degradation_plot, visible_bottom + 3,
+            sheet, degradation_plot, start_row=1,
+            start_col=DEGRADATION_CHART_COLUMN,
         )
         for row, cells in degradation_cells.items():
             table_cells.setdefault(row, {}).update(cells)
         visible_bottom = max(visible_bottom, degradation_bottom)
-        sheet.column_dimensions.group("AM", "AQ", hidden=True)
+        sheet.column_dimensions.group("BJ", "BN", hidden=True)
+        for column in range(DEGRADATION_CHART_COLUMN, VISIBLE_LAST_COLUMN + 1):
+            sheet.column_dimensions[get_column_letter(column)].width = 9.5
+        sheet.column_dimensions[get_column_letter(VISIBLE_LAST_COLUMN)].width = 12
     sheet.print_options.horizontalCentered = True
     sheet.page_setup.orientation = "landscape"
     sheet.page_setup.paperSize = Worksheet.PAPERSIZE_A3
-    sheet.page_setup.fitToWidth = 1
+    sheet.page_setup.fitToWidth = 2 if degradation_plot is not None else 1
     sheet.page_setup.fitToHeight = 0
-    sheet.print_area = f"A1:W{visible_bottom}"
+    last_visible_column = (
+        get_column_letter(VISIBLE_LAST_COLUMN)
+        if degradation_plot is not None else "W"
+    )
+    sheet.print_area = f"A1:{last_visible_column}{visible_bottom}"
     sheet.sheet_properties.pageSetUpPr.fitToPage = True
     last_row = max(
         visible_bottom, len(frame) + 1, len(helper_points) + 1,

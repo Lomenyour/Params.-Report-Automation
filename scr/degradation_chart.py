@@ -2,19 +2,26 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-import math
 
 import numpy as np
 import pandas as pd
 from openpyxl.chart import Reference, ScatterChart, Series
-from openpyxl.chart.axis import NumericAxis
+from openpyxl.chart.axis import ChartLines, NumericAxis
 from openpyxl.chart.data_source import NumData, NumVal
+from openpyxl.chart.layout import Layout, ManualLayout
+from openpyxl.chart.shapes import GraphicalProperties
+from openpyxl.chart.text import RichText
+from openpyxl.drawing.line import LineProperties
+from openpyxl.drawing.text import (
+    CharacterProperties, Font as DrawingFont, Paragraph, ParagraphProperties,
+    RichTextProperties,
+)
 from openpyxl.utils.datetime import to_excel
 
 from RH_raschet import _dominant_vna_interval
 
 
-HELPER_COLUMN = 39  # AM:AQ; не пересекается с диапазонами диаграммы перепадов.
+HELPER_COLUMN = 62  # BJ:BN; правее двух видимых диаграмм и их таблиц.
 HELPER_HEADERS = ("Дата", "Nприв, МВт", "bприв", "ηГТУ, %", "ВНА, %")
 METRICS = (
     ("power", "Nприв, МВт", "C00000"),
@@ -140,16 +147,51 @@ def _series(sheet, plot: DegradationPlot, key: str, title: str,
     series.marker.size = 2
     series.marker.graphicalProperties.solidFill = color
     series.marker.graphicalProperties.line.solidFill = color
+    series.smooth = False
     return series
 
 
-def _summary_cells(sheet, plot: DegradationPlot, start_row: int):
+def _text(size=1000, bold=False):
+    return RichText(
+        bodyPr=RichTextProperties(lIns=45000, rIns=45000, tIns=35000, bIns=35000),
+        p=[Paragraph(r=[], pPr=ParagraphProperties(
+            defRPr=CharacterProperties(
+                sz=size, b=bold, solidFill="000000",
+                latin=DrawingFont(typeface="Times New Roman"),
+            ),
+        ), endParaRPr=CharacterProperties(lang="ru-RU"))],
+    )
+
+
+def _grid(color, width):
+    return ChartLines(spPr=GraphicalProperties(
+        ln=LineProperties(solidFill=color, w=width),
+    ))
+
+
+def _axis_title(axis, title):
+    axis.title = title
+    axis.title.txPr = _text(1100, bold=True)
+    for paragraph in axis.title.tx.rich.p:
+        paragraph.pPr = ParagraphProperties(defRPr=CharacterProperties(
+            sz=1100, b=True, latin=DrawingFont(typeface="Times New Roman"),
+        ))
+        for run in paragraph.r:
+            run.rPr = CharacterProperties(
+                sz=1100, b=True, latin=DrawingFont(typeface="Times New Roman"),
+            )
+
+
+def _summary_cells(sheet, plot: DegradationPlot, start_row: int, start_col: int):
     """Подписи интервалов и величины для визуальной проверки графика."""
-    cells = {start_row: {1: (
+    offset = start_col - 1
+    cells = {start_row: {start_col: (
         "ДЕГРАДАЦИЯ ГТУ — точки в самом частом интервале ВНА каждого периода",
         "period",
     )}}
-    sheet.merged_cells.add(f"A{start_row}:W{start_row}")
+    sheet.merged_cells.add(
+        f"{_col(start_col)}{start_row}:{_col(start_col + 22)}{start_row}"
+    )
     sheet.row_dimensions[start_row].height = 27
 
     header_row = start_row + 38
@@ -167,9 +209,9 @@ def _summary_cells(sheet, plot: DegradationPlot, start_row: int):
     cells[header_row] = {}
     for first, last, title in layout:
         sheet.merged_cells.add(
-            f"{_col(first)}{header_row}:{_col(last)}{header_row}"
+            f"{_col(first + offset)}{header_row}:{_col(last + offset)}{header_row}"
         )
-        cells[header_row][first] = (title, "header")
+        cells[header_row][first + offset] = (title, "header")
     sheet.row_dimensions[header_row].height = 24
 
     for index, period in enumerate(plot.periods, start=1):
@@ -189,8 +231,10 @@ def _summary_cells(sheet, plot: DegradationPlot, start_row: int):
         )
         cells[row] = {}
         for (first, last, _), value in zip(layout, data):
-            sheet.merged_cells.add(f"{_col(first)}{row}:{_col(last)}{row}")
-            cells[row][first] = (value, "body")
+            sheet.merged_cells.add(
+                f"{_col(first + offset)}{row}:{_col(last + offset)}{row}"
+            )
+            cells[row][first + offset] = (value, "body")
         sheet.row_dimensions[row].height = 21
     return cells, header_row + len(plot.periods) + 1
 
@@ -200,10 +244,15 @@ def _col(index: int) -> str:
     return get_column_letter(index)
 
 
-def add_degradation_chart(sheet, plot: DegradationPlot, start_row: int):
+def add_degradation_chart(sheet, plot: DegradationPlot,
+                          start_row: int, start_col: int = 1):
     """Добавляет нативную XY-диаграмму и возвращает видимые ячейки таблицы."""
     main = ScatterChart()
-    main.title = "Деградация параметров ГТУ"
+    main.title = None
+    main.roundedCorners = False
+    main.graphical_properties = GraphicalProperties(
+        solidFill="FFFFFF", ln=LineProperties(noFill=True),
+    )
     main.scatterStyle = "marker"
     main.width = 42
     main.height = 18
@@ -211,37 +260,52 @@ def add_degradation_chart(sheet, plot: DegradationPlot, start_row: int):
     main.y_axis.axId = 120
     main.x_axis.crossAx = 120
     main.y_axis.crossAx = 110
-    main.x_axis.title = "Дата"
+    main.x_axis.delete = False
+    main.y_axis.delete = False
+    _axis_title(main.x_axis, "Дата")
     main.x_axis.numFmt = "dd.mm.yyyy"
     main.x_axis.axPos = "b"
-    main.y_axis.title = "Nприв, МВт; bприв; ηГТУ, %"
+    main.x_axis.txPr = _text()
+    _axis_title(main.y_axis, "Nприв, МВт; bприв; ηГТУ, %")
     main.y_axis.axPos = "l"
+    main.y_axis.txPr = _text()
     main.y_axis.scaling.min = 0
-    maximum = max(
-        350.0,
-        *(
-            float(plot.points[key].max()) * 1.1
-            for key in ("power", "fuel_specific", "eta_gtu")
-            if plot.points[key].notna().any()
-        ),
-    )
-    main.y_axis.scaling.max = math.ceil(maximum / 50.0) * 50.0
+    main.y_axis.scaling.max = 350
     main.y_axis.majorUnit = 50
     main.y_axis.minorUnit = 10
+    main.y_axis.numFmt = "0"
+    main.y_axis.tickLblPos = "nextTo"
+    main.y_axis.majorGridlines = _grid("A6A6A6", 9525)
+    main.y_axis.minorGridlines = _grid("D9D9D9", 4762)
+    main.x_axis.majorGridlines = _grid("A6A6A6", 9525)
+    main.x_axis.minorGridlines = _grid("D9D9D9", 4762)
+    main.x_axis.tickLblPos = "low"
+    main.y_axis.crosses = "min"
     main.legend.position = "b"
+    main.legend.overlay = False
+    main.legend.txPr = _text()
+    main.legend.layout = Layout(manualLayout=ManualLayout(
+        xMode="edge", yMode="edge", x=0.15, y=0.93, w=0.7, h=0.05,
+    ))
+    main.layout = Layout(manualLayout=ManualLayout(
+        layoutTarget="inner", xMode="edge", yMode="edge",
+        x=0.075, y=0.035, w=0.845, h=0.80,
+    ))
     main.visible_cells_only = False
     main.display_blanks = "gap"
 
     first_date = plot.points["date"].min()
     last_date = plot.points["date"].max()
-    main.x_axis.scaling.min = to_excel(
-        (first_date - pd.Timedelta(days=2)).to_pydatetime()
+    lower_date = first_date.normalize() - pd.DateOffset(months=2)
+    upper_date = last_date.normalize() + pd.DateOffset(months=2)
+    main.x_axis.scaling.min = to_excel(lower_date.to_pydatetime())
+    main.x_axis.scaling.max = to_excel(upper_date.to_pydatetime())
+    span = max(1, (upper_date - lower_date).days)
+    main.x_axis.majorUnit = next(
+        (days for days in (1, 2, 5, 10, 20, 25, 50, 100, 150, 200, 365)
+         if days >= span / 6), 365,
     )
-    main.x_axis.scaling.max = to_excel(
-        (last_date + pd.Timedelta(days=2)).to_pydatetime()
-    )
-    span = max(1, (last_date - first_date).days)
-    main.x_axis.majorUnit = max(1, math.ceil(span / 8))
+    main.x_axis.minorUnit = main.x_axis.majorUnit / 5
 
     for offset, (key, title, color) in enumerate(METRICS[:3], start=1):
         main.series.append(_series(
@@ -253,21 +317,28 @@ def add_degradation_chart(sheet, plot: DegradationPlot, start_row: int):
     secondary.x_axis = NumericAxis(
         axId=140, crossAx=130, axPos="b", delete=True,
     )
+    secondary.x_axis.majorGridlines = None
+    secondary.x_axis.minorGridlines = None
     secondary.x_axis.scaling.min = main.x_axis.scaling.min
     secondary.x_axis.scaling.max = main.x_axis.scaling.max
     secondary.y_axis.axId = 130
     secondary.y_axis.crossAx = 140
     secondary.y_axis.axPos = "r"
-    secondary.y_axis.title = "Положение ВНА, %"
-    secondary.y_axis.scaling.min = (
-        65 if plot.points["vna"].min() >= 65 else 0
-    )
+    secondary.y_axis.delete = False
+    _axis_title(secondary.y_axis, "Положение ВНА, %")
+    secondary.y_axis.txPr = _text()
+    secondary.y_axis.crosses = "max"
+    secondary.y_axis.tickLblPos = "nextTo"
+    secondary.y_axis.numFmt = "0"
+    secondary.y_axis.majorGridlines = None
+    secondary.y_axis.minorGridlines = None
+    secondary.y_axis.scaling.min = 65
     secondary.y_axis.scaling.max = 100
-    secondary.y_axis.majorUnit = 5 if secondary.y_axis.scaling.min else 10
+    secondary.y_axis.majorUnit = 5
     secondary.visible_cells_only = False
     secondary.series.append(_series(
         sheet, plot, "vna", "ВНА, %", "00A6D6", HELPER_COLUMN + 4
     ))
     main += secondary
-    sheet.add_chart(main, f"A{start_row + 1}")
-    return _summary_cells(sheet, plot, start_row)
+    sheet.add_chart(main, f"{_col(start_col)}{start_row + 1}")
+    return _summary_cells(sheet, plot, start_row, start_col)

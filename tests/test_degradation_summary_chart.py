@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pandas as pd
 from openpyxl import Workbook, load_workbook
+from openpyxl.utils.datetime import from_excel
 
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scr"))
@@ -49,7 +50,10 @@ class DegradationSummaryChartTest(unittest.TestCase):
                     "date": pd.Timestamp(base) + pd.Timedelta(minutes=30 * index),
                     "vna": interval + offset,
                     "power": 100 - period - index,
-                    "fuel_specific": 280 + period + index,
+                    "fuel_specific": (
+                        1700 if period == 1 and index == 0
+                        else 280 + period + index
+                    ),
                     "eta_gtu": 28 - period,
                     "vlo": 100 + index,
                     "fgo_fto": 200 + index,
@@ -105,8 +109,27 @@ class DegradationSummaryChartTest(unittest.TestCase):
         self.assertEqual(len(degradation_chart._charts), 2)
         self.assertEqual(len(degradation_chart.series), 3)
         self.assertEqual(len(degradation_chart._charts[1].series), 1)
-        self.assertEqual(chart_sheet["AM2"].value, values.iloc[0]["date"])
-        self.assertEqual(chart_sheet["AQ2"].value, 86.2)
+        self.assertEqual(degradation_chart.anchor._from.col, 25)  # Z2
+        self.assertEqual(degradation_chart.anchor._from.row, 1)
+        self.assertEqual(degradation_chart.y_axis.scaling.min, 0)
+        self.assertEqual(degradation_chart.y_axis.scaling.max, 350)
+        self.assertEqual(degradation_chart._charts[1].y_axis.scaling.min, 65)
+        self.assertEqual(degradation_chart._charts[1].y_axis.scaling.max, 100)
+        self.assertEqual(
+            from_excel(degradation_chart.x_axis.scaling.min).date(),
+            pd.Timestamp("2025-11-01").date(),
+        )
+        self.assertEqual(
+            from_excel(degradation_chart.x_axis.scaling.max).date(),
+            pd.Timestamp("2026-05-01").date(),
+        )
+        self.assertIsNotNone(degradation_chart.y_axis.majorGridlines)
+        self.assertIsNotNone(degradation_chart.y_axis.minorGridlines)
+        self.assertEqual(chart_sheet["Z39"].value, "Период")
+        self.assertEqual(chart_sheet["Z40"].value, "Период 1")
+        self.assertEqual(chart_sheet["BJ2"].value, values.iloc[0]["date"])
+        self.assertEqual(chart_sheet["BN2"].value, 86.2)
+        self.assertEqual(chart_sheet.page_setup.fitToWidth, 2)
 
         # Отсутствие каналов перепада не должно убирать диаграмму деградации.
         without_pressure = Workbook(write_only=True)

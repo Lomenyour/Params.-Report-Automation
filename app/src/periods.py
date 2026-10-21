@@ -70,6 +70,11 @@ PERIOD_OVERRIDES: list[tuple[str, str]] = []
 # ОПРЕДЕЛЕНИЕ ПЕРИОДОВ
 # ============================================================
 
+def is_working_power(power):
+    """Единый признак рабочей строки для автоматических и ручных периодов."""
+    return power > LOW_POWER
+
+
 def detect_periods(df):
     """Размечает периоды работы ГТУ автоматически, по GAP_SIZE."""
 
@@ -91,7 +96,7 @@ def detect_periods(df):
             i += 1
             continue
 
-        if power <= LOW_POWER:
+        if not is_working_power(power):
             low_power_count += 1
 
             if low_power_count >= GAP_SIZE:
@@ -117,7 +122,7 @@ def detect_periods(df):
             if pd.isna(p):
                 continue
 
-            if p <= LOW_POWER:
+            if not is_working_power(p):
                 confirmed = False
                 break
 
@@ -131,7 +136,7 @@ def detect_periods(df):
                 if pd.isna(p):
                     continue
 
-                if p > LOW_POWER:
+                if is_working_power(p):
                     df.loc[j, "period"] = current_period
 
             in_long_stop = False
@@ -202,6 +207,7 @@ def apply_period_overrides(df, overrides):
         mask = (
             (result["date"] >= start)
             & (result["date"] <= end)
+            & is_working_power(result["power"])
             & (result["period"] == 0)
         )
 
@@ -215,7 +221,7 @@ def describe_periods(df):
 
     rows = []
 
-    work_df = df[(df["period"] > 0) & (df["power"] > LOW_POWER)]
+    work_df = df[(df["period"] > 0) & is_working_power(df["power"])]
 
     for period_number, period_df in work_df.groupby("period"):
         period_df = period_df.sort_values("date")

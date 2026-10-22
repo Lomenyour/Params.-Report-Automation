@@ -36,6 +36,28 @@ from periods import parse_periods_arg
 
 
 ROOT = Path(__file__).resolve().parents[1]
+DATA_DIR = next(
+    (path for path in (ROOT / "data", ROOT.parent / "data") if path.exists()),
+    Path.home() / "Documents",
+)
+
+
+def delta_table_for_display(table):
+    """Добавляет в GUI уже рассчитанную сводку, не меняя исходную таблицу."""
+    if table is None or table.empty:
+        return table
+    summary = table.attrs.get("weighted_summary")
+    if not summary:
+        return table
+    footer = {column: np.nan for column in table.columns}
+    footer.update({
+        "Период": "Средневзвешенное (снижение N, рост b)",
+        "ΔNприв": summary["delta_n"],
+        "ΔNприв, %": summary["delta_n_percent"],
+        "Δbприв": summary["delta_b"],
+        "Δbприв, %": summary["delta_b_percent"],
+    })
+    return pd.concat([table, pd.DataFrame([footer])], ignore_index=True)
 
 
 class QueueWriter:
@@ -565,6 +587,7 @@ class CalculationApp(tk.Tk):
                     electricity_cost_rub_per_mwh=electricity_cost,
                     power_threshold=nominal_hours["power_threshold"],
                     vna_data=vna_df,
+                    delta_table=output_tables.get("delta"),
                 )
                 print_economics(economics_result)
 
@@ -781,13 +804,13 @@ class CalculationApp(tk.Tk):
         self.figure_views.append(viewer)
 
     @staticmethod
-    def _format_cell(value):
+    def _format_cell(value, decimals=3):
         if value is None or pd.isna(value):
             return "—"
         if isinstance(value, pd.Timestamp):
             return value.strftime("%d-%m-%Y %H:%M")
         if isinstance(value, float):
-            return f"{value:.3f}"
+            return f"{value:.{decimals}f}"
         return str(value)
 
     def _show_table(self, key, table):
@@ -798,7 +821,7 @@ class CalculationApp(tk.Tk):
             )
             return
 
-        table = table.copy()
+        table = delta_table_for_display(table) if key == "delta" else table.copy()
         columns = [str(column) for column in table.columns]
         holder = ttk.Frame(frame, padding=6)
         holder.pack(fill="both", expand=True)
@@ -820,10 +843,16 @@ class CalculationApp(tk.Tk):
 
         for column in columns:
             tree.heading(column, text=column)
-            tree.column(column, width=max(110, len(column) * 9), minwidth=80)
+            width = max(110, len(column) * 9)
+            if key == "economics" and column == "Период":
+                width = 690
+            tree.column(column, width=width, minwidth=80)
 
         for row in table.itertuples(index=False, name=None):
-            tree.insert("", "end", values=[self._format_cell(value) for value in row])
+            tree.insert("", "end", values=[
+                self._format_cell(value, 2 if key == "delta" and column in ("ΔNприв, %", "Δbприв, %") else 3)
+                for column, value in zip(columns, row)
+            ])
 
     def _show_top10_tables(self, results):
         frame = self._clear_tab("top10")

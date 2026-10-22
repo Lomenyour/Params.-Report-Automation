@@ -42,6 +42,7 @@ T_MIN, T_MAX = -40.0, 50.0
 # рабочего времени.
 VNA_BIN_WIDTH = 1.0
 WORKING_SHARE = 0.80
+ANNUAL_HOURS = 8760.0
 
 
 ECONOMICS_COLUMNS = [
@@ -251,6 +252,7 @@ def calculate_economics(
     power_threshold: float,
     vna_data: pd.DataFrame | None = None,
     electricity_cost_rub_per_mwh: float = 0.0,
+    delta_table: pd.DataFrame | None = None,
 ) -> dict:
     """Считает натуральные и денежные потери по каждому периоду.
 
@@ -285,6 +287,8 @@ def calculate_economics(
     )
 
     periods = []
+    row_losses = []
+    period_durations = []
     for period_row in periods_df.itertuples(index=False):
         period_number = int(period_row.period)
         mask = _period_mask(combined, period_number, period_row)
@@ -296,6 +300,7 @@ def calculate_economics(
             np.argsort(dates.iloc[indices].to_numpy(), kind="stable")
         ]
         period_hours = hours[order]
+        period_durations.append(float(period_hours[-1] - period_hours[0]))
         if not np.isfinite(period_hours).any():
             tau = np.arange(len(order), dtype=float) * DT_HOURS
         else:
@@ -388,6 +393,27 @@ def calculate_economics(
             "VNA-интервал регрессии": interval_label,
         })
 
+    if delta_table is not None:
+        if {"Часы начала", "Часы конца"}.issubset(delta_table.columns):
+            durations = pd.to_numeric(delta_table["Часы конца"], errors="coerce") - pd.to_numeric(
+                delta_table["Часы начала"], errors="coerce"
+            )
+            period_durations = durations.to_list()
+        else:
+            period_durations = []
+    total_period_hours = (
+        float(sum(period_durations))
+        if period_durations and all(np.isfinite(value) and value > 0 for value in period_durations)
+        else np.nan
+    )
+    annual_factor = ANNUAL_HOURS / total_period_hours if np.isfinite(total_period_hours) else np.nan
+    annualized = {
+        "fuel_overrun_nm3": np.nan,
+        "fuel_overrun_rub": np.nan,
+        "underproduction_mwh": np.nan,
+        "underproduction_rub": np.nan,
+    }
+
     table = pd.DataFrame(periods)
     if table.empty:
         table = pd.DataFrame(columns=ECONOMICS_COLUMNS)
@@ -404,13 +430,34 @@ def calculate_economics(
             total[column] = float(
                 pd.to_numeric(table[column], errors="coerce").sum()
             )
-        table = pd.concat([table, pd.DataFrame([total])], ignore_index=True)
+        annualized = {
+            "fuel_overrun_nm3": total["Перерасход, нм³"] * annual_factor,
+            "fuel_overrun_rub": total["Перерасход, руб"] * annual_factor,
+            "underproduction_mwh": total["Недовыработка, МВт·ч"] * annual_factor,
+            "underproduction_rub": total["Недовыработка, руб"] * annual_factor,
+        }
+        fuel_row = {
+            "Период": "Суммарные издержки, связанные с перерасходом, приведенные к году эксплуатации",
+            "Перерасход, нм³": annualized["fuel_overrun_nm3"],
+            "Перерасход, руб": annualized["fuel_overrun_rub"],
+        }
+        electricity_row = {
+            "Период": "Упущенная выгода, связанная с недопоставкой электроэнергии в сеть, приведенная к году эксплуатации",
+            "Недовыработка, МВт·ч": annualized["underproduction_mwh"],
+            "Недовыработка, руб": annualized["underproduction_rub"],
+        }
+        table = pd.concat(
+            [table, pd.DataFrame([total, fuel_row, electricity_row])], ignore_index=True
+        )
 
     table = table[ECONOMICS_COLUMNS].copy()
 
     return {
         "table": table,
+        "annualized": annualized,
+        "total_period_hours": total_period_hours,
         "periods": periods,
+        "row_losses": pd.DataFrame(row_losses),
         "distribution": distribution,
         "vna_threshold": vna_threshold,
         "power_threshold": float(power_threshold),
@@ -428,6 +475,11 @@ def print_economics(result: dict) -> None:
     print("=" * 90)
     print("ЭКОНОМИЧЕСКИЙ РАСЧЁТ")
     print("=" * 90)
+    total_period_hours = result.get("total_period_hours", np.nan)
+    if np.isfinite(total_period_hours):
+        print(f"Приведение к году: {ANNUAL_HOURS:.0f} / {total_period_hours:.1f} ч по принятым периодам")
+    else:
+        print("Приведение к году: нет корректной длительности всех принятых периодов")
     print(
         f"Порог мощности по распределению: Nприв > "
         f"{result['power_threshold']:.1f} МВт"

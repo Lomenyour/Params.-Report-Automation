@@ -964,6 +964,9 @@ def build_boundary_delta_table(df, periods_df, vna_data=None):
         build_weighted_delta_summary(result) if not result.empty else None
     )
     if not result.empty:
+        for column in ("ΔNприв, %", "Δbприв, %"):
+            if column in result:
+                result[column] = result[column].round(2)
         numeric_columns = result.select_dtypes(include="number").columns
         result[numeric_columns] = result[numeric_columns].round(3)
     return result

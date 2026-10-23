@@ -33,6 +33,12 @@ from degradation_chart import (
     add_degradation_chart,
     prepare_degradation_plot,
 )
+from compressor_degradation_chart import (
+    HELPER_COLUMN as COMPRESSOR_HELPER_COLUMN,
+    HELPER_HEADERS as COMPRESSOR_HELPER_HEADERS,
+    add_compressor_charts,
+    prepare_compressor_plots,
+)
 
 
 PRESSURE_CHANNELS = {
@@ -59,6 +65,7 @@ class PressureChartData:
     events: tuple[ChartEvent, ...] = ()
     degradation_values: pd.DataFrame | None = None
     degradation_deltas: pd.DataFrame | None = None
+    vna_top10: list[pd.DataFrame] | None = None
 
 
 def _number(frame, key):
@@ -323,26 +330,47 @@ def write_pressure_sheet(book, headers, header_row, row_count, source: PressureC
     frame = frame.loc[frame["date"].notna()].reset_index(drop=True)
     columns = _source_columns(headers)
     keys = [key for key in pressure_channels(frame) if key in columns]
+    compressor_plots = prepare_compressor_plots(
+        source.degradation_values, source.periods, source.vna_top10,
+    ) if source.vna_top10 else []
+    compressor_first = 2
+    for plot in compressor_plots:
+        plot.helper_first = compressor_first
+        compressor_first += len(plot.points)
     if frame.empty or not keys:
         plot = prepare_degradation_plot(
             source.degradation_values, source.periods,
             source.degradation_deltas,
         )
-        if plot is None:
+        if plot is None and not compressor_plots:
             sheet.append(["Нет исходных данных для диаграмм."])
             return sheet
-        cells, visible_bottom = add_degradation_chart(sheet, plot, 2)
-        sheet.column_dimensions.group("BJ", "BN", hidden=True)
+        cells, visible_bottom = (
+            add_degradation_chart(sheet, plot, 2)
+            if plot is not None else ({}, 2)
+        )
+        compressor_cells, compressor_bottom = add_compressor_charts(
+            sheet, compressor_plots, visible_bottom + 3, two_columns=False,
+        )
+        for row, row_cells in compressor_cells.items():
+            cells.setdefault(row, {}).update(row_cells)
+        visible_bottom = max(visible_bottom, compressor_bottom)
+        if plot is not None:
+            sheet.column_dimensions.group("BJ", "BN", hidden=True)
+        if compressor_plots:
+            sheet.column_dimensions.group("BO", "BQ", hidden=True)
         for column in range(1, 24):
             sheet.column_dimensions[get_column_letter(column)].width = 9.5
         sheet.print_area = f"A1:W{visible_bottom}"
         sheet.append(["Перепады давления: нет исходных данных для диаграммы."])
-        for row in range(2, max(visible_bottom, len(plot.points) + 1) + 1):
+        for row in range(2, max(visible_bottom,
+                                len(plot.points) + 1 if plot is not None else 0,
+                                compressor_first - 1) + 1):
             values = {
                 column: _table_cell(sheet, value, kind)
                 for column, (value, kind) in cells.get(row, {}).items()
             }
-            if row <= len(plot.points) + 1:
+            if plot is not None and row <= len(plot.points) + 1:
                 point = plot.points.iloc[row - 2]
                 values[DEGRADATION_HELPER_COLUMN] = point["date"].to_pydatetime()
                 for index, key in enumerate(
@@ -352,6 +380,14 @@ def write_pressure_sheet(book, headers, header_row, row_count, source: PressureC
                     values[DEGRADATION_HELPER_COLUMN + index] = (
                         float(value) if pd.notna(value) else None
                     )
+            for compressor_plot in compressor_plots:
+                offset = row - compressor_plot.helper_first
+                if 0 <= offset < len(compressor_plot.points):
+                    point = compressor_plot.points.iloc[offset]
+                    values[COMPRESSOR_HELPER_COLUMN] = point["date"].to_pydatetime()
+                    values[COMPRESSOR_HELPER_COLUMN + 1] = float(point["eta"])
+                    values[COMPRESSOR_HELPER_COLUMN + 2] = float(point["pi_k"])
+                    break
             if row > visible_bottom:
                 sheet.row_dimensions[row].hidden = True
             sheet.append([values.get(column) for column in range(1, max(values) + 1)] if values else [])
@@ -504,6 +540,15 @@ def write_pressure_sheet(book, headers, header_row, row_count, source: PressureC
         for column in range(DEGRADATION_CHART_COLUMN, VISIBLE_LAST_COLUMN + 1):
             sheet.column_dimensions[get_column_letter(column)].width = 9.5
         sheet.column_dimensions[get_column_letter(VISIBLE_LAST_COLUMN)].width = 12
+    compressor_cells, compressor_bottom = add_compressor_charts(
+        sheet, compressor_plots, visible_bottom + 3,
+        two_columns=degradation_plot is not None,
+    )
+    for row, row_cells in compressor_cells.items():
+        table_cells.setdefault(row, {}).update(row_cells)
+    visible_bottom = max(visible_bottom, compressor_bottom)
+    if compressor_plots:
+        sheet.column_dimensions.group("BO", "BQ", hidden=True)
     sheet.print_options.horizontalCentered = True
     sheet.page_setup.orientation = "landscape"
     sheet.page_setup.paperSize = Worksheet.PAPERSIZE_A3
@@ -518,6 +563,7 @@ def write_pressure_sheet(book, headers, header_row, row_count, source: PressureC
     last_row = max(
         visible_bottom, len(frame) + 1, len(helper_points) + 1,
         len(degradation_plot.points) + 1 if degradation_plot is not None else 0,
+        compressor_first - 1,
     )
     for row in range(1, last_row + 1):
         values = {}
@@ -532,6 +578,9 @@ def write_pressure_sheet(book, headers, header_row, row_count, source: PressureC
             if degradation_plot is not None:
                 for index, title in enumerate(DEGRADATION_HELPER_HEADERS):
                     values[DEGRADATION_HELPER_COLUMN + index] = title
+            if compressor_plots:
+                for index, title in enumerate(COMPRESSOR_HELPER_HEADERS):
+                    values[COMPRESSOR_HELPER_COLUMN + index] = title
         if 2 <= row <= len(frame) + 1:
             record = frame.iloc[row - 2]
             excel_row = record.get("excel_row")
@@ -563,6 +612,14 @@ def write_pressure_sheet(book, headers, header_row, row_count, source: PressureC
                 values[DEGRADATION_HELPER_COLUMN + index] = (
                     float(value) if pd.notna(value) else None
                 )
+        for compressor_plot in compressor_plots:
+            offset = row - compressor_plot.helper_first
+            if 0 <= offset < len(compressor_plot.points):
+                point = compressor_plot.points.iloc[offset]
+                values[COMPRESSOR_HELPER_COLUMN] = point["date"].to_pydatetime()
+                values[COMPRESSOR_HELPER_COLUMN + 1] = float(point["eta"])
+                values[COMPRESSOR_HELPER_COLUMN + 2] = float(point["pi_k"])
+                break
         if row > visible_bottom:
             sheet.row_dimensions[row].hidden = True
         if values:

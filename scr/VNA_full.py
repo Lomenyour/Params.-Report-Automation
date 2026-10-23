@@ -313,6 +313,37 @@ def _find_flexible_vna_intervals(df):
         pair_heap = []
         active_count = 0
 
+        def push_best_pair(anchor):
+            if not np.isfinite(eta_values[anchor]):
+                return
+            parts = [active_lists[cell] for cell in range(
+                current_start, current_start + width_cells,
+            ) if active_lists[cell]]
+            if not parts:
+                return
+            others = np.asarray([index for part in parts for index in part], dtype=int)
+            valid = (
+                (others != anchor)
+                & (np.abs(temperatures[others] - temperatures[anchor]) <= MAX_DELTA_T)
+                & (np.abs(pressures[others] - pressures[anchor]) <= MAX_DELTA_P)
+                & np.isfinite(eta_values[others])
+                # Числа вида 80,8 − 80 не должны обходить строгую границу
+                # 0,8 из-за погрешности двоичного представления float.
+                & (np.round(np.abs(eta_values[others] - eta_values[anchor]), 12) < MAX_DELTA_ETA)
+            )
+            compatible = others[valid]
+            if not compatible.size:
+                return
+            extremes = {
+                int(compatible[np.argmin(date_ns[compatible])]),
+                int(compatible[np.argmax(date_ns[compatible])]),
+            }
+            candidates = []
+            for other in extremes:
+                left, right = sorted((int(anchor), other))
+                candidates.append((-int(date_ns[right] - date_ns[left]), left, right, int(anchor)))
+            heapq.heappush(pair_heap, min(candidates))
+
         def add_cell(cell):
             nonlocal active_count
 
@@ -320,47 +351,7 @@ def _find_flexible_vna_intervals(df):
                 return
 
             for new_index in groups[cell]:
-                # Все точки текущего окна, включая уже добавленные точки
-                # этой же ячейки, являются возможными партнёрами.
-                parts = [
-                    active_lists[current_cell]
-                    for current_cell in range(
-                        current_start,
-                        current_start + width_cells,
-                    )
-                    if active_lists[current_cell]
-                ]
-
-                if parts:
-                    other_indices = np.asarray(
-                        [index for part in parts for index in part],
-                        dtype=int,
-                    )
-                    valid = (
-                        np.abs(temperatures[other_indices] - temperatures[new_index])
-                        <= MAX_DELTA_T
-                    ) & (
-                        np.abs(pressures[other_indices] - pressures[new_index])
-                        <= MAX_DELTA_P
-                    )
-                    valid &= np.isfinite(eta_values[other_indices]) & np.isfinite(eta_values[new_index])
-                    valid_indices = other_indices[valid]
-
-                    if valid_indices.size:
-                        # Для максимальной разницы дат достаточно самой
-                        # ранней и самой поздней совместимой точки.
-                        extremes = {
-                            int(valid_indices[np.argmin(date_ns[valid_indices])]),
-                            int(valid_indices[np.argmax(date_ns[valid_indices])]),
-                        }
-                        for other_index in extremes:
-                            left, right = sorted((int(other_index), int(new_index)))
-                            delta_ns = int(date_ns[right] - date_ns[left])
-                            heapq.heappush(
-                                pair_heap,
-                                (-delta_ns, left, right),
-                            )
-
+                push_best_pair(int(new_index))
                 active_flags[new_index] = True
                 active_lists[cell].append(int(new_index))
                 active_count += 1
@@ -387,10 +378,14 @@ def _find_flexible_vna_intervals(df):
                 not active_flags[pair_heap[0][1]]
                 or not active_flags[pair_heap[0][2]]
             ):
-                heapq.heappop(pair_heap)
+                _, left, right, anchor = heapq.heappop(pair_heap)
+                if active_flags[anchor]:
+                    # Партнёр вышел из окна: восстанавливаем следующую
+                    # допустимую пару для оставшейся точки, а не теряем её.
+                    push_best_pair(anchor)
 
             if pair_heap:
-                _, best_i, best_j = pair_heap[0]
+                _, best_i, best_j, _ = pair_heap[0]
                 start_value = current_start * VNA_INTERVAL_STEP
                 end_value = (current_start + width_cells) * VNA_INTERVAL_STEP
                 pair = _build_pair_result(
@@ -486,15 +481,11 @@ def analyze_period(df, period_number, show_plot=True):
     candidates = _find_flexible_vna_intervals(df)
     result_df = pd.DataFrame(candidates)
 
-    if not result_df.empty:
-        candidates_before_eta_filter = len(result_df)
-        result_df = result_df[
-            result_df["delta_eta"] < MAX_DELTA_ETA
-        ].copy()
-        print(
-            f"Фильтр TOP-10: Δη < {MAX_DELTA_ETA:.1f} п.п.; "
-            f"осталось {len(result_df)} из {candidates_before_eta_filter} кандидатов"
-        )
+    print(
+        f"Поиск пар TOP-10: Δt ≤ {MAX_DELTA_T:g} °C, "
+        f"Δp ≤ {MAX_DELTA_P:g} мбар, Δη < {MAX_DELTA_ETA:g} п.п.; "
+        f"найдено {len(result_df)} различных выборок ВНА"
+    )
 
     if result_df.empty:
         print()

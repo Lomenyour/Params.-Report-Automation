@@ -61,13 +61,14 @@ class AnnualizedEconomicsTest(unittest.TestCase):
             power_threshold=80.0,
             vna_data=self.data,
             delta_table=delta_table,
+            nominal_hours={"power_hours": 4.0, "vna_hours": 3.0, "vna_threshold": 80.0},
         )
 
     def test_annualized_rows_use_accepted_period_hours_and_keep_total(self):
         result = self.calculate(self.deltas)
         table = result["table"]
         self.assertEqual(result["total_period_hours"], 6.0)
-        self.assertEqual(len(table), 5)
+        self.assertEqual(len(table), 9)
         total = table.loc[table["Период"] == "ИТОГО"].iloc[0]
         self.assertGreater(total["Недовыработка, МВт·ч"], 0)
         self.assertGreater(total["Перерасход, нм³"], 0)
@@ -88,8 +89,17 @@ class AnnualizedEconomicsTest(unittest.TestCase):
             result["annualized"]["fuel_overrun_rub"],
             total["Перерасход, руб"] * factor,
         )
-        self.assertTrue(pd.isna(table.iloc[-2]["Недовыработка, МВт·ч"]))
-        self.assertTrue(pd.isna(table.iloc[-1]["Перерасход, нм³"]))
+        fuel_annual = table.loc[table["Период"].str.startswith("Суммарные издержки, связанные", na=False)].iloc[0]
+        electricity_annual = table.loc[table["Период"].str.startswith("Упущенная выгода", na=False)].iloc[0]
+        total_annual = table.loc[table["Период"] == "Суммарные издержки, приведенные к году эксплуатации"].iloc[0]
+        self.assertTrue(pd.isna(fuel_annual["Недовыработка, МВт·ч"]))
+        self.assertTrue(pd.isna(electricity_annual["Перерасход, нм³"]))
+        self.assertAlmostEqual(total_annual["Общие издержки, руб"], total["Общие издержки, руб"] * factor)
+        self.assertAlmostEqual(result["annualized"]["total_cost_rub"], total_annual["Общие издержки, руб"])
+        hours = table.set_index("Период")["Наработка, ч"]
+        self.assertEqual(hours["Длительность принятых периодов"], 6.0)
+        self.assertEqual(hours["Наработка при Nприв ≥ 80 МВт"], 4.0)
+        self.assertEqual(hours["Наработка при ВНА ≥ 80 %"], 3.0)
         self.assertAlmostEqual(
             total["Общие издержки, руб"],
             total["Недовыработка, руб"] + total["Перерасход, руб"],
@@ -101,6 +111,12 @@ class AnnualizedEconomicsTest(unittest.TestCase):
         result = self.calculate(invalid)
         self.assertTrue(np.isnan(result["total_period_hours"]))
         self.assertTrue(np.isnan(result["annualized"]["fuel_overrun_nm3"]))
+        self.assertTrue(np.isnan(result["annualized"]["total_cost_rub"]))
+
+    def test_missing_delta_hours_uses_period_duration(self):
+        result = self.calculate(pd.DataFrame({"Период": [1, 2]}))
+        self.assertEqual(result["total_period_hours"], 6.0)
+        self.assertTrue(np.isfinite(result["annualized"]["total_cost_rub"]))
 
     def test_word_tags_and_gui_footer(self):
         result = self.calculate(self.deltas)
@@ -120,6 +136,7 @@ class AnnualizedEconomicsTest(unittest.TestCase):
         self.assertEqual(set(context["economics"]["annualized"]), {
             "fuel_overrun_nm3", "fuel_overrun_rub",
             "underproduction_mwh", "underproduction_rub",
+            "total_cost_rub",
         })
         self.assertEqual(context["weighted_deltas"]["b_priv_percent"], "1,00")
         self.assertEqual(context["periods"][0]["deltas"]["n_priv_percent"], "3,00")

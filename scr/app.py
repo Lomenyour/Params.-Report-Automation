@@ -967,3 +967,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+                    nominal_hours=nominal_hours,

@@ -903,6 +903,7 @@ class CalculationApp(tk.Tk):
     def _show_table_in_frame(self, frame, table):
         if table is None or table.empty:
             ttk.Label(frame, text="Нет данных").pack(anchor="w")
+                    nominal_hours=nominal_hours,
             return
         columns = [str(column) for column in table.columns]
         tree = ttk.Treeview(

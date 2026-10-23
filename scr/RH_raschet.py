@@ -688,17 +688,18 @@ def calculate_nominal_hours(df):
     if power_threshold is None:
         power_mask = pd.Series(False, index=df.index)
     else:
-        power_mask = power > power_threshold
+        power_mask = power >= power_threshold
 
     if "vna" in df.columns:
         vna = pd.to_numeric(df["vna"], errors="coerce")
-        vna_mask = working & (vna > VNA_NOMINAL_PERCENT)
+        vna_mask = working & (vna >= VNA_NOMINAL_PERCENT)
     else:
         vna_mask = pd.Series(False, index=df.index)
 
     return {
         "distribution": distribution,
         "power_threshold": power_threshold,
+        "vna_threshold": VNA_NOMINAL_PERCENT,
         "power_records": int(power_mask.sum()),
         "power_hours": float(power_mask.sum() * RECORD_HOURS),
         "vna_records": int(vna_mask.sum()),
@@ -1140,6 +1141,9 @@ def main(data=None, periods_only=False, show_plots=True, vna_data=None,
     if periods_only:
         return df, periods_df, [], []
 
+    df = df[(df["period"] > 0) & (df["power"] > LOW_POWER)].copy()
+    df = df.reset_index(drop=True)
+
     nominal_hours = print_nominal_hours_summary(df)
     if output_tables is not None:
         output_tables["nominal_hours"] = pd.DataFrame([{
@@ -1147,9 +1151,6 @@ def main(data=None, periods_only=False, show_plots=True, vna_data=None,
             "Часы Nприв выше порога": nominal_hours["power_hours"],
             "Часы ВНА выше 80 %": nominal_hours["vna_hours"],
         }])
-
-    df = df[(df["period"] > 0) & (df["power"] > LOW_POWER)].copy()
-    df = df.reset_index(drop=True)
 
     all_windows = []
     all_pairs = []

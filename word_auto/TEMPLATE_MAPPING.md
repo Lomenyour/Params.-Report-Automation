@@ -277,6 +277,7 @@ Word», поэтому не зависит от даты расчёта или �
 | {{ economics.annualized.fuel_overrun_rub }} | Издержки от перерасхода топлива, руб |
 | {{ economics.annualized.underproduction_mwh }} | Недовыработка электроэнергии, МВт·ч |
 | {{ economics.annualized.underproduction_rub }} | Упущенная выгода от недовыработки, руб |
+| {{ economics.annualized.total_cost_rub }} | Суммарные издержки, приведённые к году эксплуатации, руб |
 
 Показатели наработки для таблицы экономики:
 

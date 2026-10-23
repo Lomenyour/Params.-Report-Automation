@@ -411,6 +411,7 @@ def build_report_data(
                 "fuel_overrun_rub": _money(annualized.get("fuel_overrun_rub")),
                 "underproduction_mwh": _number(annualized.get("underproduction_mwh"), 3),
                 "underproduction_rub": _money(annualized.get("underproduction_rub")),
+                "total_cost_rub": _money(annualized.get("total_cost_rub")),
             },
         },
         "weighted_deltas": {

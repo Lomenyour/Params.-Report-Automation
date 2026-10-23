@@ -15,7 +15,7 @@
 структуре расчёта в исходной книге: там промежуточные колонки содержат
 среднее двух соседних получасовых потерь.
 
-Порог ВНА берётся из общего распределения ВНА с шагом 1° и покрытием 80 %
+Порог ВНА берётся из распределения по принятым периодам с шагом 1° и покрытием 80 %
 рабочих записей. Динамический порог мощности используется для отдельного
 расчёта часов номинального режима, а экономические потери суммируются по
 всему рабочему времени периода.
@@ -54,6 +54,7 @@ ECONOMICS_COLUMNS = [
     "Перерасход, нм³",
     "Перерасход, руб",
     "Общие издержки, руб",
+    "Наработка, ч",
 ]
 
 
@@ -115,7 +116,7 @@ def _working_mask(data: pd.DataFrame) -> np.ndarray:
 
 
 def build_vna_distribution(data: pd.DataFrame) -> tuple[pd.DataFrame, float | None]:
-    """Строит единое распределение ВНА по всей книге и выбирает порог.
+    """Строит распределение ВНА по переданным принятым периодам и выбирает порог.
 
     Остановы исключаются по LOW_POWER. Начиная с верхних интервалов ВНА,
     выбирается набор, содержащий не менее 80 % рабочих записей. Нижняя
@@ -253,16 +254,18 @@ def calculate_economics(
     vna_data: pd.DataFrame | None = None,
     electricity_cost_rub_per_mwh: float = 0.0,
     delta_table: pd.DataFrame | None = None,
+    nominal_hours: dict | None = None,
 ) -> dict:
     """Считает натуральные и денежные потери по каждому периоду.
 
-    power_threshold передаётся из уже выполненного общего распределения
-    мощности в RH. Порог ВНА рассчитывается здесь один раз по всей книге.
+    power_threshold передаётся из распределения мощности по принятым
+    периодам в RH. Порог ВНА рассчитывается один раз по тем же периодам.
     Регрессия для каждого периода строится в его самом частом интервале ВНА
     шириной 1°.
     """
 
     combined = _merge_vna(data, vna_data)
+    nominal_hours = nominal_hours or {}
     try:
         power_threshold = float(power_threshold)
     except (TypeError, ValueError):
@@ -342,7 +345,7 @@ def calculate_economics(
             )
 
         # Потери суммируются по всему рабочему времени периода. Порог ВНА
-        # берётся из общего распределения, а выбросы bприв и температуры
+        # берётся из распределения принятых периодов, а выбросы bприв и температуры
         # отбрасываются теми же физическими ограничениями, что и раньше.
         temperature_ok = ~np.isfinite(temperature_p) | (
             (temperature_p > T_MIN) & (temperature_p < T_MAX)
@@ -399,8 +402,6 @@ def calculate_economics(
                 delta_table["Часы начала"], errors="coerce"
             )
             period_durations = durations.to_list()
-        else:
-            period_durations = []
     total_period_hours = (
         float(sum(period_durations))
         if period_durations and all(np.isfinite(value) and value > 0 for value in period_durations)
@@ -426,6 +427,7 @@ def calculate_economics(
             "Перерасход, нм³",
             "Перерасход, руб",
             "Общие издержки, руб",
+        "total_cost_rub": np.nan,
         ):
             total[column] = float(
                 pd.to_numeric(table[column], errors="coerce").sum()
@@ -447,8 +449,10 @@ def calculate_economics(
             "Недовыработка, руб": annualized["underproduction_rub"],
         }
         table = pd.concat(
-            [table, pd.DataFrame([total, fuel_row, electricity_row])], ignore_index=True
+            [table, pd.DataFrame([total, fuel_row, electricity_row, total_cost_row, *hours_rows])],
+            ignore_index=True,
         )
+            "total_cost_rub": total["Общие издержки, руб"] * annual_factor,
 
     table = table[ECONOMICS_COLUMNS].copy()
 
@@ -460,6 +464,24 @@ def calculate_economics(
         "row_losses": pd.DataFrame(row_losses),
         "distribution": distribution,
         "vna_threshold": vna_threshold,
+        total_cost_row = {
+            "Период": "Суммарные издержки, приведенные к году эксплуатации",
+            "Общие издержки, руб": annualized["total_cost_rub"],
+        }
+        power_label = (
+            f"Наработка при Nприв ≥ {power_threshold:g} МВт"
+            if np.isfinite(power_threshold) else "Наработка при пороге Nприв"
+        )
+        vna_nominal_threshold = nominal_hours.get("vna_threshold", np.nan)
+        vna_label = (
+            f"Наработка при ВНА ≥ {vna_nominal_threshold:g} %"
+            if np.isfinite(vna_nominal_threshold) else "Наработка при пороге ВНА"
+        )
+        hours_rows = [
+            {"Период": "Длительность принятых периодов", "Наработка, ч": total_period_hours},
+            {"Период": power_label, "Наработка, ч": nominal_hours.get("power_hours", np.nan)},
+            {"Период": vna_label, "Наработка, ч": nominal_hours.get("vna_hours", np.nan)},
+        ]
         "power_threshold": float(power_threshold),
         "gas_price_rub_per_m3": float(gas_price_rub_per_m3),
         "electricity_price_rub_per_mwh": float(electricity_price_rub_per_mwh),
@@ -487,8 +509,8 @@ def print_economics(result: dict) -> None:
     vna_threshold = result["vna_threshold"]
     if np.isfinite(vna_threshold):
         print(
-            "Общий порог ВНА по распределению с шагом 1°: "
-            f"ВНА > {vna_threshold:.0f} %"
+            "Общий порог ВНА по принятым периодам, шаг 1°: "
+            f"ВНА ≥ {vna_threshold:.0f} %"
         )
     else:
         print("Общий порог ВНА: не определён — нет корректных рабочих записей")
@@ -525,3 +547,6 @@ def print_economics(result: dict) -> None:
     print(display.to_string(index=False))
     print("=" * 90)
 
+    display["Наработка, ч"] = pd.to_numeric(
+        display["Наработка, ч"], errors="coerce"
+    ).round(1)

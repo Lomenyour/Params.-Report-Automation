@@ -72,10 +72,16 @@ def prepare_compressor_plots(values, periods, top10_results):
             continue
         selected["date"] = pd.to_datetime(selected["date"], errors="coerce")
         selected["pi_k"] = pd.to_numeric(selected["pi_k"], errors="coerce")
-        selected["eta"] = [
-            calculate_compressor_efficiency(row.t, row.p, row.tkk, row.pkk)[0]
-            for row in selected.itertuples(index=False)
-        ]
+        def efficiency(row):
+            try:
+                return calculate_compressor_efficiency(
+                    row.t, row.p, row.tkk, row.pkk,
+                )[0]
+            except (ValueError, OverflowError):
+                # Отдельный сбойный датчик не должен прерывать экспорт книги.
+                return np.nan
+
+        selected["eta"] = [efficiency(row) for row in selected.itertuples(index=False)]
         selected["eta"] = pd.to_numeric(selected["eta"], errors="coerce")
         selected = selected.loc[
             selected["date"].notna() & np.isfinite(selected["eta"]) &

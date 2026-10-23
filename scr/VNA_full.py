@@ -75,8 +75,8 @@ def apply_cli_overrides():
         )
 
 
-MAX_DELTA_T = 1.0      # °C
-MAX_DELTA_P = 0.1      # мбар
+MAX_DELTA_T = 0.5      # °C
+MAX_DELTA_P = 5.0      # мбар = 500 Па
 
 # Поиск интервалов ВНА выполняется по сетке 0,1°. Ширина интервала
 # меняется от 0,1° до 1,0°. Гистограмма ниже остаётся с шагом 1°:
@@ -90,132 +90,8 @@ TOP_INTERVALS = 10
 
 
 # ============================================================
-# ФУНКЦИЯ РАСЧЕТА КПД КОМПРЕССОРА
+# ФУНКЦИЯ РАСЧЕТА КПД ГТУ
 # ============================================================
-
-def calculate_compressor_efficiency(t, p, tkk, pkk):
-    """
-    Расчет изоэнтропического КПД компрессора.
-
-    t   - температура на входе, °C
-    p   - давление на входе, мбар
-    tkk - температура на выходе, °C
-    pkk - давление на выходе, бар
-
-    Возвращает:
-    eta - КПД, %
-    h1  - энтальпия на входе, кДж/кг
-    h2  - реальная энтальпия на выходе, кДж/кг
-    h2s - изоэнтропическая энтальпия на выходе, кДж/кг
-    """
-
-    # --------------------------------------------------------
-    # Перевод единиц
-    # --------------------------------------------------------
-
-    T1 = t + 273.15
-    P1 = p * 100
-
-    T2 = tkk + 273.15
-    P2 = pkk * 1e5
-
-    # --------------------------------------------------------
-    # Проверка точки на физическую корректность
-    #
-    # В данных есть строки останова и переходных режимов:
-    # отрицательные давления, нулевые, либо давление на выходе
-    # НЕ выше входного (машина не сжимает). На таких точках CoolProp
-    # падает или КПД выходит бессмысленным (например, −2167 %).
-    # Такие точки помечаем NaN.
-    # --------------------------------------------------------
-
-    if P1 <= 0 or P2 <= P1:
-
-        return np.nan, np.nan, np.nan, np.nan
-
-    # --------------------------------------------------------
-    # Опорная энтальпия
-    # --------------------------------------------------------
-
-    h0 = PropsSI(
-        "H",
-        "T", 273.15,
-        "P", 101325,
-        "HEOS::Air"
-    )
-
-    # --------------------------------------------------------
-    # Энтальпия на входе
-    # --------------------------------------------------------
-
-    h1 = (
-        PropsSI(
-            "H",
-            "T", T1,
-            "P", P1,
-            "HEOS::Air"
-        )
-        - h0
-    ) / 1000
-
-    # --------------------------------------------------------
-    # Энтальпия на выходе реальная
-    # --------------------------------------------------------
-
-    h2 = (
-        PropsSI(
-            "H",
-            "T", T2,
-            "P", P2,
-            "HEOS::Air"
-        )
-        - h0
-    ) / 1000
-
-    # --------------------------------------------------------
-    # Энтропия на входе
-    # --------------------------------------------------------
-
-    s1 = PropsSI(
-        "S",
-        "T", T1,
-        "P", P1,
-        "HEOS::Air"
-    )
-
-    # --------------------------------------------------------
-    # Изоэнтропическая энтальпия на выходе
-    # --------------------------------------------------------
-
-    h2s = (
-        PropsSI(
-            "H",
-            "S", s1,
-            "P", P2,
-            "HEOS::Air"
-        )
-        - h0
-    ) / 1000
-
-    # --------------------------------------------------------
-    # КПД
-    # --------------------------------------------------------
-
-    denominator = h2 - h1
-
-    if denominator == 0:
-        return np.nan, h1, h2, h2s
-
-    eta = (
-        (h2s - h1)
-        /
-        denominator
-        *
-        100
-    )
-
-    return eta, h1, h2, h2s
-
 
 def calculate_gtu_efficiency(power, fuel, gas_temperature, gas_pressure, q_lower):
     """Считает КПД ГТУ по формуле из книги Excel.
@@ -324,13 +200,14 @@ def run_vna(data, show_plots=True):
         if figure is not None:
             figures.append(figure)
         if result_df is not None and not result_df.empty:
+            result_df.attrs["period_number"] = period_number
             results.append(result_df)
 
     return df, periods_df, results, figures
 
 
-def _build_pair_result(interval_df, dates, temperatures, pressures,
-                       vna_values, tkk_values, pkk_values, pi_k_values, i, j):
+def _build_pair_result(dates, temperatures, pressures,
+                       vna_values, tkk_values, pi_k_values, eta_values, i, j):
     """Формирует результат для уже найденной допустимой пары точек."""
 
     date1 = pd.Timestamp(dates[i])
@@ -340,26 +217,19 @@ def _build_pair_result(interval_df, dates, temperatures, pressures,
     p1 = pressures[i]
     vna1 = vna_values[i]
     tkk1 = tkk_values[i]
-    pkk1 = pkk_values[i]
     pi_k1 = pi_k_values[i]
 
     t2 = temperatures[j]
     p2 = pressures[j]
     vna2 = vna_values[j]
     tkk2 = tkk_values[j]
-    pkk2 = pkk_values[j]
     pi_k2 = pi_k_values[j]
 
     delta_t = abs(t2 - t1)
     delta_p = abs(p2 - p1)
     delta_days = (date2 - date1).total_seconds() / 86400
 
-    eta1, h1_1, h2_1, h2s_1 = calculate_compressor_efficiency(
-        t1, p1, tkk1, pkk1
-    )
-    eta2, h1_2, h2_2, h2s_2 = calculate_compressor_efficiency(
-        t2, p2, tkk2, pkk2
-    )
+    eta1, eta2 = eta_values[i], eta_values[j]
 
     return {
         "date_1": date1,
@@ -369,9 +239,6 @@ def _build_pair_result(interval_df, dates, temperatures, pressures,
         "tkk_1": tkk1,
         "pi_k_1": pi_k1,
         "eta_1": eta1,
-        "h1_1": h1_1,
-        "h2_1": h2_1,
-        "h2s_1": h2s_1,
         "date_2": date2,
         "t_2": t2,
         "p_2": p2,
@@ -379,9 +246,6 @@ def _build_pair_result(interval_df, dates, temperatures, pressures,
         "tkk_2": tkk2,
         "pi_k_2": pi_k2,
         "eta_2": eta2,
-        "h1_2": h1_2,
-        "h2_2": h2_2,
-        "h2s_2": h2s_2,
         "delta_t": delta_t,
         "delta_p": delta_p,
         "delta_days": delta_days,
@@ -412,8 +276,10 @@ def _find_flexible_vna_intervals(df):
     pressures = interval_df["p"].to_numpy(dtype=float)
     vna_values = interval_df["vna"].to_numpy(dtype=float)
     tkk_values = interval_df["tkk"].to_numpy(dtype=float)
-    pkk_values = interval_df["pkk"].to_numpy(dtype=float)
     pi_k_values = interval_df["pi_k"].to_numpy(dtype=float)
+    eta_values = pd.to_numeric(
+        interval_df["eta_compressor"], errors="coerce",
+    ).to_numpy(dtype=float)
 
     if len(interval_df) < 2:
         return []
@@ -477,6 +343,7 @@ def _find_flexible_vna_intervals(df):
                         np.abs(pressures[other_indices] - pressures[new_index])
                         <= MAX_DELTA_P
                     )
+                    valid &= np.isfinite(eta_values[other_indices]) & np.isfinite(eta_values[new_index])
                     valid_indices = other_indices[valid]
 
                     if valid_indices.size:
@@ -527,14 +394,13 @@ def _find_flexible_vna_intervals(df):
                 start_value = current_start * VNA_INTERVAL_STEP
                 end_value = (current_start + width_cells) * VNA_INTERVAL_STEP
                 pair = _build_pair_result(
-                    interval_df,
                     dates,
                     temperatures,
                     pressures,
                     vna_values,
                     tkk_values,
-                    pkk_values,
                     pi_k_values,
+                    eta_values,
                     best_i,
                     best_j,
                 )
@@ -643,8 +509,7 @@ def analyze_period(df, period_number, show_plot=True):
     ).head(TOP_INTERVALS).reset_index(drop=True)
     result_df.insert(0, "rank", np.arange(1, len(result_df) + 1))
 
-    # Сохраняем прежний состав и порядок полей итоговой таблицы. Внутренние
-    # энтальпии нужны только для расчёта КПД и в отчёт не выводятся.
+    # Сохраняем прежний состав и порядок полей итоговой таблицы.
     result_df = result_df[
         [
             "rank",

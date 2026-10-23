@@ -3,7 +3,6 @@ import io
 import sys
 import unittest
 from pathlib import Path
-from unittest.mock import patch
 
 import pandas as pd
 from openpyxl import Workbook, load_workbook
@@ -30,6 +29,7 @@ class CompressorDegradationChartTest(unittest.TestCase):
                     "period": period, "date": first + pd.Timedelta(hours=index),
                     "vna": vna, "t": t, "p": pressure, "tkk": 370.0,
                     "pkk": 13.0, "pi_k": 13.1 + index / 10,
+                    "eta_compressor": 84.01 + index / 100,
                     "vlo": 200.0, "fgo_fto": 225.0, "power_n": 85.0,
                 })
             table = pd.DataFrame([{
@@ -48,29 +48,25 @@ class CompressorDegradationChartTest(unittest.TestCase):
             "date_end": pd.Timestamp(2026, period, 1, 4),
         } for period in range(1, 4)])
 
-        with patch(
-            "compressor_degradation_chart.calculate_compressor_efficiency",
-            side_effect=lambda t, p, tkk, pkk: (84 + t / 100, None, None, None),
-        ) as efficiency:
-            plots = prepare_compressor_plots(values, periods, results)
-            self.assertEqual([len(plot.points) for plot in plots], [2, 2, 2])
-            self.assertEqual(efficiency.call_count, 6)
-            self.assertEqual(plots[0].points["pi_k"].tolist(), [13.1, 13.2])
+        plots = prepare_compressor_plots(values, periods, results)
+        self.assertEqual([len(plot.points) for plot in plots], [2, 2, 2])
+        self.assertEqual(plots[0].points["pi_k"].tolist(), [13.1, 13.2])
+        self.assertEqual(plots[0].points["eta"].round(2).tolist(), [84.01, 84.02])
 
-            book = Workbook(write_only=True)
-            data_sheet = book.create_sheet("Данные")
-            headers = ["Дата", "ВЛО, Па", "ФГО+ФТО, Па", "N, МВт"]
-            data_sheet.append(headers)
-            for row in values.itertuples(index=False):
-                data_sheet.append([row.date.to_pydatetime(), row.vlo,
-                                   row.fgo_fto, row.power_n])
-            write_pressure_sheet(
-                book, headers, 0, len(values) + 1,
-                PressureChartData(values, periods, None, vna_top10=results,
-                                  degradation_values=values),
-            )
-            output = io.BytesIO()
-            book.save(output)
+        book = Workbook(write_only=True)
+        data_sheet = book.create_sheet("Данные")
+        headers = ["Дата", "ВЛО, Па", "ФГО+ФТО, Па", "N, МВт"]
+        data_sheet.append(headers)
+        for row in values.itertuples(index=False):
+            data_sheet.append([row.date.to_pydatetime(), row.vlo,
+                               row.fgo_fto, row.power_n])
+        write_pressure_sheet(
+            book, headers, 0, len(values) + 1,
+            PressureChartData(values, periods, None, vna_top10=results,
+                              degradation_values=values),
+        )
+        output = io.BytesIO()
+        book.save(output)
 
         output.seek(0)
         sheet = load_workbook(output)["Графики"]
@@ -85,6 +81,8 @@ class CompressorDegradationChartTest(unittest.TestCase):
         self.assertTrue(any("10.100 ≤ tнк ≤ 10.400" in text
                             for text in descriptions))
         self.assertEqual(sheet["BO2"].value, pd.Timestamp("2026-01-01"))
+        self.assertAlmostEqual(sheet["BP2"].value, 84.01)
+        self.assertAlmostEqual(sheet._charts[2].series[0].yVal.numRef.numCache.pt[0].v, 84.01)
 
 
 if __name__ == "__main__":

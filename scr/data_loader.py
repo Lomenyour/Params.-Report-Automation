@@ -26,6 +26,8 @@ COLUMN_MAP = {
     "ткк": "Ткк", "tкк": "Ткк", "ткк, °с": "Ткк",
     "pкк": "Ркк", "ркк": "Ркк", "ркк, бар": "Ркк",
     "πк": "πк", "pi_k": "πк",
+    "ηoi_cprop": "ηoi_Cprop", "ηoi_cprop, %": "ηoi_Cprop",
+    "ηoi": "ηoi_Cprop", "ηoi, %": "ηoi_Cprop", "eta_oi": "ηoi_Cprop",
     "nприв": "Nприв", "nприв, мвт": "Nприв", "n прив": "Nприв",
     "nприв,мвт": "Nприв", "nприв (мвт)": "Nприв",
     "приведенная мощность": "Nприв", "приведённая мощность": "Nприв",
@@ -61,6 +63,7 @@ SHORT_NAMES = {
     "p_nk_pa": ["Pнк"],
     "p_kk_mpa": ["Ркк"],
     "pi_k": ["πк"],
+    "eta_compressor": ["ηoi_Cprop"],
     "power": ["Nприв"],
     "fuel": ["Вприв", "Расход газа"],
     "fuel_specific": ["bприв"],
@@ -226,7 +229,14 @@ def prepare_rh_data(source: pd.DataFrame) -> pd.DataFrame:
 
 def prepare_vna_data(source: pd.DataFrame) -> pd.DataFrame:
     """Приводит давления и типы к формату расчёта ВНА."""
+    if "eta_compressor" not in source:
+        raise ValueError(
+            "На листе «Данные» не найдена колонка готового КПД компрессора "
+            "«ηoi_Cprop». Для TOP-10 ВНА и графиков нужны её расчётные значения."
+        )
     result = source.copy()
+    result["eta_compressor"] = pd.to_numeric(result["eta_compressor"], errors="coerce")
+    result.loc[~np.isfinite(result["eta_compressor"]), "eta_compressor"] = np.nan
     p_atm = pd.to_numeric(result["p_atm_pa"], errors="coerce")
     p_nk = pd.to_numeric(result["p_nk_pa"], errors="coerce")
     p_kk = pd.to_numeric(result["p_kk_mpa"], errors="coerce")

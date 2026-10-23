@@ -13,9 +13,6 @@ from openpyxl.chart.trendline import Trendline
 from openpyxl.drawing.line import LineProperties
 from openpyxl.utils.datetime import to_excel
 
-from VNA_full import calculate_compressor_efficiency
-
-
 HELPER_COLUMN = 67  # BO:BQ, за существующими скрытыми данными диаграмм.
 HELPER_HEADERS = ("Дата", "КПД компрессора, %", "πк")
 CHART_ROWS = 49
@@ -72,17 +69,7 @@ def prepare_compressor_plots(values, periods, top10_results):
             continue
         selected["date"] = pd.to_datetime(selected["date"], errors="coerce")
         selected["pi_k"] = pd.to_numeric(selected["pi_k"], errors="coerce")
-        def efficiency(row):
-            try:
-                return calculate_compressor_efficiency(
-                    row.t, row.p, row.tkk, row.pkk,
-                )[0]
-            except (ValueError, OverflowError):
-                # Отдельный сбойный датчик не должен прерывать экспорт книги.
-                return np.nan
-
-        selected["eta"] = [efficiency(row) for row in selected.itertuples(index=False)]
-        selected["eta"] = pd.to_numeric(selected["eta"], errors="coerce")
+        selected["eta"] = pd.to_numeric(selected["eta_compressor"], errors="coerce")
         selected = selected.loc[
             selected["date"].notna() & np.isfinite(selected["eta"]) &
             np.isfinite(selected["pi_k"])

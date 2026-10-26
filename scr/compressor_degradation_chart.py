@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import math
+import re
 
 import numpy as np
 import pandas as pd
@@ -10,17 +11,17 @@ from openpyxl.cell import WriteOnlyCell
 from openpyxl.chart import Reference, ScatterChart, Series
 from openpyxl.chart.axis import ChartLines, NumericAxis
 from openpyxl.chart.data_source import AxDataSource, NumData, NumDataSource, NumVal
-from openpyxl.chart.label import DataLabelList
+from openpyxl.chart.label import DataLabel, DataLabelList
 from openpyxl.chart.legend import LegendEntry
 from openpyxl.chart.layout import Layout, ManualLayout
 from openpyxl.chart.series import SeriesLabel, XYSeries
 from openpyxl.chart.shapes import GraphicalProperties
-from openpyxl.chart.text import RichText
+from openpyxl.chart.text import RichText, Text
 from openpyxl.chart.trendline import Trendline
 from openpyxl.drawing.line import LineEndProperties, LineProperties
 from openpyxl.drawing.text import (
     CharacterProperties, Font as DrawingFont, Paragraph, ParagraphProperties,
-    RichTextProperties,
+    RegularTextRun, RichTextProperties,
 )
 from openpyxl.utils.datetime import to_excel
 from openpyxl.styles import Alignment, Font, PatternFill
@@ -111,6 +112,19 @@ def _criteria(plot, *, multiline=False):
     return ("\n" if multiline else "; ").join(parts)
 
 
+def _chart_number(value):
+    return f"{value:.3f}".rstrip("0").rstrip(".").replace(".", ",")
+
+
+def _chart_criteria(plot):
+    number = _chart_number
+    return (
+        f"{number(plot.vna_lower)} % ≤ ВНА ≤ {number(plot.vna_upper)} % = const.\n"
+        f"{number(plot.t_lower)} °С ≤ tнк ≤ {number(plot.t_upper)} °С\n"
+        f"{number(plot.p_lower)} мбар ≤ Pнк ≤ {number(plot.p_upper)} мбар"
+    )
+
+
 def _write_data_sheets(book, plots):
     sheets = {}
     for plot in plots:
@@ -193,7 +207,7 @@ def _series(sheet, plot, key, title, color, *, trend=False):
     return series
 
 
-def _text(size=1100, *, bold=False, centered=False):
+def _text(size=1400, *, bold=False, centered=False):
     return RichText(
         bodyPr=RichTextProperties(),
         p=[Paragraph(pPr=ParagraphProperties(algn="ctr" if centered else None, defRPr=CharacterProperties(
@@ -203,9 +217,53 @@ def _text(size=1100, *, bold=False, centered=False):
     )
 
 
+def _rich_text(text, *, size=1600, bold=True, centered=True):
+    def properties(*, subscript=False):
+        return CharacterProperties(
+            sz=round(size * 0.75) if subscript else size,
+            b=bold, solidFill="000000", baseline=-25000 if subscript else 0,
+            latin=DrawingFont(typeface="Times New Roman"),
+        )
+
+    paragraphs = []
+    for line in text.split("\n"):
+        runs = []
+        position = 0
+        for match in re.finditer(r"tнк|Pнк|ηoi|πк", line):
+            runs.append(RegularTextRun(rPr=properties(), t=line[position:match.start()] + match[0][0]))
+            runs.append(RegularTextRun(rPr=properties(subscript=True), t=match[0][1:]))
+            position = match.end()
+        if position < len(line) or not runs:
+            runs.append(RegularTextRun(rPr=properties(), t=line[position:]))
+        paragraphs.append(Paragraph(
+            pPr=ParagraphProperties(algn="ctr" if centered else None, defRPr=properties()),
+            r=runs, endParaRPr=properties(),
+        ))
+    return RichText(bodyPr=RichTextProperties(wrap="none", spcFirstLastPara=False), p=paragraphs)
+
+
+class _RichDataLabel(DataLabel):
+    """openpyxl 3.1 не описывает c:tx; добавляем штатный rich text Excel."""
+    def __init__(self, text):
+        super().__init__(idx=0, dLblPos="ctr", showSerName=False, showVal=False, showCatName=False)
+        self.text = text
+
+    def to_tree(self, tagname=None, idx=None, namespace=None):
+        element = DataLabel(
+            idx=self.idx, dLblPos="ctr", showSerName=False, showVal=False, showCatName=False,
+        ).to_tree(tagname, idx, namespace)
+        element.insert(1, Layout(manualLayout=ManualLayout(
+            wMode="factor", hMode="factor", w=0.34 if "= const." in self.text else 0.16,
+            h=0.15,
+        )).to_tree("layout"))
+        element.insert(2, Text(rich=_rich_text(self.text)).to_tree("tx"))
+        return element
+
+
 def _format_axis(axis, title):
     axis.delete = False
     axis.title = title
+    axis.title.tx.rich = _rich_text(title, size=1400, centered=False)
     axis.title.txPr = _text(bold=True)
     axis.txPr = _text()
     axis.tickLblPos = "nextTo"
@@ -247,12 +305,15 @@ def _annotation(points, text, *, label=False):
     if label:
         series.graphicalProperties.line.noFill = True
         series.dLbls = DataLabelList(
-            showSerName=True, showVal=False, showCatName=False,
-            showLegendKey=False, dLblPos="ctr", txPr=_text(bold=True, centered=True),
+            dLbl=[_RichDataLabel(text)],
+            showSerName=False, showVal=False, showCatName=False,
+            showLegendKey=False, dLblPos="ctr", txPr=_text(1600, bold=True, centered=True),
             spPr=GraphicalProperties(
                 solidFill="FFFFFF", ln=LineProperties(solidFill="000000", w=12700),
             ),
         )
+        series.dLbls.txPr.bodyPr.wrap = "none"
+        series.dLbls.txPr.bodyPr.spAutoFit = True
     else:
         series.graphicalProperties.line.solidFill = "000000"
         series.graphicalProperties.line.width = 12700
@@ -270,13 +331,15 @@ def _add_annotations(chart, secondary, plot):
         pi_k = float(plot.top[f"pi_k_{suffix}"])
         pi_y = low + (pi_k - other_low) / (other_high - other_low) * (high - low)
         chart.series.append(_annotation([(moment, pi_y), (moment, eta)], "Граница TOP-1"))
-        text = f"{moment:%d.%m.%Y}\nηoi = {eta:.2f} %\nπк = {pi_k:.3f}"
+        eta_text = f"{eta:.2f}".replace(".", ",")
+        pi_text = f"{pi_k:.3f}".replace(".", ",")
+        text = f"{moment:%d.%m.%Y}\nηoi = {eta_text} %\nπк = {pi_text}"
         chart.series.append(_annotation([(moment, low + (high - low) * 0.48)], text, label=True))
     middle = pd.Timestamp(plot.top["date_1"]) + (
         pd.Timestamp(plot.top["date_2"]) - pd.Timestamp(plot.top["date_1"])
     ) / 2
     chart.series.append(_annotation(
-        [(middle, low + (high - low) * 0.90)], _criteria(plot, multiline=True), label=True,
+        [(middle, low + (high - low) * 0.90)], _chart_criteria(plot), label=True,
     ))
     chart.legend.legendEntry = [LegendEntry(idx=index, delete=True)
                                 for index in range(1, len(chart.series))]
@@ -328,15 +391,17 @@ def add_compressor_charts(sheet, plots, start_row, *, two_columns=True):
         chart.y_axis.crosses = "min"
         _value_scale(chart.y_axis, plot.points["eta"], upper=True)
         chart.y_axis.majorGridlines = ChartLines(spPr=GraphicalProperties(
-            ln=LineProperties(solidFill="A6A6A6", w=9525)
+            ln=LineProperties(solidFill="000000", w=12700)
         ))
         chart.y_axis.minorGridlines = ChartLines(spPr=GraphicalProperties(
-            ln=LineProperties(solidFill="D9D9D9", w=4762)
+            ln=LineProperties(solidFill="A6A6A6", w=6350)
         ))
         chart.x_axis.majorGridlines = ChartLines(spPr=GraphicalProperties(
-            ln=LineProperties(solidFill="A6A6A6", w=9525)
+            ln=LineProperties(solidFill="000000", w=12700)
         ))
-        chart.x_axis.minorGridlines = None
+        chart.x_axis.minorGridlines = ChartLines(spPr=GraphicalProperties(
+            ln=LineProperties(solidFill="A6A6A6", w=6350)
+        ))
         chart.legend.position = "b"
         chart.legend.overlay = False
         chart.legend.txPr = _text()
@@ -363,7 +428,7 @@ def add_compressor_charts(sheet, plots, start_row, *, two_columns=True):
         )
         chart.x_axis.minorUnit = chart.x_axis.majorUnit / 5
         chart.series.append(_series(
-            data_sheets[plot.period], plot, "eta", "КПД компрессора, %", "00B050", trend=True
+            data_sheets[plot.period], plot, "eta", "КПД", "00B050", trend=True
         ))
 
         secondary = ScatterChart()
@@ -385,10 +450,17 @@ def add_compressor_charts(sheet, plots, start_row, *, two_columns=True):
         secondary.x_axis.scaling.min = chart.x_axis.scaling.min
         secondary.x_axis.scaling.max = chart.x_axis.scaling.max
         secondary.series.append(_series(
-            data_sheets[plot.period], plot, "pi_k", "Степень сжатия πк", "7030A0", trend=True
+            data_sheets[plot.period], plot, "pi_k", "Степень сжатия", "7030A0", trend=True
         ))
         _add_annotations(chart, secondary, plot)
         chart += secondary
+        first_trend = sum(len(part.series) for part in chart._charts)
+        trend_count = sum(series.trendline is not None
+                          for part in chart._charts for series in part.series)
+        chart.legend.legendEntry.extend(
+            LegendEntry(idx=first_trend + index, delete=True)
+            for index in range(trend_count)
+        )
         sheet.add_chart(chart, f"{_letter(column)}{block_row + 3}")
 
         for offset, side, suffix in ((0, "Начальная точка", "1"),

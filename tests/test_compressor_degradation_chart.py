@@ -83,6 +83,21 @@ class CompressorDegradationChartTest(unittest.TestCase):
                 root = ET.fromstring(archive.read(f"xl/charts/chart{index}.xml"))
                 fill = root.find("c:chart/c:plotArea/c:spPr/a:solidFill/a:srgbClr", ns)
                 self.assertEqual(fill.get("val"), "FFFFFF")
+                rich_labels = root.findall(".//c:dLbl/c:tx/c:rich", ns)
+                self.assertEqual(len(rich_labels), 3)
+                for rich in rich_labels:
+                    for paragraph in rich.findall("a:p", ns):
+                        style = paragraph.find("a:pPr/a:defRPr", ns)
+                        self.assertEqual(style.get("sz"), "1600")
+                        self.assertEqual(style.find("a:latin", ns).get("typeface"), "Times New Roman")
+                self.assertTrue(root.findall(".//a:rPr[@baseline='-25000']", ns))
+                criteria_lines = ["".join(node.itertext())
+                                  for node in rich_labels[-1].findall("a:p", ns)]
+                self.assertEqual(criteria_lines, [
+                    "86,2 % ≤ ВНА ≤ 86,3 % = const.",
+                    "10,1 °С ≤ tнк ≤ 10,4 °С",
+                    "990,1 мбар ≤ Pнк ≤ 990,4 мбар",
+                ])
         output.seek(0)
         saved = load_workbook(output)
         sheet = saved["Графики"]
@@ -103,10 +118,11 @@ class CompressorDegradationChartTest(unittest.TestCase):
             self.assertEqual(len(labels), 3)
             for label in labels:
                 self.assertEqual(label.dLbls.spPr.solidFill.srgbClr, "FFFFFF")
-                self.assertTrue(label.dLbls.showSerName)
+                self.assertFalse(label.dLbls.showSerName)
                 self.assertIsNotNone(label.xVal.numLit)
-            self.assertIn("10.100 ≤ tнк ≤ 10.400", labels[-1].tx.v)
-            self.assertIn("ηoi = 84.01 %", labels[0].tx.v)
+            self.assertIn("10,1 °С ≤ tнк ≤ 10,4 °С", labels[-1].tx.v)
+            self.assertNotIn("ηoi", labels[-1].tx.v)
+            self.assertIn("ηoi = 84,01 %", labels[0].tx.v)
             self.assertIsNotNone(chart.series[0].trendline)
             self.assertIsNotNone(chart._charts[1].series[0].trendline)
             self.assertEqual(chart.graphical_properties.solidFill.srgbClr, "FFFFFF")
@@ -119,6 +135,7 @@ class CompressorDegradationChartTest(unittest.TestCase):
                 self.assertLessEqual(span / axis.majorUnit, 10)
                 self.assertLessEqual(span / axis.minorUnit, 50)
                 self.assertEqual(axis.txPr.p[0].pPr.defRPr.solidFill.srgbClr, "000000")
+                self.assertEqual(axis.txPr.p[0].pPr.defRPr.sz, 1400)
                 values = part.series[0].yVal.numRef.numCache.pt
                 self.assertTrue(all(axis.scaling.min <= point.v <= axis.scaling.max
                                     for point in values))

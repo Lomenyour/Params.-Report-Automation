@@ -75,8 +75,8 @@ def apply_cli_overrides():
         )
 
 
-MAX_DELTA_T = 1.0      # °C
-MAX_DELTA_P = 0.1      # мбар
+MAX_DELTA_T = 0.5      # °C
+MAX_DELTA_P = 5.0      # мбар = 500 Па
 
 # Поиск интервалов ВНА выполняется по сетке 0,1°. Ширина интервала
 # меняется от 0,1° до 1,0°. Гистограмма ниже остаётся с шагом 1°:
@@ -324,6 +324,7 @@ def run_vna(data, show_plots=True):
         if figure is not None:
             figures.append(figure)
         if result_df is not None and not result_df.empty:
+            result_df.attrs["period_number"] = period_number
             results.append(result_df)
 
     return df, periods_df, results, figures

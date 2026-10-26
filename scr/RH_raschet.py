@@ -589,14 +589,14 @@ BOUNDARY_PARAMETERS = [
 
 
 def nominal_row(df, start, end, first):
-    """Первый/последний ряд в [start, end], где ВНА > 80 %."""
+    """Первый/последний ряд в [start, end], где ВНА ≥ 80 %."""
 
     mask = (df["date"] >= start) & (df["date"] <= end)
 
     if "vna" in df.columns:
         mask &= (
             pd.to_numeric(df["vna"], errors="coerce")
-            > VNA_NOMINAL_PERCENT
+            >= VNA_NOMINAL_PERCENT
         )
 
     sub = df[mask]
@@ -679,7 +679,7 @@ def build_power_distribution(
 
 
 def calculate_nominal_hours(df):
-    """Считает часы выше динамического порога мощности и ВНА > 80 %."""
+    """Считает часы при мощности и ВНА не ниже заданных порогов."""
 
     distribution, power_threshold = build_power_distribution(df)
     power = pd.to_numeric(df.get("power"), errors="coerce")
@@ -735,12 +735,12 @@ def print_nominal_hours_summary(df):
         )
 
     print(
-        f"Наработка при Nприв выше порога: "
+        f"Наработка при Nприв ≥ порога: "
         f"{summary['power_hours']:.1f} ч "
         f"({summary['power_records']} записей)."
     )
     print(
-        f"Наработка при ВНА > {VNA_NOMINAL_PERCENT:.0f} %: "
+        f"Наработка при ВНА ≥ {VNA_NOMINAL_PERCENT:.0f} %: "
         f"{summary['vna_hours']:.1f} ч "
         f"({summary['vna_records']} записей)."
     )
@@ -926,9 +926,13 @@ def build_boundary_delta_table(df, periods_df, vna_data=None):
         start_b = _regression_value(
             regressions["b"][0], regressions["b"][1], hours_start
         )
+        start_eta = _regression_value(
+            regressions["eta"][0], regressions["eta"][1], hours_start
+        )
         period_start_values[period_number] = {
             "N": start_n,
             "b": start_b,
+            "eta": start_eta,
         }
 
         rows.append({
@@ -946,6 +950,7 @@ def build_boundary_delta_table(df, periods_df, vna_data=None):
             "ΔNприв, %": _relative_delta(delta_n, start_n),
             "ΔNприв до отсечки": raw_n,
             "Δη, п.п.": delta_eta,
+            "Δη, %": _relative_delta(delta_eta, start_eta),
             "Δη до отсечки": raw_eta,
         })
 
@@ -1005,10 +1010,12 @@ def build_weighted_delta_summary(table):
     total_hours = float(weights.sum())
     delta_n = pd.to_numeric(table.loc[valid, "ΔNприв"], errors="coerce")
     delta_b = pd.to_numeric(table.loc[valid, "Δbприв"], errors="coerce")
+    delta_eta = pd.to_numeric(table.loc[valid, "Δη, п.п."], errors="coerce")
     # В сводке учитываем только ухудшение: потерю мощности и рост расхода.
     # Таблица периодов выше сохраняет исходные знаковые дельты без изменений.
     weighted_n = float((weights * (-delta_n).clip(lower=0)).sum() / total_hours)
     weighted_b = float((weights * delta_b.clip(lower=0)).sum() / total_hours)
+    weighted_eta = float((weights * delta_eta).sum() / total_hours)
 
     start_values = table.attrs.get("period_start_values", {})
     first_period = int(table.loc[valid, "Период"].min())
@@ -1020,6 +1027,8 @@ def build_weighted_delta_summary(table):
         "delta_b": weighted_b,
         "delta_n_percent": _relative_delta(weighted_n, first_start.get("N")),
         "delta_b_percent": _relative_delta(weighted_b, first_start.get("b")),
+        "delta_eta": weighted_eta,
+        "delta_eta_percent": _relative_delta(weighted_eta, first_start.get("eta")),
     }
 
 
@@ -1118,7 +1127,7 @@ def main(data=None, periods_only=False, show_plots=True, vna_data=None,
         print()
         print(
             "Параметры на границах периодов "
-            f"(ВНА > {VNA_NOMINAL_PERCENT:.0f} %):"
+            f"(ВНА ≥ {VNA_NOMINAL_PERCENT:.0f} %):"
         )
         print()
 

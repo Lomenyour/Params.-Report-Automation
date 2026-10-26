@@ -12,6 +12,7 @@ py -m PyInstaller `
     --collect-all CoolProp `
     --collect-all matplotlib `
     --collect-all python_calamine `
+    --collect-all openpyxl `
     "$PSScriptRoot\src\app.py"
 
 Write-Host "Build complete: $PSScriptRoot\dist\GTU_Report.exe"

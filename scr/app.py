@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import queue
+import re
 import threading
 import time
 import traceback
@@ -32,7 +33,33 @@ from RH_raschet import (
 )
 from VNA_full import run_vna
 from economics import calculate_economics, print_economics
+from data_assembly import (
+    SENSOR_TARGET_COLUMNS,
+    SensorMapping,
+    apply_economic_columns,
+    assemble_sensor_data,
+    calculate_data_columns,
+    list_source_sheets,
+    load_saved_mappings,
+    read_calculation_profile,
+    save_mappings,
+    source_mapping_info,
+    suggest_mappings,
+    template_columns,
+    validate_mappings,
+)
 from periods import parse_periods_arg
+from result_export import collect_result_tables, read_data_sheet, save_result_workbook
+from pressure_chart import PressureChartData
+from chart_events import ChartEvent, load_chart_events, save_chart_events
+from chart_events_ui import ChartEventsDialog
+from calculation_snapshot import CalculationSnapshot
+from reporting import (
+    DEFAULT_REPORT_DIR,
+    DEFAULT_TEMPLATE,
+    build_report_data,
+    generate_report,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -190,6 +217,106 @@ class FigureViewer(ttk.Frame):
         self.viewport.yview_moveto(0)
 
 
+class MappingDialog(tk.Toplevel):
+    """Проверка и ручная правка соответствий каналов перед импортом."""
+
+    def __init__(self, parent, suggestions: list[SensorMapping],
+                 target_headers: dict[str, str | None],
+                 source_headers: list[str], verified_duplicates: set[str]):
+        super().__init__(parent)
+        self.title("Соответствие каналов датчиков")
+        self.geometry("960x640")
+        self.minsize(760, 480)
+        self.configure(background=parent.colors["panel"])
+        self.transient(parent)
+        self.result: list[SensorMapping] | None = None
+        self._rows = []
+        self._target_headers = target_headers
+        self._source_headers = source_headers
+        self._verified_duplicates = verified_duplicates
+
+        ttk.Label(
+            self,
+            text=("Проверьте каждый канал, колонку листа «Данные» и коэффициент "
+                  "перевода единиц. Колонку можно ввести вручную по букве."),
+            wraplength=900,
+        ).pack(fill="x", padx=12, pady=(12, 8))
+        holder = ttk.Frame(self)
+        holder.pack(fill="both", expand=True, padx=12)
+        canvas = tk.Canvas(
+            holder, highlightthickness=0, background=parent.colors["panel"]
+        )
+        scroll = ttk.Scrollbar(holder, orient="vertical", command=canvas.yview)
+        table = ttk.Frame(canvas)
+        table.bind("<Configure>", lambda _event: canvas.configure(
+            scrollregion=canvas.bbox("all")
+        ))
+        table_window = canvas.create_window((0, 0), window=table, anchor="nw")
+        canvas.bind(
+            "<Configure>",
+            lambda event: canvas.itemconfigure(table_window, width=event.width),
+        )
+        canvas.configure(yscrollcommand=scroll.set)
+        canvas.pack(side="left", fill="both", expand=True)
+        scroll.pack(side="right", fill="y")
+
+        ttk.Label(table, text="Канал выгрузки").grid(row=0, column=0, sticky="w")
+        ttk.Label(table, text="Колонка «Данные»").grid(row=0, column=1, sticky="w")
+        ttk.Label(table, text="Коэффициент").grid(row=0, column=2, sticky="w")
+        choices = [
+            f"{column} — {header}" for column, header in target_headers.items()
+            if header and column in SENSOR_TARGET_COLUMNS
+        ]
+        for index, suggestion in enumerate(suggestions, start=1):
+            target = suggestion.target
+            header = target_headers.get(target)
+            initial = f"{target} — {header}" if target and header else target
+            target_var = tk.StringVar(value=initial)
+            factor_var = tk.StringVar(value=f"{suggestion.factor:.10g}")
+            ttk.Label(table, text=suggestion.source).grid(
+                row=index, column=0, sticky="ew", pady=3
+            )
+            ttk.Combobox(
+                table, textvariable=target_var, values=choices, width=1
+            ).grid(row=index, column=1, sticky="ew", padx=(8, 8), pady=3)
+            ttk.Entry(table, textvariable=factor_var, width=1).grid(
+                row=index, column=2, sticky="ew", pady=3
+            )
+            self._rows.append((suggestion.source, target_var, factor_var))
+        table.columnconfigure(0, weight=2, minsize=180)
+        table.columnconfigure(1, weight=4, minsize=300)
+        table.columnconfigure(2, weight=1, minsize=130)
+
+        actions = ttk.Frame(self, padding=12)
+        actions.pack(fill="x")
+        ttk.Button(actions, text="Отмена", command=self.destroy).pack(side="right")
+        ttk.Button(actions, text="Применить", command=self._accept).pack(
+            side="right", padx=(0, 8)
+        )
+        self.grab_set()
+        self.focus_set()
+
+    def _accept(self):
+        mappings = []
+        try:
+            for source, target_var, factor_var in self._rows:
+                text = target_var.get().strip().upper()
+                match = re.match(r"^([A-Z]{1,3})(?:\s|$)", text)
+                target = match.group(1) if match else ""
+                factor = float(factor_var.get().strip().replace(",", "."))
+                mappings.append(SensorMapping(source, target, factor))
+            validate_mappings(
+                mappings, self._source_headers,
+                verified_duplicates=self._verified_duplicates,
+                target_headers=self._target_headers,
+            )
+        except ValueError as error:
+            messagebox.showerror("Проверьте соответствия", str(error), parent=self)
+            return
+        self.result = mappings
+        self.destroy()
+
+
 class CalculationApp(tk.Tk):
     def __init__(self):
         super().__init__()
@@ -201,12 +328,26 @@ class CalculationApp(tk.Tk):
 
         self.output_queue: queue.Queue = queue.Queue()
         self.selected_file: Path | None = None
+        self.selected_raw_file: Path | None = None
+        self.calculation_mode = tk.StringVar(value="ready")
+        self.calculation_running = False
+        self.export_running = False
+        self.has_calculation_run = False
+        self.chart_events: tuple[ChartEvent, ...] = ()
+        self.selected_raw_sheet = tk.StringVar(value="")
+        self.sensor_mappings: list[SensorMapping] | None = None
+        self.mapping_sheet: str | None = None
         self.figure_views = []
+        self.last_result: CalculationSnapshot | None = None
         self.gas_tariff_var = tk.StringVar(value="0")
         self.electricity_tariff_var = tk.StringVar(value="0")
         self.electricity_cost_var = tk.StringVar(value="0")
 
         self._build_widgets()
+        self._update_input_controls()
+        for variable in (self.gas_tariff_var, self.electricity_tariff_var,
+                         self.electricity_cost_var):
+            variable.trace_add("write", self._invalidate_results)
         self.after(100, self._poll_output)
 
     def _configure_dark_theme(self):
@@ -246,6 +387,26 @@ class CalculationApp(tk.Tk):
             selectforeground="#ffffff",
             selectbackground=self.colors["selection"],
         )
+        style.configure(
+            "TCombobox",
+            foreground="#111111",
+            fieldbackground="#ffffff",
+            background="#f2f2f2",
+            arrowcolor="#111111",
+            selectforeground="#111111",
+            selectbackground="#dce9ff",
+        )
+        style.map(
+            "TCombobox",
+            foreground=[("disabled", "#666666"), ("readonly", "#111111")],
+            fieldbackground=[("disabled", "#e8e8e8"), ("readonly", "#ffffff")],
+            selectforeground=[("readonly", "#111111")],
+            selectbackground=[("readonly", "#ffffff")],
+        )
+        self.option_add("*TCombobox*Listbox.background", "#ffffff")
+        self.option_add("*TCombobox*Listbox.foreground", "#111111")
+        self.option_add("*TCombobox*Listbox.selectBackground", "#3d5f9e")
+        self.option_add("*TCombobox*Listbox.selectForeground", "#ffffff")
         style.configure("TButton",
                         background="#3a3d43",
                         foreground=self.colors["text"],
@@ -325,42 +486,102 @@ class CalculationApp(tk.Tk):
         )
         self.run_button.pack(side="left", padx=(10, 0))
 
-        ttk.Label(controls, text="Газ, руб/нм³:").pack(
-            side="left", padx=(18, 4)
+        self.excel_button = ttk.Button(
+            controls, text="Сформировать Excel", command=self.generate_excel_report,
+            state="disabled",
         )
-        ttk.Entry(
-            controls,
-            textvariable=self.gas_tariff_var,
-            width=10,
-        ).pack(side="left")
+        self.excel_button.pack(side="left", padx=(10, 0))
 
-        ttk.Label(controls, text="ЭЭ, руб/МВт·ч:").pack(
-            side="left", padx=(12, 4)
-        )
-        ttk.Entry(
+        self.report_button = ttk.Button(
             controls,
-            textvariable=self.electricity_tariff_var,
-            width=10,
-        ).pack(side="left")
+            text="Сформировать Word",
+            command=self.generate_word_report,
+            state="disabled",
+        )
+        self.report_button.pack(side="left", padx=(10, 0))
 
-        ttk.Label(controls, text="Себестоимость ЭЭ, руб/МВт·ч:").pack(
-            side="left", padx=(12, 4)
-        )
-        ttk.Entry(
-            controls,
-            textvariable=self.electricity_cost_var,
-            width=10,
-        ).pack(side="left")
+        self.progress = ttk.Progressbar(controls, mode="indeterminate", length=140)
+        self.progress.pack(side="right")
+
+        tariff_controls = ttk.Frame(self, padding=(10, 0, 10, 8))
+        tariff_controls.pack(fill="x")
+        self.tariff_entries = []
+        for title, variable in (
+            ("Газ, руб/нм³:", self.gas_tariff_var),
+            ("ЭЭ, руб/МВт·ч:", self.electricity_tariff_var),
+            ("Себестоимость ЭЭ, руб/МВт·ч:", self.electricity_cost_var),
+        ):
+            ttk.Label(tariff_controls, text=title).pack(side="left", padx=(0, 4))
+            entry = ttk.Entry(tariff_controls, textvariable=variable, width=10)
+            entry.pack(side="left")
+            entry.pack_configure(padx=(0, 12))
+            self.tariff_entries.append(entry)
 
         self.file_label = ttk.Label(
-            controls,
+            self,
             text="Файл не выбран",
             anchor="w",
         )
-        self.file_label.pack(side="left", padx=(14, 0), fill="x", expand=True)
+        self.file_label.pack(fill="x", padx=10, pady=(0, 8))
 
-        self.progress = ttk.Progressbar(controls, mode="indeterminate", length=160)
-        self.progress.pack(side="right")
+        mode_controls = ttk.Frame(self, padding=(10, 0, 10, 8))
+        mode_controls.pack(fill="x")
+        ttk.Label(mode_controls, text="Режим:").pack(side="left", padx=(0, 10))
+        self.mode_buttons = []
+        for title, value in (
+            ("Расчёт готовой книги", "ready"),
+            ("Обновление данными датчиков и расчёт", "import"),
+        ):
+            button = ttk.Radiobutton(
+                mode_controls, text=title, value=value,
+                variable=self.calculation_mode, command=self._on_mode_changed,
+            )
+            button.pack(side="left", padx=(0, 18))
+            self.mode_buttons.append(button)
+
+        self.events_button = ttk.Button(
+            mode_controls, text="События графика (0)", command=self.review_chart_events,
+        )
+        self.events_button.pack(side="right")
+
+        import_controls = ttk.Frame(self, padding=(10, 0, 10, 10))
+        import_controls.pack(fill="x")
+        self.raw_button = ttk.Button(
+            import_controls,
+            text="Выбрать выгрузку датчиков",
+            command=self.choose_raw_file,
+            state="disabled",
+        )
+        self.raw_button.pack(side="left")
+        ttk.Label(import_controls, text="Лист выгрузки:").pack(
+            side="left", padx=(12, 4)
+        )
+        self.raw_sheet_combo = ttk.Combobox(
+            import_controls,
+            textvariable=self.selected_raw_sheet,
+            state="disabled",
+            width=34,
+        )
+        self.raw_sheet_combo.pack(side="left")
+        self.raw_sheet_combo.bind(
+            "<<ComboboxSelected>>", self._on_raw_sheet_changed
+        )
+        self.mapping_button = ttk.Button(
+            import_controls,
+            text="Проверить колонки",
+            command=self.review_mapping,
+            state="disabled",
+        )
+        self.mapping_button.pack(side="left", padx=(10, 0))
+        self.clear_raw_button = ttk.Button(
+            import_controls, text="Убрать выгрузку", command=self.clear_raw_file,
+            state="disabled",
+        )
+        self.clear_raw_button.pack(side="left", padx=(8, 0))
+        self.raw_label = ttk.Label(
+            import_controls, text="Выгрузка не выбрана", anchor="w"
+        )
+        self.raw_label.pack(side="left", padx=(12, 0), fill="x", expand=True)
 
         panes = ttk.PanedWindow(self, orient="horizontal")
         panes.pack(fill="both", expand=True, padx=10, pady=(0, 10))
@@ -421,10 +642,66 @@ class CalculationApp(tk.Tk):
             self.chart_tabs.add(frame, text=title)
             self.tab_frames[key] = frame
 
+    def _invalidate_results(self, *_args):
+        self.last_result = None
+        self._update_input_controls()
+        self._clear_charts()
+
+    def _update_input_controls(self):
+        idle = not (self.calculation_running or self.export_running)
+        importing = self.calculation_mode.get() == "import"
+        has_book = self.selected_file is not None
+        has_raw = self.selected_raw_file is not None
+        self.events_button.configure(
+            state="normal" if idle and has_book else "disabled",
+            text=f"События графика ({len(self.chart_events)})",
+        )
+        self.choose_button.configure(state="normal" if idle else "disabled")
+        for button in self.mode_buttons:
+            button.configure(state="normal" if idle else "disabled")
+        for entry in self.tariff_entries:
+            entry.configure(state="normal" if idle else "disabled")
+        self.raw_button.configure(state="normal" if idle and importing and has_book else "disabled")
+        raw_ready = idle and importing and has_book and has_raw
+        self.mapping_button.configure(state="normal" if raw_ready else "disabled")
+        self.clear_raw_button.configure(state="normal" if raw_ready else "disabled")
+        self.raw_sheet_combo.configure(state="readonly" if raw_ready else "disabled")
+        can_run = idle and has_book and (
+            not importing or (has_raw and bool(self.selected_raw_sheet.get()))
+        )
+        self.run_button.configure(
+            state="normal" if can_run else "disabled",
+            text="Перерасчёт" if self.has_calculation_run else "Запустить расчёт",
+        )
+        export_state = "normal" if idle and self.last_result is not None else "disabled"
+        self.excel_button.configure(state=export_state)
+        self.report_button.configure(state=export_state)
+        self.raw_label.configure(text=(
+            "Выгрузка не используется в этом режиме" if not importing
+            else str(self.selected_raw_file) if has_raw else "Выгрузка не выбрана"
+        ))
+
+    def _on_mode_changed(self):
+        self._invalidate_results()
+        self._update_input_controls()
+
+    def _on_raw_sheet_changed(self, _event=None):
+        self._clear_mapping()
+        self._invalidate_results()
+        self._update_input_controls()
+
+    def clear_raw_file(self):
+        self.selected_raw_file = None
+        self.selected_raw_sheet.set("")
+        self.raw_sheet_combo.configure(values=())
+        self._clear_mapping()
+        self._invalidate_results()
+        self._update_input_controls()
+
     def choose_file(self):
         file_name = filedialog.askopenfilename(
             title="Выберите книгу с данными",
-            initialdir=str(ROOT / "data"),
+            initialdir=str(DATA_DIR),
             filetypes=[
                 ("Excel-файлы", "*.xlsx *.xlsm *.xls *.xlsb"),
                 ("Все файлы", "*.*"),
@@ -434,12 +711,128 @@ class CalculationApp(tk.Tk):
             return
 
         self.selected_file = Path(file_name)
+        self.has_calculation_run = False
+        try:
+            self.chart_events = load_chart_events(self.selected_file)
+        except (OSError, ValueError, TypeError) as error:
+            self.chart_events = ()
+            messagebox.showwarning("События не загружены", str(error), parent=self)
+        self._clear_mapping()
+        self._invalidate_results()
         self.file_label.configure(text=str(self.selected_file))
-        self.run_button.configure(state="normal")
+        self._update_input_controls()
+
+    def review_chart_events(self):
+        if self.selected_file is None or self.calculation_running or self.export_running:
+            return
+        dialog = ChartEventsDialog(self, self.chart_events, self.selected_file.name)
+        self.wait_window(dialog)
+        if dialog.result is None:
+            return
+        self.chart_events = dialog.result
+        try:
+            save_chart_events(self.selected_file, self.chart_events)
+        except (OSError, ValueError, TypeError) as error:
+            messagebox.showwarning(
+                "Профиль событий не сохранён",
+                f"События применены для текущего запуска, но не сохранены: {error}",
+                parent=self,
+            )
+        self._invalidate_results()
+        self._update_input_controls()
+
+    def _clear_mapping(self):
+        self.sensor_mappings = None
+        self.mapping_sheet = None
+
+    def choose_raw_file(self):
+        if self.calculation_mode.get() != "import" or self.selected_file is None:
+            return
+        file_name = filedialog.askopenfilename(
+            title="Выберите исходную выгрузку датчиков",
+            initialdir=str(
+                DATA_DIR / "initial_data"
+                if (DATA_DIR / "initial_data").exists() else DATA_DIR
+            ),
+            filetypes=[
+                ("Excel-файлы", "*.xlsx *.xlsm *.xls *.xlsb"),
+                ("Все файлы", "*.*"),
+            ],
+        )
+        if not file_name:
+            return
+        try:
+            sheets = list_source_sheets(file_name)
+        except Exception as error:
+            messagebox.showerror("Не удалось открыть выгрузку", str(error), parent=self)
+            return
+        self.selected_raw_file = Path(file_name)
+        self._clear_mapping()
+        self.raw_sheet_combo.configure(values=sheets, state="readonly")
+        name = self.selected_file.stem.lower() if self.selected_file else ""
+        expected = "gt10" if "10" in name else "gt11" if "11" in name else ""
+        default = next(
+            (sheet for sheet in sheets if expected in sheet.lower()),
+            sheets[0] if sheets else "",
+        )
+        self.selected_raw_sheet.set(default)
+        self._invalidate_results()
+        self._update_input_controls()
+
+    def review_mapping(self) -> bool:
+        if not self.selected_file or not self.selected_raw_file:
+            return False
+        sheet = self.selected_raw_sheet.get().strip()
+        if not sheet:
+            messagebox.showerror("Не выбран лист", "Выберите лист выгрузки.", parent=self)
+            return False
+        try:
+            headers, verified_duplicates = source_mapping_info(
+                self.selected_raw_file, sheet
+            )
+            suggestions = (
+                load_saved_mappings(self.selected_file, headers)
+                or suggest_mappings(
+                    headers, self.selected_file, verified_duplicates
+                )
+            )
+            targets = template_columns(self.selected_file)
+        except Exception as error:
+            messagebox.showerror("Ошибка сопоставления", str(error), parent=self)
+            return False
+        dialog = MappingDialog(
+            self, suggestions, targets, headers, verified_duplicates
+        )
+        self.wait_window(dialog)
+        if dialog.result is None:
+            return False
+        self.sensor_mappings = dialog.result
+        self.mapping_sheet = sheet
+        self._invalidate_results()
+        try:
+            save_mappings(self.selected_file, headers, dialog.result)
+        except (OSError, ValueError) as error:
+            messagebox.showwarning(
+                "Профиль не сохранён",
+                f"Соответствия применены, но не удалось сохранить профиль: {error}",
+                parent=self,
+            )
+        return True
 
     def start_calculation(self):
-        if self.selected_file is None:
+        if self.selected_file is None or self.calculation_running or self.export_running:
             return
+        importing = self.calculation_mode.get() == "import"
+        raw_file_path = self.selected_raw_file if importing else None
+        if importing:
+            if raw_file_path is None or not self.selected_raw_sheet.get():
+                messagebox.showerror(
+                    "Выберите выгрузку", "Укажите файл датчиков и лист нужной ГТ.", parent=self
+                )
+                return
+            if self.sensor_mappings is None or self.mapping_sheet != self.selected_raw_sheet.get():
+                if not self.review_mapping():
+                    return
 
         try:
             gas_tariff = self._parse_tariff(
@@ -456,18 +849,23 @@ class CalculationApp(tk.Tk):
             return
 
         self._clear_log()
-        self._clear_charts()
-        self.choose_button.configure(state="disabled")
-        self.run_button.configure(state="disabled")
+        self._invalidate_results()
+        self.calculation_running = True
+        self.has_calculation_run = True
+        self._update_input_controls()
         self.progress.start(10)
 
         worker = threading.Thread(
             target=self._calculation_worker,
             args=(
                 self.selected_file,
+                raw_file_path,
+                self.selected_raw_sheet.get() if importing else "",
+                self.sensor_mappings if importing else None,
                 gas_tariff,
                 electricity_tariff,
                 electricity_cost,
+                self.chart_events,
             ),
             daemon=True,
         )
@@ -491,9 +889,13 @@ class CalculationApp(tk.Tk):
     def _calculation_worker(
         self,
         file_path: Path,
+        raw_file_path: Path | None,
+        raw_sheet: str,
+        mappings: list[SensorMapping] | None,
         gas_tariff: float,
         electricity_tariff: float,
         electricity_cost: float,
+        chart_events: tuple[ChartEvent, ...] = (),
     ):
         writer = QueueWriter(self.output_queue)
         calculation_started = None
@@ -504,7 +906,48 @@ class CalculationApp(tk.Tk):
                 print("Лист: Данные")
 
                 periods_mod.PERIOD_OVERRIDES = []
-                source = load_source_data(file_path, "Данные")
+                assembled = None
+                if raw_file_path is not None:
+                    print(f"Исходная выгрузка: {raw_file_path.name}, лист: {raw_sheet}")
+                    assembled = assemble_sensor_data(
+                        file_path, raw_file_path, raw_sheet, mappings or []
+                    )
+                    print(
+                        f"Получасовых строк: {assembled.imported_rows}; "
+                        f"совпадений по дате: {assembled.overlap_rows}."
+                    )
+                    if assembled.invalid_sensor_values:
+                        print(
+                            "Нечисловые показания сохранены без подмены: "
+                            + ", ".join(
+                                f"{key} — {count}"
+                                for key, count in assembled.invalid_sensor_values.items()
+                            )
+                        )
+                    if assembled.verified_duplicate_columns:
+                        print(
+                            "Производные колонки выгрузки совпали с исходными "
+                            "каналами и не дублируются: "
+                            + ", ".join(assembled.verified_duplicate_columns)
+                        )
+                    profile = read_calculation_profile(file_path)
+                    calculate_data_columns(assembled, profile)
+                    missing = {
+                        column: int(pd.to_numeric(
+                            assembled.values[column], errors="coerce"
+                        ).isna().sum())
+                        for column in ("R", "AB", "AQ", "AV", "AX")
+                    }
+                    print(
+                        "Строки без расчётного значения "
+                        "(в том числе остановы и X): "
+                        + ", ".join(f"{column} — {count}" for column, count in missing.items())
+                    )
+                    source = load_source_data(assembled.as_headered_frame())
+                    data_for_export = assembled
+                else:
+                    data_for_export = read_data_sheet(file_path)
+                    source = load_source_data(data_for_export.as_headered_frame())
                 rh_data = prepare_rh_data(source)
                 vna_data = prepare_vna_data(source)
 
@@ -512,11 +955,10 @@ class CalculationApp(tk.Tk):
                 print("=" * 78)
                 print("ПРЕДПРОСМОТР АВТОМАТИЧЕСКОЙ РАЗБИВКИ ПЕРИОДОВ")
                 print("=" * 78)
-                preview_df, preview_periods, _, _ = run_rh(
-                    rh_data,
-                    periods_only=True,
-                    show_plots=False,
-                )
+                # В предпросмотре нужны только даты и график. Полный RH
+                # печатает таблицы границ, которые после ручной правки
+                # остаются в логе рядом с окончательными и путают их.
+                preview_df, preview_periods = periods_mod.build_periods(rh_data)
                 preview_figure = plot_pressure_drops(
                     preview_df,
                     preview_periods,
@@ -586,10 +1028,44 @@ class CalculationApp(tk.Tk):
                     electricity_price_rub_per_mwh=electricity_tariff,
                     electricity_cost_rub_per_mwh=electricity_cost,
                     power_threshold=nominal_hours["power_threshold"],
+                    nominal_hours=nominal_hours,
                     vna_data=vna_df,
                     delta_table=output_tables.get("delta"),
                 )
                 print_economics(economics_result)
+
+                if assembled is not None:
+                    apply_economic_columns(assembled, economics_result)
+                sections = collect_result_tables(
+                    rh_periods, output_tables, vna_results, economics_result["table"]
+                )
+                report_data = build_report_data(
+                    source_data=source,
+                    rh_data=rh_df,
+                    periods_df=rh_periods,
+                    boundary_table=output_tables.get("boundary"),
+                    delta_table=output_tables.get("delta"),
+                    vna_results=vna_results,
+                    economics_result=economics_result,
+                    nominal_hours=nominal_hours,
+                    gas_tariff=gas_tariff,
+                    electricity_tariff=electricity_tariff,
+                    electricity_cost=electricity_cost,
+                    source_file=file_path,
+                )
+                suffix = "_обновлённые_данные_результаты" if raw_file_path is not None else "_результаты"
+                snapshot = CalculationSnapshot(
+                    data=data_for_export, sections=sections,
+                    pressure_chart=PressureChartData(
+                        rh_data, rh_periods, output_tables.get("boundary"), chart_events,
+                        degradation_values=vna_df,
+                        degradation_deltas=output_tables.get("delta"),
+                        vna_top10=vna_results,
+                    ),
+                    report_data=report_data,
+                    input_files=tuple(path.resolve() for path in (file_path, raw_file_path) if path is not None),
+                    filename_stem=f"{file_path.stem}{suffix}",
+                )
 
                 pressure_figure = plot_pressure_drops(
                     rh_df,
@@ -611,6 +1087,7 @@ class CalculationApp(tk.Tk):
                     "delta_table": output_tables.get("delta"),
                     "economics_table": economics_result["table"],
                     "rh_figure": windows_figure,
+                    "snapshot": snapshot,
                 }))
                 if calculation_started is not None:
                     print(
@@ -620,6 +1097,7 @@ class CalculationApp(tk.Tk):
                 print()
                 print("=" * 78)
                 print("ВСЁ ГОТОВО: расчёт завершён.")
+                print("Проверьте результаты во вкладках. Затем сформируйте Excel и Word кнопками.")
 
         except Exception:
             self.output_queue.put(("error", traceback.format_exc()))
@@ -644,10 +1122,10 @@ class CalculationApp(tk.Tk):
                     self._append_log("\nОШИБКА:\n" + value)
                 elif kind == "finished":
                     self.progress.stop()
-                    self.choose_button.configure(state="normal")
-                    self.run_button.configure(
-                        state="normal" if self.selected_file else "disabled"
-                    )
+                    self.calculation_running = False
+                    self._update_input_controls()
+                elif kind == "export_finished":
+                    self._show_export_result(value)
         except queue.Empty:
             pass
 
@@ -686,7 +1164,10 @@ class CalculationApp(tk.Tk):
 
         dialog = tk.Toplevel(self)
         dialog.title("Проверка периодов")
-        dialog.geometry("720x470")
+        dialog.geometry(
+            f"720x470+{max(0, self.winfo_rootx() + 20)}"
+            f"+{max(0, self.winfo_rooty() + 80)}"
+        )
         dialog.minsize(620, 380)
         dialog.configure(bg=self.colors["window"])
         dialog.transient(self)
@@ -698,7 +1179,8 @@ class CalculationApp(tk.Tk):
             frame,
             text=(
                 "Проверьте автоматическую разбивку. Оставьте даты без изменений "
-                "или отредактируйте их вручную."
+                "или отредактируйте их вручную. График в основном окне "
+                "остаётся доступным; это окно можно передвинуть."
             ),
             wraplength=670,
         ).pack(anchor="w", pady=(0, 8))
@@ -767,9 +1249,8 @@ class CalculationApp(tk.Tk):
         ).pack(side="right")
 
         dialog.protocol("WM_DELETE_WINDOW", use_auto)
-        dialog.grab_set()
-        text_box.focus_set()
-        self.wait_window(dialog)
+        dialog.lift(self)
+        text_box.focus_force()
 
     def _clear_log(self):
         self.log.configure(state="normal")
@@ -888,13 +1369,14 @@ class CalculationApp(tk.Tk):
         canvas.bind("<Configure>", match_width)
 
         for index, table in enumerate(results, start=1):
+            period_number = table.attrs.get("period_number", index)
             table = table.drop(columns=["share_percent"], errors="ignore").copy()
             table.insert(3, "│₁", "│")
             table.insert(table.columns.get_loc("eta_1") + 1, "║", "║")
             table.insert(table.columns.get_loc("eta_2") + 1, "│₂", "│")
             ttk.Label(
                 content,
-                text=f"ПЕРИОД {index}: TOP-10 ИНТЕРВАЛОВ VNA",
+                text=f"ПЕРИОД {period_number}: TOP-10 ИНТЕРВАЛОВ VNA",
             ).pack(anchor="w", pady=(8, 4))
             table_frame = ttk.Frame(content)
             table_frame.pack(fill="both", expand=True)
@@ -951,6 +1433,8 @@ class CalculationApp(tk.Tk):
         return overview
 
     def _show_results(self, results):
+        self.last_result = results["snapshot"]
+        self._update_input_controls()
         self._show_figure("pressure", results.get("pressure_figure"))
         self._show_figure("vna", results.get("vna_figure"))
         self._show_table("boundary", results.get("boundary_table"))
@@ -958,6 +1442,81 @@ class CalculationApp(tk.Tk):
         self._show_table("delta", results.get("delta_table"))
         self._show_table("economics", results.get("economics_table"))
         self._show_figure("rh", results.get("rh_figure"))
+
+    def generate_excel_report(self):
+        self._start_export("Excel")
+
+    def generate_word_report(self):
+        self._start_export("Word")
+
+    def _start_export(self, kind):
+        if self.calculation_running or self.export_running:
+            return
+        snapshot = self.last_result
+        if snapshot is None:
+            messagebox.showinfo(
+                "Сначала выполните расчёт",
+                "Документы формируются после успешного расчёта выбранных данных.", parent=self,
+            )
+            return
+        suffix = ".xlsx" if kind == "Excel" else ".docx"
+        initialdir = DEFAULT_REPORT_DIR
+        try:
+            initialdir.mkdir(parents=True, exist_ok=True)
+        except OSError as error:
+            messagebox.showerror("Не удалось открыть папку результатов", str(error), parent=self)
+            return
+        output_name = filedialog.asksaveasfilename(
+            title=f"Куда сохранить {kind}", initialdir=str(initialdir),
+            initialfile=f"{snapshot.filename_stem}{suffix}",
+            defaultextension=suffix,
+            filetypes=[("Книга Excel", "*.xlsx")] if kind == "Excel" else [("Документ Word", "*.docx")],
+        )
+        if not output_name:
+            return
+        path = Path(output_name)
+        try:
+            snapshot.validate_destination(path, suffix)
+        except ValueError as error:
+            messagebox.showerror("Выберите другой файл", str(error), parent=self)
+            return
+        self.export_running = True
+        self._update_input_controls()
+        self.progress.start(10)
+        self._append_log(f"\nФормирование {kind}: {path}\n")
+        threading.Thread(
+            target=self._export_worker, args=(snapshot, path, kind), daemon=True,
+        ).start()
+
+    def _export_worker(self, snapshot, path, kind):
+        result = {"kind": kind, "path": path, "error": None}
+        try:
+            if kind == "Excel":
+                save_result_workbook(
+                    snapshot.data, snapshot.sections, path,
+                    pressure_chart=snapshot.pressure_chart,
+                )
+            else:
+                generate_report(snapshot.report_data, template_path=DEFAULT_TEMPLATE, output_path=path)
+        except Exception as error:
+            result["error"] = str(error)
+            result["traceback"] = traceback.format_exc()
+        self.output_queue.put(("export_finished", result))
+
+    def _show_export_result(self, result):
+        self.export_running = False
+        self.progress.stop()
+        self._update_input_controls()
+        kind = result["kind"]
+        if result["error"] is not None:
+            self._append_log(f"\nОшибка формирования {kind}:\n{result['traceback']}\n")
+            messagebox.showerror(f"Ошибка формирования {kind}", result["error"], parent=self)
+            return
+        path = result["path"].resolve()
+        self._append_log(f"{kind} сохранён: {path}\n")
+        messagebox.showinfo(
+            f"{kind} сформирован", f"Файл сохранён:\n{path}", parent=self,
+        )
 
 
 def main():
@@ -967,4 +1526,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-                    nominal_hours=nominal_hours,

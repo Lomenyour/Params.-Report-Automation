@@ -121,7 +121,7 @@ def build_vna_distribution(data: pd.DataFrame) -> tuple[pd.DataFrame, float | No
     Остановы исключаются по LOW_POWER. Начиная с верхних интервалов ВНА,
     выбирается набор, содержащий не менее 80 % рабочих записей. Нижняя
     граница последнего добавленного интервала становится порогом; рабочее
-    условие далее задаётся строго как ВНА > threshold.
+    условие далее задаётся как ВНА ≥ threshold.
     """
 
     vna = _num(data, "vna")
@@ -350,15 +350,18 @@ def calculate_economics(
         temperature_ok = ~np.isfinite(temperature_p) | (
             (temperature_p > T_MIN) & (temperature_p < T_MAX)
         )
+        power_limit = (
+            power_threshold if np.isfinite(power_threshold) else LOW_POWER
+        )
         working_quality = (
             np.isfinite(power_p)
-            & (power_p > LOW_POWER)
+            & (power_p >= power_limit)
             & np.isfinite(b_p)
             & (b_p > B_MIN)
             & (b_p < B_MAX)
             & temperature_ok
         )
-        vna_quality = np.isfinite(vna_p) & (vna_p > vna_threshold)
+        vna_quality = np.isfinite(vna_p) & (vna_p >= vna_threshold)
         loss_quality = working_quality & vna_quality
 
         # Рост bприв означает перерасход топлива. Снижение Nприв означает
@@ -374,6 +377,17 @@ def calculate_economics(
             np.clip(-k_n * tau, 0.0, None),
             0.0,
         )
+
+        # Эти же получасовые величины можно записать в итоговый лист «Данные».
+        # Их парные средние дают прежние итоги; метод расчёта не меняется.
+        row_losses.extend({
+            "date": dates.iloc[index],
+            "period": period_number,
+            "fuel_loss_rate": float(fuel_rate),
+            "power_loss_rate": float(power_rate),
+        } for index, fuel_rate, power_rate in zip(
+            order, fuel_loss_rate, power_loss_rate
+        ))
 
         fuel_nm3 = _hourly_mean_sum(fuel_loss_rate)
         power_mwh = _hourly_mean_sum(power_loss_rate)
@@ -413,6 +427,7 @@ def calculate_economics(
         "fuel_overrun_rub": np.nan,
         "underproduction_mwh": np.nan,
         "underproduction_rub": np.nan,
+        "total_cost_rub": np.nan,
     }
 
     table = pd.DataFrame(periods)
@@ -427,7 +442,6 @@ def calculate_economics(
             "Перерасход, нм³",
             "Перерасход, руб",
             "Общие издержки, руб",
-        "total_cost_rub": np.nan,
         ):
             total[column] = float(
                 pd.to_numeric(table[column], errors="coerce").sum()
@@ -437,6 +451,7 @@ def calculate_economics(
             "fuel_overrun_rub": total["Перерасход, руб"] * annual_factor,
             "underproduction_mwh": total["Недовыработка, МВт·ч"] * annual_factor,
             "underproduction_rub": total["Недовыработка, руб"] * annual_factor,
+            "total_cost_rub": total["Общие издержки, руб"] * annual_factor,
         }
         fuel_row = {
             "Период": "Суммарные издержки, связанные с перерасходом, приведенные к году эксплуатации",
@@ -448,22 +463,6 @@ def calculate_economics(
             "Недовыработка, МВт·ч": annualized["underproduction_mwh"],
             "Недовыработка, руб": annualized["underproduction_rub"],
         }
-        table = pd.concat(
-            [table, pd.DataFrame([total, fuel_row, electricity_row, total_cost_row, *hours_rows])],
-            ignore_index=True,
-        )
-            "total_cost_rub": total["Общие издержки, руб"] * annual_factor,
-
-    table = table[ECONOMICS_COLUMNS].copy()
-
-    return {
-        "table": table,
-        "annualized": annualized,
-        "total_period_hours": total_period_hours,
-        "periods": periods,
-        "row_losses": pd.DataFrame(row_losses),
-        "distribution": distribution,
-        "vna_threshold": vna_threshold,
         total_cost_row = {
             "Период": "Суммарные издержки, приведенные к году эксплуатации",
             "Общие издержки, руб": annualized["total_cost_rub"],
@@ -482,6 +481,21 @@ def calculate_economics(
             {"Период": power_label, "Наработка, ч": nominal_hours.get("power_hours", np.nan)},
             {"Период": vna_label, "Наработка, ч": nominal_hours.get("vna_hours", np.nan)},
         ]
+        table = pd.concat(
+            [table, pd.DataFrame([total, fuel_row, electricity_row, total_cost_row, *hours_rows])],
+            ignore_index=True,
+        )
+
+    table = table[ECONOMICS_COLUMNS].copy()
+
+    return {
+        "table": table,
+        "annualized": annualized,
+        "total_period_hours": total_period_hours,
+        "periods": periods,
+        "row_losses": pd.DataFrame(row_losses),
+        "distribution": distribution,
+        "vna_threshold": vna_threshold,
         "power_threshold": float(power_threshold),
         "gas_price_rub_per_m3": float(gas_price_rub_per_m3),
         "electricity_price_rub_per_mwh": float(electricity_price_rub_per_mwh),
@@ -544,9 +558,8 @@ def print_economics(result: dict) -> None:
         display[column] = pd.to_numeric(
             display[column], errors="coerce"
         ).round(3)
-    print(display.to_string(index=False))
-    print("=" * 90)
-
     display["Наработка, ч"] = pd.to_numeric(
         display["Наработка, ч"], errors="coerce"
     ).round(1)
+    print(display.to_string(index=False))
+    print("=" * 90)

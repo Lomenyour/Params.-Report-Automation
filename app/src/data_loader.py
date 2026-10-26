@@ -36,7 +36,9 @@ COLUMN_MAP = {
     "расход газа": "Расход газа",
     "bприв": "bприв", "b прив": "bприв",
     "pгаз": "Pгаз", "pгаз, мпа": "Pгаз", "ргаз": "Pгаз",
+    "pгаза": "Pгаз", "pгаза,": "Pгаз",
     "тгаз": "Тгаз", "tгаз": "Тгаз", "tгаз, с": "Тгаз",
+    "tгаза": "Тгаз", "tгаза, °с": "Тгаз",
     "токр.воздуха": "Токр.воздуха", "tокр.воздуха": "Токр.воздуха",
     "токр": "Токр.воздуха", "tокр": "Токр.воздуха",
     "токр, °с": "Токр.воздуха", "tокр, °с": "Токр.воздуха",
@@ -136,33 +138,44 @@ def _find_header_row(head: pd.DataFrame, min_matches: int = 2) -> int | None:
     return None
 
 
-def load_source_data(file_path: str | Path, sheet_name: str = "Данные") -> pd.DataFrame:
-    """Открывает книгу один раз и возвращает общий канонический DataFrame."""
-    path = Path(file_path)
-    print(f"Загрузка данных: {path.name}")
+def load_source_data(
+    file_path: str | Path | pd.DataFrame, sheet_name: str = "Данные"
+) -> pd.DataFrame:
+    """Возвращает единый канонический набор из файла или готовой таблицы.
 
-    with pd.ExcelFile(path, engine="calamine") as workbook:
-        first_sheet = workbook.sheet_names[0]
-        if str(first_sheet).strip() != sheet_name:
-            raise ValueError(
-                f"Первый лист книги называется '{first_sheet}', "
-                f"а ожидается '{sheet_name}'."
+    Табличный вход отделяет расчёты от Excel и в будущем позволит читать БД.
+    """
+    if isinstance(file_path, pd.DataFrame):
+        print("Загрузка собранной таблицы «Данные» из памяти")
+        raw = file_path.copy()
+        raw_headers = list(raw.columns)
+        header_row = 0
+    else:
+        path = Path(file_path)
+        print(f"Загрузка данных: {path.name}")
+
+        with pd.ExcelFile(path, engine="calamine") as workbook:
+            first_sheet = workbook.sheet_names[0]
+            if str(first_sheet).strip() != sheet_name:
+                raise ValueError(
+                    f"Первый лист книги называется '{first_sheet}', "
+                    f"а ожидается '{sheet_name}'."
+                )
+
+            head = workbook.parse(sheet_name, header=None, nrows=25)
+            header_row = _find_header_row(head)
+            if header_row is None:
+                raise ValueError(
+                    f"Не найдена строка шапки на листе '{sheet_name}' "
+                    f"в файле {path.name}"
+                )
+
+            raw_headers = workbook.parse(
+                sheet_name, header=None, nrows=header_row + 1
+            ).iloc[header_row].tolist()
+            raw = workbook.parse(
+                sheet_name, header=None, skiprows=header_row + 1
             )
-
-        head = workbook.parse(sheet_name, header=None, nrows=25)
-        header_row = _find_header_row(head)
-        if header_row is None:
-            raise ValueError(
-                f"Не найдена строка шапки на листе '{sheet_name}' "
-                f"в файле {path.name}"
-            )
-
-        raw_headers = workbook.parse(
-            sheet_name, header=None, nrows=header_row + 1
-        ).iloc[header_row].tolist()
-        raw = workbook.parse(
-            sheet_name, header=None, skiprows=header_row + 1
-        )
 
     min_cols = min(raw.shape[1], len(raw_headers))
     raw = raw.iloc[:, :min_cols].copy()
@@ -187,10 +200,14 @@ def load_source_data(file_path: str | Path, sheet_name: str = "Данные") ->
             f"Распознанные заголовки: {list(raw.columns)}"
         )
 
-    # Колонка A в исходной книге не имеет заголовка. Сохраняем её последнее
-    # числовое значение для контрольной проверки, а рабочие часы считаем
-    # самостоятельно по физическому порядку строк с шагом 0.5 часа.
-    if raw.shape[1] > 0:
+    # Сохраняем исходную наработку для отчёта и контрольной проверки. В новых
+    # книгах используем распознанную колонку «Наработка», а в старых книгах,
+    # где у колонки A нет заголовка, сохраняем прежний запасной вариант.
+    if "Наработка" in raw.columns:
+        result["hours_input"] = pd.to_numeric(
+            raw["Наработка"], errors="coerce"
+        )
+    elif raw.shape[1] > 0:
         result["hours_input"] = pd.to_numeric(raw.iloc[:, 0], errors="coerce")
     else:
         result["hours_input"] = np.nan

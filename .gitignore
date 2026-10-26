@@ -54,3 +54,18 @@ env/
 .DS_Store
 Thumbs.db
 *.tmp
+
+# Сборки приложения — локальные артефакты PyInstaller.
+/build/
+/dist/
+/build_import/
+/dist_import/
+/build_test/
+/dist_test/
+/archive_builds/
+
+# Локальные шаблоны, отчёты и машинозависимые файлы сборки.
+/word_auto/templates/
+/word_auto/reports/
+/*.spec
+/.pip-temp/

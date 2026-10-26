@@ -22,18 +22,20 @@ class CompressorDegradationChartTest(unittest.TestCase):
         results = []
         for period in range(1, 4):
             first = pd.Timestamp(2026, period, 1)
-            for index, (vna, t, pressure) in enumerate((
-                (86.21, 10.1, 990.1),
-                (86.29, 10.4, 990.4),
-                (86.31, 10.2, 990.2),  # вне TOP-1 ВНА
-                (86.22, 11.0, 990.2),  # вне температуры
-                (86.23, 10.2, 991.0),  # вне давления
+            for index, (vna, t, pressure, eta) in enumerate((
+                (86.21, 10.1, 990.1, 84.01),
+                (86.29, 10.4, 990.4, 84.02),
+                (86.31, 10.2, 990.2, 84.01),  # вне TOP-1 ВНА
+                (86.22, 11.0, 990.2, 84.01),  # вне температуры
+                (86.23, 10.2, 991.0, 84.01),  # вне давления
+                (86.23, 10.2, 990.2, 84.89),  # только КПД вне диапазона
+                (86.23, 10.2, 990.2, 82.86),  # только КПД вне диапазона
             )):
                 records.append({
                     "period": period, "date": first + pd.Timedelta(hours=index),
                     "vna": vna, "t": t, "p": pressure, "tkk": 370.0,
                     "pkk": 13.0, "pi_k": 13.1 + index / 10,
-                    "eta_compressor": 84.01 + index / 100,
+                    "eta_compressor": eta, "excel_row": (period - 1) * 7 + index + 2,
                     "vlo": 200.0, "fgo_fto": 225.0, "power_n": 85.0,
                 })
             table = pd.DataFrame([{
@@ -49,7 +51,7 @@ class CompressorDegradationChartTest(unittest.TestCase):
         periods = pd.DataFrame([{
             "period": period,
             "date_start": pd.Timestamp(2026, period, 1),
-            "date_end": pd.Timestamp(2026, period, 1, 4),
+            "date_end": pd.Timestamp(2026, period, 1, 6),
         } for period in range(1, 4)])
 
         plots = prepare_compressor_plots(values, periods, results)
@@ -82,11 +84,29 @@ class CompressorDegradationChartTest(unittest.TestCase):
                 fill = root.find("c:chart/c:plotArea/c:spPr/a:solidFill/a:srgbClr", ns)
                 self.assertEqual(fill.get("val"), "FFFFFF")
         output.seek(0)
-        sheet = load_workbook(output)["Графики"]
+        saved = load_workbook(output)
+        sheet = saved["Графики"]
+        self.assertEqual(saved.sheetnames[-3:], ["Компрессор П1", "Компрессор П2", "Компрессор П3"])
         self.assertEqual(len(sheet._charts), 5)  # Перепады, общая деградация, 3 периода
-        for chart in sheet._charts[2:]:
+        for number, chart in enumerate(sheet._charts[2:], start=1):
             self.assertEqual(len(chart._charts), 2)
-            self.assertEqual(len(chart.series), 1)
+            self.assertEqual(len(chart.series), 6)  # КПД и пять элементов подписей
+            source = saved[f"Компрессор П{number}"]
+            self.assertEqual(source.sheet_state, "visible")
+            self.assertEqual(source["A6"].value, pd.Timestamp(2026, number, 1))
+            self.assertAlmostEqual(source["E6"].value, 84.01)
+            self.assertAlmostEqual(source["F6"].value, 13.1)
+            self.assertEqual(source["G6"].value, (number - 1) * 7 + 2)
+            self.assertIn(f"'Компрессор П{number}'!$E$6:$E$7", chart.series[0].yVal.numRef.f)
+            self.assertIn(f"'Компрессор П{number}'!$F$6:$F$7", chart._charts[1].series[0].yVal.numRef.f)
+            labels = [item for item in chart.series if item.dLbls is not None]
+            self.assertEqual(len(labels), 3)
+            for label in labels:
+                self.assertEqual(label.dLbls.spPr.solidFill.srgbClr, "FFFFFF")
+                self.assertTrue(label.dLbls.showSerName)
+                self.assertIsNotNone(label.xVal.numLit)
+            self.assertIn("10.100 ≤ tнк ≤ 10.400", labels[-1].tx.v)
+            self.assertIn("ηoi = 84.01 %", labels[0].tx.v)
             self.assertIsNotNone(chart.series[0].trendline)
             self.assertIsNotNone(chart._charts[1].series[0].trendline)
             self.assertEqual(chart.graphical_properties.solidFill.srgbClr, "FFFFFF")
@@ -111,9 +131,27 @@ class CompressorDegradationChartTest(unittest.TestCase):
                         if isinstance(row[0].value, str)]
         self.assertTrue(any("10.100 ≤ tнк ≤ 10.400" in text
                             for text in descriptions))
-        self.assertEqual(sheet["BO2"].value, pd.Timestamp("2026-01-01"))
-        self.assertAlmostEqual(sheet["BP2"].value, 84.01)
+        self.assertTrue(all(cell.value is None for row in sheet.iter_rows(min_col=67, max_col=69)
+                            for cell in row))
         self.assertAlmostEqual(sheet._charts[2].series[0].yVal.numRef.numCache.pt[0].v, 84.01)
+
+    def test_eta_filter_preserves_unrounded_boundary_values_and_source(self):
+        dates = pd.date_range("2026-01-01", periods=4, freq="h")
+        values = pd.DataFrame({
+            "date": dates, "vna": [86.2] * 4, "t": [10.0] * 4,
+            "p": [990.0] * 4, "pi_k": [14.0] * 4,
+            "eta_compressor": [84.0096, 84.0204, 84.89, 82.86],
+        })
+        original = values.copy(deep=True)
+        periods = pd.DataFrame([{"period": 1, "date_start": dates[0], "date_end": dates[-1]}])
+        table = pd.DataFrame([{
+            "vna_interval": "86.0-87.0", "t_1": 10, "t_2": 10, "p_1": 990, "p_2": 990,
+            "date_1": dates[0], "date_2": dates[1], "eta_1": 84.010, "eta_2": 84.020,
+        }])
+        table.attrs["period_number"] = 1
+        plots = prepare_compressor_plots(values, periods, [table])
+        self.assertEqual(plots[0].points.eta.tolist(), [84.0096, 84.0204])
+        pd.testing.assert_frame_equal(values, original)
 
     def test_value_axes_cover_flat_single_and_wide_series(self):
         for eta, pi_k in (([85.0], [14.0]),

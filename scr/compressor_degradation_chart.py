@@ -6,22 +6,30 @@ import math
 
 import numpy as np
 import pandas as pd
+from openpyxl.cell import WriteOnlyCell
 from openpyxl.chart import Reference, ScatterChart, Series
 from openpyxl.chart.axis import ChartLines, NumericAxis
-from openpyxl.chart.data_source import NumData, NumVal
+from openpyxl.chart.data_source import AxDataSource, NumData, NumDataSource, NumVal
+from openpyxl.chart.label import DataLabelList
+from openpyxl.chart.legend import LegendEntry
 from openpyxl.chart.layout import Layout, ManualLayout
+from openpyxl.chart.series import SeriesLabel, XYSeries
 from openpyxl.chart.shapes import GraphicalProperties
 from openpyxl.chart.text import RichText
 from openpyxl.chart.trendline import Trendline
-from openpyxl.drawing.line import LineProperties
+from openpyxl.drawing.line import LineEndProperties, LineProperties
 from openpyxl.drawing.text import (
     CharacterProperties, Font as DrawingFont, Paragraph, ParagraphProperties,
     RichTextProperties,
 )
 from openpyxl.utils.datetime import to_excel
+from openpyxl.styles import Alignment, Font, PatternFill
 
-HELPER_COLUMN = 67  # BO:BQ, за существующими скрытыми данными диаграмм.
-HELPER_HEADERS = ("Дата", "КПД компрессора, %", "πк")
+DATA_COLUMNS = (
+    ("date", "Дата"), ("vna", "ВНА, %"), ("t", "tнк, °C"),
+    ("p", "Pнк, мбар"), ("eta", "КПД компрессора, %"), ("pi_k", "πк"),
+    ("excel_row", "Строка исходного Excel"),
+)
 CHART_ROWS = 49
 
 
@@ -36,7 +44,7 @@ class CompressorPlot:
     t_upper: float
     p_lower: float
     p_upper: float
-    helper_first: int = 0
+    data_first: int = 6
 
 
 def prepare_compressor_plots(values, periods, top10_results):
@@ -77,25 +85,85 @@ def prepare_compressor_plots(values, periods, top10_results):
         selected["date"] = pd.to_datetime(selected["date"], errors="coerce")
         selected["pi_k"] = pd.to_numeric(selected["pi_k"], errors="coerce")
         selected["eta"] = pd.to_numeric(selected["eta_compressor"], errors="coerce")
+        eta_lower, eta_upper = sorted((float(top["eta_1"]), float(top["eta_2"])))
         selected = selected.loc[
             selected["date"].notna() & np.isfinite(selected["eta"]) &
-            np.isfinite(selected["pi_k"])
+            np.isfinite(selected["pi_k"]) &
+            selected["eta"].round(3).between(eta_lower, eta_upper)
         ].sort_values("date", kind="stable")
         if selected.empty:
             continue
         plots.append(CompressorPlot(
-            number, selected[["date", "eta", "pi_k"]].reset_index(drop=True),
+            number, selected[[key for key, _ in DATA_COLUMNS if key in selected]].reset_index(drop=True),
             top, lower, upper, t_lower, t_upper, p_lower, p_upper,
         ))
     return plots
 
 
-def _series(sheet, plot, column, title, color, *, trend=False):
-    first = plot.helper_first
+def _criteria(plot, *, multiline=False):
+    eta_lower, eta_upper = sorted((float(plot.top["eta_1"]), float(plot.top["eta_2"])))
+    parts = [
+        f"{plot.vna_lower:.1f} ≤ ВНА < {plot.vna_upper:.1f} %",
+        f"{plot.t_lower:.3f} ≤ tнк ≤ {plot.t_upper:.3f} °C",
+        f"{plot.p_lower:.3f} ≤ Pнк ≤ {plot.p_upper:.3f} мбар",
+        f"{eta_lower:.3f} ≤ ηoi ≤ {eta_upper:.3f} %",
+    ]
+    return ("\n" if multiline else "; ").join(parts)
+
+
+def _write_data_sheets(book, plots):
+    sheets = {}
+    for plot in plots:
+        sheet = book.create_sheet(f"Компрессор П{plot.period}")
+        sheet.sheet_view.showGridLines = False
+        sheet.freeze_panes = "A6"
+        for index, width in enumerate((23, 14, 17, 20, 26, 16, 24), start=1):
+            sheet.column_dimensions[_letter(index)].width = width
+        sheet.row_dimensions[1].height = 26
+        sheet.row_dimensions[2].height = 45
+        sheet.merged_cells.add("A1:G1")
+        sheet.merged_cells.add("A2:G2")
+        def cell(value, *, header=False):
+            if value is None or pd.isna(value):
+                value = None
+            elif isinstance(value, pd.Timestamp):
+                value = value.to_pydatetime()
+            elif isinstance(value, np.generic):
+                value = value.item()
+            item = WriteOnlyCell(sheet, value=value)
+            item.font = Font(name="Calibri", size=11, bold=header,
+                             color="FFFFFF" if header else "000000")
+            item.alignment = Alignment(vertical="center", wrap_text=True)
+            if header:
+                item.fill = PatternFill("solid", fgColor="24476A")
+            return item
+        sheet.append([cell(f"Период {plot.period}. Данные деградации компрессора")])
+        sheet.append([cell(_criteria(plot))])
+        sheet.append([cell("Сопоставление границ — на точности TOP-10 (3 знака); значения ниже без округления.")])
+        sheet.append([])
+        sheet.append([cell(title, header=True) for _, title in DATA_COLUMNS])
+        plot.data_first = 6
+        for record in plot.points.to_dict("records"):
+            cells = []
+            for key, _ in DATA_COLUMNS:
+                item = cell(record.get(key))
+                item.number_format = "dd.mm.yyyy hh:mm" if key == "date" else (
+                    "0" if key == "excel_row" else "0.000"
+                )
+                cells.append(item)
+            sheet.append(cells)
+        sheet.auto_filter.ref = f"A5:G{plot.data_first + len(plot.points) - 1}"
+        sheets[plot.period] = sheet
+    return sheets
+
+
+def _series(sheet, plot, key, title, color, *, trend=False):
+    first = plot.data_first
     last = first + len(plot.points) - 1
+    column = [name for name, _ in DATA_COLUMNS].index(key) + 1
     series = Series(
         Reference(sheet, min_col=column, min_row=first, max_row=last),
-        Reference(sheet, min_col=HELPER_COLUMN, min_row=first, max_row=last),
+        Reference(sheet, min_col=1, min_row=first, max_row=last),
         title=title,
     )
     series.xVal.numRef.numCache = NumData(
@@ -106,7 +174,7 @@ def _series(sheet, plot, column, title, color, *, trend=False):
     series.yVal.numRef.numCache = NumData(
         ptCount=len(plot.points),
         pt=[NumVal(idx=i, v=float(value)) for i, value in
-            enumerate(plot.points["eta" if column == HELPER_COLUMN + 1 else "pi_k"])],
+            enumerate(plot.points[key])],
     )
     series.graphicalProperties.line.noFill = True
     series.marker.symbol = "circle"
@@ -114,7 +182,7 @@ def _series(sheet, plot, column, title, color, *, trend=False):
     series.marker.graphicalProperties.solidFill = color
     series.marker.graphicalProperties.line.solidFill = color
     if trend and len(plot.points) > 1:
-        metric = "КПД" if column == HELPER_COLUMN + 1 else "Степень сжатия"
+        metric = "КПД" if key == "eta" else "Степень сжатия"
         series.trendline = Trendline(
             trendlineType="linear", name=f"Линейная ({metric})",
             dispEq=False, dispRSqr=False,
@@ -125,10 +193,10 @@ def _series(sheet, plot, column, title, color, *, trend=False):
     return series
 
 
-def _text(size=1100, *, bold=False):
+def _text(size=1100, *, bold=False, centered=False):
     return RichText(
         bodyPr=RichTextProperties(),
-        p=[Paragraph(pPr=ParagraphProperties(defRPr=CharacterProperties(
+        p=[Paragraph(pPr=ParagraphProperties(algn="ctr" if centered else None, defRPr=CharacterProperties(
             sz=size, b=bold, solidFill="000000",
             latin=DrawingFont(typeface="Times New Roman"),
         )), endParaRPr=CharacterProperties(lang="ru-RU"))],
@@ -146,25 +214,78 @@ def _format_axis(axis, title):
     )
 
 
-def _value_scale(axis, values):
+def _value_scale(axis, values, *, upper=False):
     """Читаемая шкала по всем точкам, включая постоянные ряды."""
     low, high = float(values.min()), float(values.max())
     span = max(high - low, 1.0)
-    middle = (low + high) / 2
-    raw_step = span / 6
+    lower = low - span * (3 if upper else 1)
+    higher = high + span * (1 if upper else 3)
+    raw_step = (higher - lower) / 6
     magnitude = 10 ** math.floor(math.log10(raw_step))
     step = next(unit * magnitude for unit in (1, 2, 5, 10)
                 if unit * magnitude >= raw_step)
-    axis.scaling.min = math.floor((middle - span * 0.6) / step) * step
-    axis.scaling.max = math.ceil((middle + span * 0.6) / step) * step
+    axis.scaling.min = math.floor(lower / step) * step
+    axis.scaling.max = math.ceil(higher / step) * step
     axis.majorUnit = step
     axis.minorUnit = step / 5
     axis.numFmt = "0.0" if step >= 0.1 else "0.00"
 
 
+def _annotation(points, text, *, label=False):
+    series = XYSeries(
+        tx=SeriesLabel(v=text),
+        xVal=AxDataSource(numLit=NumData(ptCount=len(points), pt=[
+            NumVal(idx=index, v=to_excel(pd.Timestamp(date).to_pydatetime()))
+            for index, (date, _) in enumerate(points)
+        ])),
+        yVal=NumDataSource(numLit=NumData(ptCount=len(points), pt=[
+            NumVal(idx=index, v=float(value))
+            for index, (_, value) in enumerate(points)
+        ])),
+    )
+    series.marker.symbol = "none"
+    if label:
+        series.graphicalProperties.line.noFill = True
+        series.dLbls = DataLabelList(
+            showSerName=True, showVal=False, showCatName=False,
+            showLegendKey=False, dLblPos="ctr", txPr=_text(bold=True, centered=True),
+            spPr=GraphicalProperties(
+                solidFill="FFFFFF", ln=LineProperties(solidFill="000000", w=12700),
+            ),
+        )
+    else:
+        series.graphicalProperties.line.solidFill = "000000"
+        series.graphicalProperties.line.width = 12700
+        series.graphicalProperties.line.headEnd = LineEndProperties(type="triangle", w="sm", len="sm")
+        series.graphicalProperties.line.tailEnd = LineEndProperties(type="triangle", w="sm", len="sm")
+    return series
+
+
+def _add_annotations(chart, secondary, plot):
+    low, high = chart.y_axis.scaling.min, chart.y_axis.scaling.max
+    other_low, other_high = secondary.y_axis.scaling.min, secondary.y_axis.scaling.max
+    for suffix in ("1", "2"):
+        moment = pd.Timestamp(plot.top[f"date_{suffix}"])
+        eta = float(plot.top[f"eta_{suffix}"])
+        pi_k = float(plot.top[f"pi_k_{suffix}"])
+        pi_y = low + (pi_k - other_low) / (other_high - other_low) * (high - low)
+        chart.series.append(_annotation([(moment, pi_y), (moment, eta)], "Граница TOP-1"))
+        text = f"{moment:%d.%m.%Y}\nηoi = {eta:.2f} %\nπк = {pi_k:.3f}"
+        chart.series.append(_annotation([(moment, low + (high - low) * 0.48)], text, label=True))
+    middle = pd.Timestamp(plot.top["date_1"]) + (
+        pd.Timestamp(plot.top["date_2"]) - pd.Timestamp(plot.top["date_1"])
+    ) / 2
+    chart.series.append(_annotation(
+        [(middle, low + (high - low) * 0.90)], _criteria(plot, multiline=True), label=True,
+    ))
+    chart.legend.legendEntry = [LegendEntry(idx=index, delete=True)
+                                for index in range(1, len(chart.series))]
+
+
 def add_compressor_charts(sheet, plots, start_row, *, two_columns=True):
     """Добавляет редактируемые Excel-графики и подписи в видимые ячейки."""
     cells = {}
+    data_sheets = _write_data_sheets(sheet.parent, plots)
     for index, plot in enumerate(plots):
         column = 1 + (index % 2) * 25 if two_columns else 1
         block_row = start_row + (index // 2 if two_columns else index) * CHART_ROWS
@@ -176,11 +297,7 @@ def add_compressor_charts(sheet, plots, start_row, *, two_columns=True):
             f"Период {plot.period}. Деградация компрессора — TOP-1 ВНА", "period"
         )
         sheet.row_dimensions[block_row].height = 25
-        criteria = (
-            f"{plot.vna_lower:.1f} ≤ ВНА < {plot.vna_upper:.1f} %; "
-            f"{plot.t_lower:.3f} ≤ tнк ≤ {plot.t_upper:.3f} °C; "
-            f"{plot.p_lower:.3f} ≤ Pнк ≤ {plot.p_upper:.3f} мбар"
-        )
+        criteria = _criteria(plot)
         sheet.merged_cells.add(
             f"{_letter(column)}{block_row + 1}:{_letter(column + 22)}{block_row + 1}"
         )
@@ -209,7 +326,7 @@ def add_compressor_charts(sheet, plots, start_row, *, two_columns=True):
         _format_axis(chart.y_axis, "КПД компрессора, %")
         chart.y_axis.axPos = "l"
         chart.y_axis.crosses = "min"
-        _value_scale(chart.y_axis, plot.points["eta"])
+        _value_scale(chart.y_axis, plot.points["eta"], upper=True)
         chart.y_axis.majorGridlines = ChartLines(spPr=GraphicalProperties(
             ln=LineProperties(solidFill="A6A6A6", w=9525)
         ))
@@ -246,7 +363,7 @@ def add_compressor_charts(sheet, plots, start_row, *, two_columns=True):
         )
         chart.x_axis.minorUnit = chart.x_axis.majorUnit / 5
         chart.series.append(_series(
-            sheet, plot, HELPER_COLUMN + 1, "КПД компрессора, %", "00B050", trend=True
+            data_sheets[plot.period], plot, "eta", "КПД компрессора, %", "00B050", trend=True
         ))
 
         secondary = ScatterChart()
@@ -268,8 +385,9 @@ def add_compressor_charts(sheet, plots, start_row, *, two_columns=True):
         secondary.x_axis.scaling.min = chart.x_axis.scaling.min
         secondary.x_axis.scaling.max = chart.x_axis.scaling.max
         secondary.series.append(_series(
-            sheet, plot, HELPER_COLUMN + 2, "Степень сжатия πк", "7030A0", trend=True
+            data_sheets[plot.period], plot, "pi_k", "Степень сжатия πк", "7030A0", trend=True
         ))
+        _add_annotations(chart, secondary, plot)
         chart += secondary
         sheet.add_chart(chart, f"{_letter(column)}{block_row + 3}")
 

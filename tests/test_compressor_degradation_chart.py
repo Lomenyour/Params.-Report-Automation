@@ -3,12 +3,16 @@ import io
 import sys
 import unittest
 from pathlib import Path
+import xml.etree.ElementTree as ET
+from zipfile import ZipFile
 
 import pandas as pd
 from openpyxl import Workbook, load_workbook
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scr"))
-from compressor_degradation_chart import prepare_compressor_plots  # noqa: E402
+from compressor_degradation_chart import (  # noqa: E402
+    CompressorPlot, add_compressor_charts, prepare_compressor_plots,
+)
 from pressure_chart import PressureChartData, write_pressure_sheet  # noqa: E402
 
 
@@ -68,6 +72,15 @@ class CompressorDegradationChartTest(unittest.TestCase):
         output = io.BytesIO()
         book.save(output)
 
+        # openpyxl не восстанавливает оформление plotArea при чтении;
+        # проверяем именно XML, который получит Excel.
+        ns = {"c": "http://schemas.openxmlformats.org/drawingml/2006/chart",
+              "a": "http://schemas.openxmlformats.org/drawingml/2006/main"}
+        with ZipFile(output) as archive:
+            for index in range(3, 6):
+                root = ET.fromstring(archive.read(f"xl/charts/chart{index}.xml"))
+                fill = root.find("c:chart/c:plotArea/c:spPr/a:solidFill/a:srgbClr", ns)
+                self.assertEqual(fill.get("val"), "FFFFFF")
         output.seek(0)
         sheet = load_workbook(output)["Графики"]
         self.assertEqual(len(sheet._charts), 5)  # Перепады, общая деградация, 3 периода
@@ -76,6 +89,24 @@ class CompressorDegradationChartTest(unittest.TestCase):
             self.assertEqual(len(chart.series), 1)
             self.assertIsNotNone(chart.series[0].trendline)
             self.assertIsNotNone(chart._charts[1].series[0].trendline)
+            self.assertEqual(chart.graphical_properties.solidFill.srgbClr, "FFFFFF")
+            self.assertFalse(chart.x_axis.delete)
+            for part in chart._charts:
+                axis = part.y_axis
+                self.assertFalse(axis.delete)
+                self.assertGreater(axis.majorUnit, 0)
+                span = axis.scaling.max - axis.scaling.min
+                self.assertLessEqual(span / axis.majorUnit, 10)
+                self.assertLessEqual(span / axis.minorUnit, 50)
+                self.assertEqual(axis.txPr.p[0].pPr.defRPr.solidFill.srgbClr, "000000")
+                values = part.series[0].yVal.numRef.numCache.pt
+                self.assertTrue(all(axis.scaling.min <= point.v <= axis.scaling.max
+                                    for point in values))
+            self.assertIsNone(chart._charts[1].y_axis.majorGridlines)
+            self.assertIsNone(chart._charts[1].y_axis.minorGridlines)
+            for part in chart._charts:
+                self.assertFalse(part.series[0].trendline.dispEq)
+                self.assertFalse(part.series[0].trendline.dispRSqr)
         descriptions = [row[0].value for row in sheet.iter_rows(min_col=1, max_col=1)
                         if isinstance(row[0].value, str)]
         self.assertTrue(any("10.100 ≤ tнк ≤ 10.400" in text
@@ -83,6 +114,34 @@ class CompressorDegradationChartTest(unittest.TestCase):
         self.assertEqual(sheet["BO2"].value, pd.Timestamp("2026-01-01"))
         self.assertAlmostEqual(sheet["BP2"].value, 84.01)
         self.assertAlmostEqual(sheet._charts[2].series[0].yVal.numRef.numCache.pt[0].v, 84.01)
+
+    def test_value_axes_cover_flat_single_and_wide_series(self):
+        for eta, pi_k in (([85.0], [14.0]),
+                          ([85.0, 85.0], [14.0, 14.0]),
+                          ([82.0, 89.0], [12.5, 21.0])):
+            with self.subTest(eta=eta):
+                points = pd.DataFrame({
+                    "date": pd.date_range("2026-01-01", periods=len(eta)),
+                    "eta": eta, "pi_k": pi_k,
+                })
+                top = pd.Series({
+                    "date_1": points.date.iloc[0], "date_2": points.date.iloc[-1],
+                    "eta_1": eta[0], "eta_2": eta[-1],
+                    "pi_k_1": pi_k[0], "pi_k_2": pi_k[-1],
+                })
+                plot = CompressorPlot(1, points, top, 86, 87, 10, 11, 990, 991, 2)
+                book = Workbook()
+                sheet = book.active
+                add_compressor_charts(sheet, [plot], 1)
+                chart = sheet._charts[0]
+                for axis, values in ((chart.y_axis, eta),
+                                     (chart._charts[1].y_axis, pi_k)):
+                    self.assertLessEqual(axis.scaling.min, min(values))
+                    self.assertGreaterEqual(axis.scaling.max, max(values))
+                    self.assertGreater(axis.scaling.max, axis.scaling.min)
+                    self.assertLessEqual(
+                        (axis.scaling.max - axis.scaling.min) / axis.majorUnit, 10,
+                    )
 
 
 if __name__ == "__main__":

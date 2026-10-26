@@ -34,7 +34,6 @@ from RH_raschet import (
 from VNA_full import run_vna
 from economics import calculate_economics, print_economics
 from data_assembly import (
-    SENSOR_TARGET_COLUMNS,
     SensorMapping,
     apply_economic_columns,
     assemble_sensor_data,
@@ -48,6 +47,7 @@ from data_assembly import (
     template_columns,
     validate_mappings,
 )
+from station_profiles import get_station_repository, sensor_target_columns
 from periods import parse_periods_arg
 from result_export import collect_result_tables, read_data_sheet, save_result_workbook
 from pressure_chart import PressureChartData
@@ -222,7 +222,8 @@ class MappingDialog(tk.Toplevel):
 
     def __init__(self, parent, suggestions: list[SensorMapping],
                  target_headers: dict[str, str | None],
-                 source_headers: list[str], verified_duplicates: set[str]):
+                 source_headers: list[str], verified_duplicates: set[str],
+                 station_id: str):
         super().__init__(parent)
         self.title("Соответствие каналов датчиков")
         self.geometry("960x640")
@@ -234,6 +235,7 @@ class MappingDialog(tk.Toplevel):
         self._target_headers = target_headers
         self._source_headers = source_headers
         self._verified_duplicates = verified_duplicates
+        self._allowed_targets = sensor_target_columns(station_id, parent.station_repository)
 
         ttk.Label(
             self,
@@ -265,7 +267,7 @@ class MappingDialog(tk.Toplevel):
         ttk.Label(table, text="Коэффициент").grid(row=0, column=2, sticky="w")
         choices = [
             f"{column} — {header}" for column, header in target_headers.items()
-            if header and column in SENSOR_TARGET_COLUMNS
+            if header and column in self._allowed_targets
         ]
         for index, suggestion in enumerate(suggestions, start=1):
             target = suggestion.target
@@ -309,6 +311,7 @@ class MappingDialog(tk.Toplevel):
                 mappings, self._source_headers,
                 verified_duplicates=self._verified_duplicates,
                 target_headers=self._target_headers,
+                allowed_targets=self._allowed_targets,
             )
         except ValueError as error:
             messagebox.showerror("Проверьте соответствия", str(error), parent=self)
@@ -339,6 +342,12 @@ class CalculationApp(tk.Tk):
         self.mapping_sheet: str | None = None
         self.figure_views = []
         self.last_result: CalculationSnapshot | None = None
+        self.station_repository = get_station_repository()
+        self.stations_by_name = {
+            station.name: station for station in self.station_repository.list_stations()
+        }
+        self.station_var = tk.StringVar(value="")
+        self.station_manually_selected = False
         self.gas_tariff_var = tk.StringVar(value="0")
         self.electricity_tariff_var = tk.StringVar(value="0")
         self.electricity_cost_var = tk.StringVar(value="0")
@@ -503,6 +512,18 @@ class CalculationApp(tk.Tk):
         self.progress = ttk.Progressbar(controls, mode="indeterminate", length=140)
         self.progress.pack(side="right")
 
+        station_controls = ttk.Frame(self, padding=(10, 0, 10, 8))
+        station_controls.pack(fill="x")
+        ttk.Label(station_controls, text="ТЭЦ (обязательно):").pack(side="left", padx=(0, 6))
+        self.station_combo = ttk.Combobox(
+            station_controls, textvariable=self.station_var,
+            values=list(self.stations_by_name), state="readonly", width=25,
+        )
+        self.station_combo.pack(side="left")
+        self.station_combo.bind("<<ComboboxSelected>>", self._on_station_changed)
+        self.station_hint = ttk.Label(station_controls, text="Выберите ТЭЦ или загрузите файл.")
+        self.station_hint.pack(side="left", padx=(12, 0))
+
         tariff_controls = ttk.Frame(self, padding=(10, 0, 10, 8))
         tariff_controls.pack(fill="x")
         self.tariff_entries = []
@@ -652,6 +673,8 @@ class CalculationApp(tk.Tk):
         importing = self.calculation_mode.get() == "import"
         has_book = self.selected_file is not None
         has_raw = self.selected_raw_file is not None
+        has_station = self.station_var.get() in self.stations_by_name
+        self.station_combo.configure(state="readonly" if idle else "disabled")
         self.events_button.configure(
             state="normal" if idle and has_book else "disabled",
             text=f"События графика ({len(self.chart_events)})",
@@ -663,10 +686,10 @@ class CalculationApp(tk.Tk):
             entry.configure(state="normal" if idle else "disabled")
         self.raw_button.configure(state="normal" if idle and importing and has_book else "disabled")
         raw_ready = idle and importing and has_book and has_raw
-        self.mapping_button.configure(state="normal" if raw_ready else "disabled")
+        self.mapping_button.configure(state="normal" if raw_ready and has_station else "disabled")
         self.clear_raw_button.configure(state="normal" if raw_ready else "disabled")
         self.raw_sheet_combo.configure(state="readonly" if raw_ready else "disabled")
-        can_run = idle and has_book and (
+        can_run = idle and has_book and has_station and (
             not importing or (has_raw and bool(self.selected_raw_sheet.get()))
         )
         self.run_button.configure(
@@ -680,6 +703,33 @@ class CalculationApp(tk.Tk):
             "Выгрузка не используется в этом режиме" if not importing
             else str(self.selected_raw_file) if has_raw else "Выгрузка не выбрана"
         ))
+
+    def _apply_station(self, station, *, automatic: bool):
+        """Меняет профиль, сбрасывает назначения датчиков и старый результат."""
+        self.station_var.set(station.name if station else "")
+        self.station_manually_selected = not automatic
+        self._clear_mapping()
+        if station is not None:
+            tariffs = self.station_repository.get_tariffs(station.id)
+            for variable, value in (
+                (self.gas_tariff_var, tariffs.gas_rub_per_nm3),
+                (self.electricity_tariff_var, tariffs.electricity_rub_per_mwh),
+                (self.electricity_cost_var, tariffs.electricity_cost_rub_per_mwh),
+            ):
+                variable.set(f"{value:g}".replace(".", ","))
+            self.station_hint.configure(text=(
+                "Определена по имени файла; можно изменить."
+                if automatic else "Выбрана вручную. Тарифы можно изменить."
+            ))
+        else:
+            for variable in (self.gas_tariff_var, self.electricity_tariff_var,
+                             self.electricity_cost_var):
+                variable.set("0")
+            self.station_hint.configure(text="ТЭЦ не распознана. Выберите её из списка.")
+        self._invalidate_results()
+
+    def _on_station_changed(self, _event=None):
+        self._apply_station(self.stations_by_name.get(self.station_var.get()), automatic=False)
 
     def _on_mode_changed(self):
         self._invalidate_results()
@@ -711,6 +761,9 @@ class CalculationApp(tk.Tk):
             return
 
         self.selected_file = Path(file_name)
+        self._apply_station(
+            self.station_repository.detect_station(self.selected_file), automatic=True,
+        )
         self.has_calculation_run = False
         try:
             self.chart_events = load_chart_events(self.selected_file)
@@ -767,6 +820,10 @@ class CalculationApp(tk.Tk):
             messagebox.showerror("Не удалось открыть выгрузку", str(error), parent=self)
             return
         self.selected_raw_file = Path(file_name)
+        if not self.station_manually_selected and not self.station_var.get():
+            station = self.station_repository.detect_station(self.selected_raw_file)
+            if station is not None:
+                self._apply_station(station, automatic=True)
         self._clear_mapping()
         self.raw_sheet_combo.configure(values=sheets, state="readonly")
         name = self.selected_file.stem.lower() if self.selected_file else ""
@@ -782,18 +839,25 @@ class CalculationApp(tk.Tk):
     def review_mapping(self) -> bool:
         if not self.selected_file or not self.selected_raw_file:
             return False
+        station = self.stations_by_name.get(self.station_var.get())
+        if station is None:
+            messagebox.showerror("Не выбрана ТЭЦ", "Выберите ТЭЦ из списка.", parent=self)
+            return False
         sheet = self.selected_raw_sheet.get().strip()
         if not sheet:
             messagebox.showerror("Не выбран лист", "Выберите лист выгрузки.", parent=self)
             return False
         try:
             headers, verified_duplicates = source_mapping_info(
-                self.selected_raw_file, sheet
+                self.selected_raw_file, sheet, station_id=station.id,
+                repository=self.station_repository,
             )
             suggestions = (
-                load_saved_mappings(self.selected_file, headers)
+                load_saved_mappings(self.selected_file, headers, station_id=station.id,
+                                    repository=self.station_repository)
                 or suggest_mappings(
-                    headers, self.selected_file, verified_duplicates
+                    headers, self.selected_file, verified_duplicates,
+                    station_id=station.id, repository=self.station_repository,
                 )
             )
             targets = template_columns(self.selected_file)
@@ -801,7 +865,7 @@ class CalculationApp(tk.Tk):
             messagebox.showerror("Ошибка сопоставления", str(error), parent=self)
             return False
         dialog = MappingDialog(
-            self, suggestions, targets, headers, verified_duplicates
+            self, suggestions, targets, headers, verified_duplicates, station.id
         )
         self.wait_window(dialog)
         if dialog.result is None:
@@ -810,7 +874,8 @@ class CalculationApp(tk.Tk):
         self.mapping_sheet = sheet
         self._invalidate_results()
         try:
-            save_mappings(self.selected_file, headers, dialog.result)
+            save_mappings(self.selected_file, headers, dialog.result, station_id=station.id,
+                          repository=self.station_repository)
         except (OSError, ValueError) as error:
             messagebox.showwarning(
                 "Профиль не сохранён",
@@ -821,6 +886,10 @@ class CalculationApp(tk.Tk):
 
     def start_calculation(self):
         if self.selected_file is None or self.calculation_running or self.export_running:
+            return
+        station = self.stations_by_name.get(self.station_var.get())
+        if station is None:
+            messagebox.showerror("Не выбрана ТЭЦ", "Выберите ТЭЦ перед запуском расчёта.", parent=self)
             return
         importing = self.calculation_mode.get() == "import"
         raw_file_path = self.selected_raw_file if importing else None
@@ -866,6 +935,7 @@ class CalculationApp(tk.Tk):
                 electricity_tariff,
                 electricity_cost,
                 self.chart_events,
+                station.id,
             ),
             daemon=True,
         )
@@ -896,12 +966,15 @@ class CalculationApp(tk.Tk):
         electricity_tariff: float,
         electricity_cost: float,
         chart_events: tuple[ChartEvent, ...] = (),
+        station_id: str | None = None,
     ):
         writer = QueueWriter(self.output_queue)
         calculation_started = None
 
         try:
             with contextlib.redirect_stdout(writer), contextlib.redirect_stderr(writer):
+                station = self.station_repository.get_station(station_id)
+                print(f"ТЭЦ: {station.name}")
                 print(f"Выбран файл: {file_path}")
                 print("Лист: Данные")
 
@@ -910,7 +983,8 @@ class CalculationApp(tk.Tk):
                 if raw_file_path is not None:
                     print(f"Исходная выгрузка: {raw_file_path.name}, лист: {raw_sheet}")
                     assembled = assemble_sensor_data(
-                        file_path, raw_file_path, raw_sheet, mappings or []
+                        file_path, raw_file_path, raw_sheet, mappings or [],
+                        station_id=station.id, repository=self.station_repository,
                     )
                     print(
                         f"Получасовых строк: {assembled.imported_rows}; "

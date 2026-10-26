@@ -19,6 +19,7 @@ py -m PyInstaller `
     --collect-all matplotlib `
     --collect-all python_calamine `
     --collect-all openpyxl `
+    --add-data "$PSScriptRoot\config;config" `
     --add-data "$templateSource;word_auto\templates" `
     --distpath "$PSScriptRoot\dist_test" `
     --workpath "$PSScriptRoot\build_test\work" `
@@ -33,5 +34,10 @@ if ($LASTEXITCODE -ne 0) {
 $templateTarget = Join-Path $testRoot "word_auto\templates"
 New-Item -ItemType Directory -Force -Path $templateTarget | Out-Null
 Copy-Item -Path (Join-Path $templateSource "*") -Destination $templateTarget -Recurse -Force
+
+# Справочники можно обновлять рядом с EXE без изменения расчётных модулей.
+$configTarget = Join-Path $testRoot "config"
+New-Item -ItemType Directory -Force -Path $configTarget | Out-Null
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot "config\stations.json") -Destination $configTarget -Force
 
 Write-Host "Test EXE: $testRoot\GTU_Report_Test.exe"

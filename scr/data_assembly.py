@@ -18,37 +18,10 @@ from CoolProp.HumidAirProp import HAPropsSI
 from openpyxl import Workbook, load_workbook
 from openpyxl.cell import WriteOnlyCell
 from openpyxl.utils import column_index_from_string, get_column_letter
-
-
-PRESSURE_MM_HG_TO_PA = 133.322368
-PRESSURE_MM_H2O_TO_PA = 9.80665
-
-# Тег после G1/G2 или полный тег агрегата, колонка листа «Данные», коэффициент.
-SENSOR_FIELDS = (
-    ("ATID_C", "F", 1.0),
-    ("RHUM", "G", 1.0),
-    ("AFPAP1A_C", "C", PRESSURE_MM_HG_TO_PA),
-    ("APCS_c", "L", PRESSURE_MM_H2O_TO_PA),
-    ("TR96TF2_c", "J", PRESSURE_MM_H2O_TO_PA),
-    ("TR96TF3_c", "K", PRESSURE_MM_H2O_TO_PA),
-    ("AFPCS_c", "M", PRESSURE_MM_H2O_TO_PA),
-    ("CTIM_C", "P", 1.0),
-    ("CPD_C", "X", 1.0),
-    ("CTDA_C", "W", 1.0),
-    ("CSGV", "V", 1.0),
-    ("FQG_C", "AS", 1.0),
-    ("FPG2_C", "AG", 1.0),
-    ("TTXM_C", "AF", 1.0),
-    ("FTG_C", "AH", 1.0),
+from station_profiles import (
+    StationRepository, get_station_repository, resolve_station,
+    sensor_target_columns, unit_number,
 )
-AGGREGATE_FIELDS = (
-    ("AGUST_DWATTXJ026", "AO", 1.0),
-    ("AGUST_TNH_RPMXJ022", "AM", 1.0),
-    ("HNE90CP001XJ016", "AC", 1.0),
-)
-SENSOR_TARGET_COLUMNS = {
-    target for _, target, _ in SENSOR_FIELDS + AGGREGATE_FIELDS
-}
 SERVICE_FIELDS = {"date", "time", "milliseconds"}
 
 
@@ -138,14 +111,23 @@ def _profile_key(book_path: str | Path) -> str:
 
 def load_saved_mappings(
     book_path: str | Path, sheet_headers: list[str],
+    *, station_id: str | None = None,
+    repository: StationRepository | None = None,
 ) -> list[SensorMapping] | None:
+    station = resolve_station(book_path, station_id, repository)
+    if station is None:
+        return None
     path = _mapping_profile_path()
     if not path.exists():
         return None
     try:
         saved = json.loads(path.read_text(encoding="utf-8"))
-        key = f"{_profile_key(book_path)}|{'|'.join(sheet_headers)}"
+        key = f"{station.id}|{unit_number(book_path) or ''}|{'|'.join(sheet_headers)}"
         entries = saved.get(key)
+        # Старые назначения переносим только при совпадении станции по имени.
+        detected = resolve_station(book_path, repository=repository)
+        if entries is None and detected is not None and detected.id == station.id:
+            entries = saved.get(f"{_profile_key(book_path)}|{'|'.join(sheet_headers)}")
         if entries is None:
             return None
         return [SensorMapping(**entry) for entry in entries]
@@ -156,7 +138,12 @@ def load_saved_mappings(
 def save_mappings(
     book_path: str | Path, sheet_headers: list[str],
     mappings: list[SensorMapping],
+    *, station_id: str | None = None,
+    repository: StationRepository | None = None,
 ) -> None:
+    station = resolve_station(book_path, station_id, repository)
+    if station is None:
+        raise ValueError("Выберите ТЭЦ перед сохранением соответствий датчиков.")
     path = _mapping_profile_path()
     try:
         saved = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
@@ -164,7 +151,7 @@ def save_mappings(
             saved = {}
     except (OSError, ValueError):
         saved = {}
-    key = f"{_profile_key(book_path)}|{'|'.join(sheet_headers)}"
+    key = f"{station.id}|{unit_number(book_path) or ''}|{'|'.join(sheet_headers)}"
     saved[key] = [
         {"source": item.source, "target": item.target, "factor": item.factor}
         for item in mappings
@@ -173,42 +160,26 @@ def save_mappings(
     path.write_text(json.dumps(saved, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
-def _gt_number(book_path: str | Path) -> str | None:
-    match = re.search(
-        r"(?:ГТ|GT)[-\s_]*(10|11)(?=$|[^0-9])",
-        Path(book_path).stem, re.I,
-    )
-    return match.group(1) if match else None
-
-
 def suggest_mappings(
     source_headers: list[str], book_path: str | Path,
     verified_duplicates: set[str] | None = None,
+    *, station_id: str | None = None,
+    repository: StationRepository | None = None,
 ) -> list[SensorMapping]:
-    """Предлагает соответствия по тегам, не по положению колонок."""
-    gt_number = _gt_number(book_path)
-    prefix = {"10": "G1", "11": "G2"}.get(gt_number)
-    aggregate_prefix = {"10": "1", "11": "2"}.get(gt_number)
-    exhaust_prefix = {"10": "01", "11": "02"}.get(gt_number)
+    """Предлагает только каналы выбранной ТЭЦ и ГТ; неизвестные — вручную."""
+    repository = repository or get_station_repository()
+    station = resolve_station(book_path, station_id, repository)
+    gt_number = unit_number(book_path)
+    channels = repository.get_channels(station.id) if station else ()
+    by_code = {channel.code.casefold(): channel for channel in channels
+               if channel.unit_number == gt_number}
     suggestions: list[SensorMapping] = []
     for header in source_headers:
         if header.lower() in SERVICE_FIELDS or header in (verified_duplicates or set()):
             continue
-        matched = None
-        for suffix, target, factor in SENSOR_FIELDS:
-            if prefix and header.lower() == f"{prefix}.{suffix}".lower():
-                matched = SensorMapping(header, target, factor)
-                break
-        if matched is None:
-            for suffix, target, factor in AGGREGATE_FIELDS:
-                expected = (
-                    f"{exhaust_prefix}{suffix}" if suffix.startswith("HNE")
-                    else f"{aggregate_prefix}{suffix}"
-                )
-                if expected and header.lower() == expected.lower():
-                    matched = SensorMapping(header, target, factor)
-                    break
-        suggestions.append(matched or SensorMapping(header, "", 1.0))
+        channel = by_code.get(header.casefold())
+        suggestions.append(SensorMapping(header, channel.target_column, channel.factor)
+                           if channel else SensorMapping(header, "", 1.0))
     return suggestions
 
 
@@ -216,7 +187,9 @@ def validate_mappings(
     mappings: list[SensorMapping], source_headers: list[str],
     verified_duplicates: set[str] | None = None,
     target_headers: dict[str, str | None] | None = None,
+    *, allowed_targets: set[str] | None = None,
 ) -> None:
+    allowed_targets = sensor_target_columns() if allowed_targets is None else allowed_targets
     available = set(source_headers)
     seen_sources: set[str] = set()
     seen_targets: set[str] = set()
@@ -229,7 +202,7 @@ def validate_mappings(
             raise ValueError(f"Для канала {mapping.source!r} не выбрана колонка листа.")
         if mapping.target in {"A", "B", "AD"}:
             raise ValueError(f"Колонка {mapping.target} зарезервирована.")
-        if target_headers is not None and mapping.target not in SENSOR_TARGET_COLUMNS:
+        if target_headers is not None and mapping.target not in allowed_targets:
             last = max(column_index_from_string(col) for col in target_headers)
             if column_index_from_string(mapping.target) <= last:
                 raise ValueError(
@@ -252,19 +225,17 @@ def validate_mappings(
         raise ValueError(f"Не назначены каналы: {', '.join(sorted(missing))}.")
 
 
-def _verified_duplicates(raw: pd.DataFrame) -> set[str]:
+def _verified_duplicates(raw: pd.DataFrame, station_id: str,
+                         repository: StationRepository | None = None) -> set[str]:
     """Разрешает пропуск только точно совпавших производных колонок."""
-    relations = {
-        "ВЗТ": "G2.AFPCS_c",
-        "ФГО": "G2.TR96TF2_c",
-        "ФТО": "G2.TR96TF3_c",
-    }
+    repository = repository or get_station_repository()
     result = set()
-    for derived, original in relations.items():
+    for relation in repository.get_duplicates(station_id):
+        derived, original = relation.derived_code, relation.source_code
         if derived not in raw or original not in raw:
             continue
         left = pd.to_numeric(raw[derived], errors="coerce")
-        right = pd.to_numeric(raw[original], errors="coerce") * PRESSURE_MM_H2O_TO_PA
+        right = pd.to_numeric(raw[original], errors="coerce") * relation.factor
         both = left.notna() & right.notna()
         if both.any() and (left.notna() == right.notna()).all() and np.allclose(
             left[both], right[both], rtol=0, atol=1e-8
@@ -296,10 +267,12 @@ def _read_sensor_sheet(path: str | Path, sheet_name: str) -> pd.DataFrame:
 
 def source_mapping_info(
     path: str | Path, sheet_name: str,
+    *, station_id: str,
+    repository: StationRepository | None = None,
 ) -> tuple[list[str], set[str]]:
     """Каналы листа и производные колонки, проверенные по числам."""
     raw = _read_sensor_sheet(path, sheet_name)
-    return list(raw.columns), _verified_duplicates(raw)
+    return list(raw.columns), _verified_duplicates(raw, station_id, repository)
 
 
 def _read_template(path: str | Path) -> tuple[pd.DataFrame, dict[str, str | None], pd.DataFrame]:
@@ -351,17 +324,26 @@ def assemble_sensor_data(
     source_path: str | Path,
     source_sheet: str,
     mappings: list[SensorMapping],
+    *, station_id: str | None = None,
+    repository: StationRepository | None = None,
 ) -> AssembledData:
+    repository = repository or get_station_repository()
+    station = resolve_station(book_path, station_id, repository)
+    if station is None:
+        raise ValueError("Выберите ТЭЦ перед обновлением данных датчиков.")
     template, headers, undated_rows = _read_template(book_path)
     raw = _read_sensor_sheet(source_path, source_sheet)
-    duplicates = _verified_duplicates(raw)
-    validate_mappings(mappings, list(raw.columns), duplicates, headers)
-    gt_number = _gt_number(book_path)
+    duplicates = _verified_duplicates(raw, station.id, repository)
+    validate_mappings(mappings, list(raw.columns), duplicates, headers,
+                      allowed_targets=sensor_target_columns(station.id, repository))
+    gt_number = unit_number(book_path)
     if gt_number:
-        expected = {"10": "G1.", "11": "G2."}[gt_number]
-        other = {"10": "G2.", "11": "G1."}[gt_number]
-        expected_count = sum(str(col).startswith(expected) for col in raw.columns)
-        other_count = sum(str(col).startswith(other) for col in raw.columns)
+        channels = repository.get_channels(station.id)
+        codes = {str(col).casefold() for col in raw.columns}
+        expected_count = sum(channel.code.casefold() in codes for channel in channels
+                             if channel.unit_number == gt_number)
+        other_count = sum(channel.code.casefold() in codes for channel in channels
+                          if channel.unit_number != gt_number)
         if other_count > expected_count:
             raise ValueError(
                 f"Книга выбрана для ГТ-{gt_number}, но каналы листа "

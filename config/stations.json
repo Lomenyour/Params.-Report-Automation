@@ -1,0 +1,72 @@
+{
+  "schema_version": 1,
+  "stations": [
+    {"id": "syz_tec", "name": "СызТЭЦ", "filename_aliases": ["СызТЭЦ", "Сызранская ТЭЦ", "СызранскаяТЭЦ"]}
+  ],
+  "tariffs": [
+    {"station_id": "syz_tec", "gas_rub_per_nm3": 7.773, "electricity_rub_per_mwh": 2253.66, "electricity_cost_rub_per_mwh": 1200.0}
+  ],
+  "sensor_parameters": [
+    {"id": "ambient_temperature", "name": "Температура окружающего воздуха", "target_column": "F"},
+    {"id": "relative_humidity", "name": "Относительная влажность", "target_column": "G"},
+    {"id": "atmospheric_pressure", "name": "Атмосферное давление", "target_column": "C"},
+    {"id": "vlo", "name": "Перепад давления ВЛО", "target_column": "L"},
+    {"id": "fgo", "name": "Перепад давления ФГО", "target_column": "J"},
+    {"id": "fto", "name": "Перепад давления ФТО", "target_column": "K"},
+    {"id": "inlet_pressure_drop", "name": "Потеря давления на входе", "target_column": "M"},
+    {"id": "inlet_temperature", "name": "Температура перед компрессором", "target_column": "P"},
+    {"id": "outlet_pressure", "name": "Давление за компрессором", "target_column": "X"},
+    {"id": "outlet_temperature", "name": "Температура за компрессором", "target_column": "W"},
+    {"id": "vna", "name": "Положение ВНА", "target_column": "V"},
+    {"id": "fuel_flow", "name": "Расход топливного газа", "target_column": "AS"},
+    {"id": "fuel_pressure", "name": "Давление топливного газа", "target_column": "AG"},
+    {"id": "exhaust_temperature", "name": "Температура уходящих газов", "target_column": "AF"},
+    {"id": "fuel_temperature", "name": "Температура топливного газа", "target_column": "AH"},
+    {"id": "power", "name": "Фактическая мощность", "target_column": "AO"},
+    {"id": "rpm", "name": "Частота вращения", "target_column": "AM"},
+    {"id": "exhaust_pressure", "name": "Давление уходящих газов", "target_column": "AC"}
+  ],
+  "sensor_channels": [
+    {"station_id": "syz_tec", "unit_number": "10", "parameter_id": "ambient_temperature", "code": "G1.ATID_C", "factor": 1.0},
+    {"station_id": "syz_tec", "unit_number": "10", "parameter_id": "relative_humidity", "code": "G1.RHUM", "factor": 1.0},
+    {"station_id": "syz_tec", "unit_number": "10", "parameter_id": "atmospheric_pressure", "code": "G1.AFPAP1A_C", "factor": 133.322368},
+    {"station_id": "syz_tec", "unit_number": "10", "parameter_id": "vlo", "code": "G1.APCS_c", "factor": 9.80665},
+    {"station_id": "syz_tec", "unit_number": "10", "parameter_id": "fgo", "code": "G1.TR96TF2_c", "factor": 9.80665},
+    {"station_id": "syz_tec", "unit_number": "10", "parameter_id": "fto", "code": "G1.TR96TF3_c", "factor": 9.80665},
+    {"station_id": "syz_tec", "unit_number": "10", "parameter_id": "inlet_pressure_drop", "code": "G1.AFPCS_c", "factor": 9.80665},
+    {"station_id": "syz_tec", "unit_number": "10", "parameter_id": "inlet_temperature", "code": "G1.CTIM_C", "factor": 1.0},
+    {"station_id": "syz_tec", "unit_number": "10", "parameter_id": "outlet_pressure", "code": "G1.CPD_C", "factor": 1.0},
+    {"station_id": "syz_tec", "unit_number": "10", "parameter_id": "outlet_temperature", "code": "G1.CTDA_C", "factor": 1.0},
+    {"station_id": "syz_tec", "unit_number": "10", "parameter_id": "vna", "code": "G1.CSGV", "factor": 1.0},
+    {"station_id": "syz_tec", "unit_number": "10", "parameter_id": "fuel_flow", "code": "G1.FQG_C", "factor": 1.0},
+    {"station_id": "syz_tec", "unit_number": "10", "parameter_id": "fuel_pressure", "code": "G1.FPG2_C", "factor": 1.0},
+    {"station_id": "syz_tec", "unit_number": "10", "parameter_id": "exhaust_temperature", "code": "G1.TTXM_C", "factor": 1.0},
+    {"station_id": "syz_tec", "unit_number": "10", "parameter_id": "fuel_temperature", "code": "G1.FTG_C", "factor": 1.0},
+    {"station_id": "syz_tec", "unit_number": "10", "parameter_id": "power", "code": "1AGUST_DWATTXJ026", "factor": 1.0},
+    {"station_id": "syz_tec", "unit_number": "10", "parameter_id": "rpm", "code": "1AGUST_TNH_RPMXJ022", "factor": 1.0},
+    {"station_id": "syz_tec", "unit_number": "10", "parameter_id": "exhaust_pressure", "code": "01HNE90CP001XJ016", "factor": 1.0},
+    {"station_id": "syz_tec", "unit_number": "11", "parameter_id": "ambient_temperature", "code": "G2.ATID_C", "factor": 1.0},
+    {"station_id": "syz_tec", "unit_number": "11", "parameter_id": "relative_humidity", "code": "G2.RHUM", "factor": 1.0},
+    {"station_id": "syz_tec", "unit_number": "11", "parameter_id": "atmospheric_pressure", "code": "G2.AFPAP1A_C", "factor": 133.322368},
+    {"station_id": "syz_tec", "unit_number": "11", "parameter_id": "vlo", "code": "G2.APCS_c", "factor": 9.80665},
+    {"station_id": "syz_tec", "unit_number": "11", "parameter_id": "fgo", "code": "G2.TR96TF2_c", "factor": 9.80665},
+    {"station_id": "syz_tec", "unit_number": "11", "parameter_id": "fto", "code": "G2.TR96TF3_c", "factor": 9.80665},
+    {"station_id": "syz_tec", "unit_number": "11", "parameter_id": "inlet_pressure_drop", "code": "G2.AFPCS_c", "factor": 9.80665},
+    {"station_id": "syz_tec", "unit_number": "11", "parameter_id": "inlet_temperature", "code": "G2.CTIM_C", "factor": 1.0},
+    {"station_id": "syz_tec", "unit_number": "11", "parameter_id": "outlet_pressure", "code": "G2.CPD_C", "factor": 1.0},
+    {"station_id": "syz_tec", "unit_number": "11", "parameter_id": "outlet_temperature", "code": "G2.CTDA_C", "factor": 1.0},
+    {"station_id": "syz_tec", "unit_number": "11", "parameter_id": "vna", "code": "G2.CSGV", "factor": 1.0},
+    {"station_id": "syz_tec", "unit_number": "11", "parameter_id": "fuel_flow", "code": "G2.FQG_C", "factor": 1.0},
+    {"station_id": "syz_tec", "unit_number": "11", "parameter_id": "fuel_pressure", "code": "G2.FPG2_C", "factor": 1.0},
+    {"station_id": "syz_tec", "unit_number": "11", "parameter_id": "exhaust_temperature", "code": "G2.TTXM_C", "factor": 1.0},
+    {"station_id": "syz_tec", "unit_number": "11", "parameter_id": "fuel_temperature", "code": "G2.FTG_C", "factor": 1.0},
+    {"station_id": "syz_tec", "unit_number": "11", "parameter_id": "power", "code": "2AGUST_DWATTXJ026", "factor": 1.0},
+    {"station_id": "syz_tec", "unit_number": "11", "parameter_id": "rpm", "code": "2AGUST_TNH_RPMXJ022", "factor": 1.0},
+    {"station_id": "syz_tec", "unit_number": "11", "parameter_id": "exhaust_pressure", "code": "02HNE90CP001XJ016", "factor": 1.0}
+  ],
+  "duplicate_channels": [
+    {"station_id": "syz_tec", "derived_code": "ВЗТ", "source_code": "G2.AFPCS_c", "factor": 9.80665},
+    {"station_id": "syz_tec", "derived_code": "ФГО", "source_code": "G2.TR96TF2_c", "factor": 9.80665},
+    {"station_id": "syz_tec", "derived_code": "ФТО", "source_code": "G2.TR96TF3_c", "factor": 9.80665}
+  ]
+}

@@ -77,7 +77,7 @@ class DataRowIntegrityTest(unittest.TestCase):
              patch("data_assembly._read_sensor_sheet", return_value=sensors):
             assembled = assemble_sensor_data("test.xlsx", "sensors.xlsx", "GT", [
                 SensorMapping("G2.CTIM_C", "P", 1.)
-            ])
+            ], station_id="syz_tec")
         self.assertEqual(assembled.values["BD"].tolist(), [111., 222.])
         self.assertEqual(assembled.values["P"].tolist(), [12., 20.])
         self.assertEqual(assembled.values["AC"].tolist(), [0.8, 0.7])

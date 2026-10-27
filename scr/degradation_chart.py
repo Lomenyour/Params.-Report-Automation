@@ -9,6 +9,7 @@ from openpyxl.chart import Reference, ScatterChart, Series
 from openpyxl.chart.axis import ChartLines, NumericAxis
 from openpyxl.chart.data_source import NumData, NumVal
 from openpyxl.chart.layout import Layout, ManualLayout
+from openpyxl.chart.legend import LegendEntry
 from openpyxl.chart.shapes import GraphicalProperties
 from openpyxl.chart.text import RichText
 from openpyxl.drawing.line import LineProperties
@@ -17,7 +18,7 @@ from openpyxl.drawing.text import (
     RichTextProperties,
 )
 from openpyxl.utils.datetime import to_excel
-from chart_text import FONT_SIZE, rich_text
+from chart_text import FONT_SIZE, rich_text, label_series
 
 from RH_raschet import _dominant_vna_interval
 
@@ -101,6 +102,9 @@ def prepare_degradation_plot(
             "vna_start": float(lower),
             "vna_end": float(upper),
             "count": len(selected),
+            "points_start": selected["date"].min(),
+            "points_end": selected["date"].max(),
+            "levels": {key: _finite(selected[key].median()) for key, _, _ in METRICS},
             "delta_n": _finite(delta.get("ΔNприв")) if delta is not None else None,
             "delta_b": _finite(delta.get("Δbприв")) if delta is not None else None,
             "delta_eta": _finite(delta.get("Δη, п.п.")) if delta is not None else None,
@@ -238,6 +242,50 @@ def _col(index: int) -> str:
     return get_column_letter(index)
 
 
+def _delta_label(symbol, value, unit):
+    if value is None:
+        return f"{symbol}: нет данных"
+    if value == 0:
+        return f"{symbol}: отсутствует"
+    number = f"{abs(value):.3f}".rstrip("0").rstrip(".").replace(".", ",")
+    return f"{symbol} = {'↑' if value > 0 else '↓'}{number} {unit}"
+
+
+def _add_period_labels(chart, plot):
+    first_label = len(chart.series)
+    placed = []
+    span = chart.x_axis.scaling.max - chart.x_axis.scaling.min
+    for period in plot.periods:
+        first = period["points_start"]
+        moment = first + (period["points_end"] - first) / 2
+        texts = (
+            ("fuel_specific", _delta_label("Δbприв", period["delta_b"], "нм³/(МВт·ч)")),
+            ("vna", f"{period['vna_start']:.1f} % ≤ ВНА < {period['vna_end']:.1f} %".replace(".", ",")),
+            ("power", _delta_label("ΔNприв", period["delta_n"], "МВт")),
+            ("eta_gtu", _delta_label("ΔηГТУ", period["delta_eta"], "п.п.")),
+        )
+        for key, text in texts:
+            value = period["levels"][key]
+            if value is None:
+                continue
+            y = (value - 65.) * 350. / 35. if key == "vna" else value
+            base = min(335., max(15., y + 20.))
+            x = to_excel(moment.to_pydatetime())
+            # Короткие соседние периоды: оставляем X над своими данными,
+            # но раздвигаем подписи по высоте, не сдвигая сами точки.
+            nearby = [py for px, py in placed if abs(x - px) < .14 * span]
+            candidates = sorted({base + offset for offset in (0, 18, 36, 54, -18, -36, -54)}
+                | {py + offset for py in nearby for offset in (18, -18)},
+                key=lambda candidate: (candidate < base, abs(candidate - base)))
+            y = next((candidate for candidate in candidates if 15 <= candidate <= 335
+                and all(abs(x - px) >= .14 * span or abs(candidate - py) >= 16
+                        for px, py in placed)), base)
+            placed.append((x, y))
+            chart.series.append(label_series(moment, y, text, dates=True))
+    chart.legend.legendEntry = [LegendEntry(idx=index, delete=True)
+                                for index in range(first_label, len(chart.series))]
+
+
 def add_degradation_chart(sheet, plot: DegradationPlot,
                           start_row: int, start_col: int = 1):
     """Добавляет нативную XY-диаграмму и возвращает видимые ячейки таблицы."""
@@ -305,6 +353,8 @@ def add_degradation_chart(sheet, plot: DegradationPlot,
         main.series.append(_series(
             sheet, plot, key, title, color, HELPER_COLUMN + offset
         ))
+
+    _add_period_labels(main, plot)
 
     secondary = ScatterChart()
     secondary.scatterStyle = "marker"

@@ -16,7 +16,7 @@ from openpyxl.chart.legend import LegendEntry
 from openpyxl.chart.layout import Layout, ManualLayout
 from openpyxl.chart.series import SeriesLabel, XYSeries
 from openpyxl.chart.shapes import GraphicalProperties
-from openpyxl.chart.text import RichText, Text
+from openpyxl.chart.text import RichText
 from openpyxl.chart.trendline import Trendline
 from openpyxl.drawing.line import LineEndProperties, LineProperties
 from openpyxl.drawing.text import (
@@ -25,6 +25,7 @@ from openpyxl.drawing.text import (
 )
 from openpyxl.utils.datetime import to_excel
 from openpyxl.styles import Alignment, Font, PatternFill
+from chart_text import FONT_SIZE, LABEL_SIZE, RichDataLabel
 
 DATA_COLUMNS = (
     ("date", "Дата"), ("vna", "ВНА, %"), ("t", "tнк, °C"),
@@ -113,7 +114,7 @@ def _criteria(plot, *, multiline=False):
 
 
 def _chart_number(value):
-    return f"{value:.3f}".rstrip("0").rstrip(".").replace(".", ",")
+    return f"{value:.1f}".replace(".", ",")
 
 
 def _chart_criteria(plot):
@@ -207,7 +208,7 @@ def _series(sheet, plot, key, title, color, *, trend=False):
     return series
 
 
-def _text(size=1400, *, bold=False, centered=False):
+def _text(size=FONT_SIZE, *, bold=False, centered=False):
     return RichText(
         bodyPr=RichTextProperties(),
         p=[Paragraph(pPr=ParagraphProperties(algn="ctr" if centered else None, defRPr=CharacterProperties(
@@ -217,7 +218,7 @@ def _text(size=1400, *, bold=False, centered=False):
     )
 
 
-def _rich_text(text, *, size=1600, bold=True, centered=True):
+def _rich_text(text, *, size=LABEL_SIZE, bold=True, centered=True):
     def properties(*, subscript=False):
         return CharacterProperties(
             sz=round(size * 0.75) if subscript else size,
@@ -249,21 +250,13 @@ class _RichDataLabel(DataLabel):
         self.text = text
 
     def to_tree(self, tagname=None, idx=None, namespace=None):
-        element = DataLabel(
-            idx=self.idx, dLblPos="ctr", showSerName=False, showVal=False, showCatName=False,
-        ).to_tree(tagname, idx, namespace)
-        element.insert(1, Layout(manualLayout=ManualLayout(
-            wMode="factor", hMode="factor", w=0.34 if "= const." in self.text else 0.16,
-            h=0.15,
-        )).to_tree("layout"))
-        element.insert(2, Text(rich=_rich_text(self.text)).to_tree("tx"))
-        return element
+        return RichDataLabel(self.text, bold=True).to_tree(tagname, idx, namespace)
 
 
 def _format_axis(axis, title):
     axis.delete = False
     axis.title = title
-    axis.title.tx.rich = _rich_text(title, size=1400, centered=False)
+    axis.title.tx.rich = _rich_text(title, size=FONT_SIZE, centered=False)
     axis.title.txPr = _text(bold=True)
     axis.txPr = _text()
     axis.tickLblPos = "nextTo"
@@ -275,15 +268,18 @@ def _format_axis(axis, title):
 def _value_scale(axis, values, *, upper=False):
     """Читаемая шкала по всем точкам, включая постоянные ряды."""
     low, high = float(values.min()), float(values.max())
-    span = max(high - low, 1.0)
-    lower = low - span * (3 if upper else 1)
-    higher = high + span * (1 if upper else 3)
-    raw_step = (higher - lower) / 6
+    span = max(high - low, max(abs(low), abs(high)) * .001, .1)
+    raw_step = span
     magnitude = 10 ** math.floor(math.log10(raw_step))
     step = next(unit * magnitude for unit in (1, 2, 5, 10)
                 if unit * magnitude >= raw_step)
-    axis.scaling.min = math.floor(lower / step) * step
-    axis.scaling.max = math.ceil(higher / step) * step
+    anchor = math.floor(low / step) * step
+    units = max(1, math.ceil((high - anchor) / step - 1e-10))
+    extent = units * step
+    # После округления делений сохраняем отдельные полосы: КПД 60–80%,
+    # πк 20–40% высоты. При постоянном ряде шкала остаётся ненулевой.
+    axis.scaling.min = anchor - extent * (3 if upper else 1)
+    axis.scaling.max = anchor + extent * (2 if upper else 4)
     axis.majorUnit = step
     axis.minorUnit = step / 5
     axis.numFmt = "0.0" if step >= 0.1 else "0.00"
@@ -307,7 +303,7 @@ def _annotation(points, text, *, label=False):
         series.dLbls = DataLabelList(
             dLbl=[_RichDataLabel(text)],
             showSerName=False, showVal=False, showCatName=False,
-            showLegendKey=False, dLblPos="ctr", txPr=_text(1600, bold=True, centered=True),
+            showLegendKey=False, dLblPos="ctr", txPr=_text(LABEL_SIZE, bold=True, centered=True),
             spPr=GraphicalProperties(
                 solidFill="FFFFFF", ln=LineProperties(solidFill="000000", w=12700),
             ),
@@ -331,8 +327,8 @@ def _add_annotations(chart, secondary, plot):
         pi_k = float(plot.top[f"pi_k_{suffix}"])
         pi_y = low + (pi_k - other_low) / (other_high - other_low) * (high - low)
         chart.series.append(_annotation([(moment, pi_y), (moment, eta)], "Граница TOP-1"))
-        eta_text = f"{eta:.2f}".replace(".", ",")
-        pi_text = f"{pi_k:.3f}".replace(".", ",")
+        eta_text = f"{eta:.1f}".replace(".", ",")
+        pi_text = f"{pi_k:.1f}".replace(".", ",")
         text = f"{moment:%d.%m.%Y}\nηoi = {eta_text} %\nπк = {pi_text}"
         chart.series.append(_annotation([(moment, low + (high - low) * 0.48)], text, label=True))
     middle = pd.Timestamp(plot.top["date_1"]) + (
@@ -386,7 +382,7 @@ def add_compressor_charts(sheet, plots, start_row, *, two_columns=True):
         chart.x_axis.numFmt = "dd.mm.yyyy"
         chart.x_axis.axPos = "b"
         chart.x_axis.tickLblPos = "low"
-        _format_axis(chart.y_axis, "КПД компрессора, %")
+        _format_axis(chart.y_axis, "Внутренний относительный КПД ОК, %")
         chart.y_axis.axPos = "l"
         chart.y_axis.crosses = "min"
         _value_scale(chart.y_axis, plot.points["eta"], upper=True)
@@ -443,7 +439,7 @@ def add_compressor_charts(sheet, plots, start_row, *, two_columns=True):
         secondary.y_axis.crossAx = secondary.x_axis.axId
         secondary.y_axis.axPos = "r"
         secondary.y_axis.crosses = "max"
-        _format_axis(secondary.y_axis, "Степень сжатия πк")
+        _format_axis(secondary.y_axis, "Степень повышения давления, о.е.")
         _value_scale(secondary.y_axis, plot.points["pi_k"])
         secondary.y_axis.majorGridlines = None
         secondary.y_axis.minorGridlines = None

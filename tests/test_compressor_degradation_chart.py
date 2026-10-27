@@ -88,7 +88,7 @@ class CompressorDegradationChartTest(unittest.TestCase):
                 for rich in rich_labels:
                     for paragraph in rich.findall("a:p", ns):
                         style = paragraph.find("a:pPr/a:defRPr", ns)
-                        self.assertEqual(style.get("sz"), "1600")
+                        self.assertEqual(style.get("sz"), "1000")
                         self.assertEqual(style.find("a:latin", ns).get("typeface"), "Times New Roman")
                 self.assertTrue(root.findall(".//a:rPr[@baseline='-25000']", ns))
                 criteria_lines = ["".join(node.itertext())
@@ -122,7 +122,7 @@ class CompressorDegradationChartTest(unittest.TestCase):
                 self.assertIsNotNone(label.xVal.numLit)
             self.assertIn("10,1 °С ≤ tнк ≤ 10,4 °С", labels[-1].tx.v)
             self.assertNotIn("ηoi", labels[-1].tx.v)
-            self.assertIn("ηoi = 84,01 %", labels[0].tx.v)
+            self.assertIn("ηoi = 84,0 %", labels[0].tx.v)
             self.assertIsNotNone(chart.series[0].trendline)
             self.assertIsNotNone(chart._charts[1].series[0].trendline)
             self.assertEqual(chart.graphical_properties.solidFill.srgbClr, "FFFFFF")
@@ -135,7 +135,7 @@ class CompressorDegradationChartTest(unittest.TestCase):
                 self.assertLessEqual(span / axis.majorUnit, 10)
                 self.assertLessEqual(span / axis.minorUnit, 50)
                 self.assertEqual(axis.txPr.p[0].pPr.defRPr.solidFill.srgbClr, "000000")
-                self.assertEqual(axis.txPr.p[0].pPr.defRPr.sz, 1400)
+                self.assertEqual(axis.txPr.p[0].pPr.defRPr.sz, 1600)
                 values = part.series[0].yVal.numRef.numCache.pt
                 self.assertTrue(all(axis.scaling.min <= point.v <= axis.scaling.max
                                     for point in values))
@@ -197,6 +197,10 @@ class CompressorDegradationChartTest(unittest.TestCase):
                     self.assertLessEqual(
                         (axis.scaling.max - axis.scaling.min) / axis.majorUnit, 10,
                     )
+                left, right = chart.y_axis.scaling, chart._charts[1].y_axis.scaling
+                eta_bottom = (min(eta) - left.min) / (left.max - left.min)
+                pi_top = (max(pi_k) - right.min) / (right.max - right.min)
+                self.assertGreater(eta_bottom, pi_top)
 
 
 if __name__ == "__main__":

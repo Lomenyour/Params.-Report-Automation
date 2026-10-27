@@ -40,7 +40,7 @@ class PressureChartTypographyTest(unittest.TestCase):
         buffer.seek(0)
         return buffer
 
-    def test_axes_and_parameter_labels_are_14pt_with_small_subscripts(self):
+    def test_axes_are_16pt_and_parameter_labels_10pt_with_small_subscripts(self):
         with ZipFile(self.build()) as archive:
             charts = [ET.fromstring(archive.read(f"xl/charts/chart{index}.xml"))
                       for index in (1, 2)]
@@ -49,16 +49,19 @@ class PressureChartTypographyTest(unittest.TestCase):
             visible = [axis for axis in axes if axis.find("c:delete", NS).get("val") == "0"]
             self.assertEqual(len(visible), 3)
             for axis in visible:
-                self.assertEqual(axis.find("c:txPr/a:p/a:pPr/a:defRPr", NS).get("sz"), "1400")
+                self.assertEqual(axis.find("c:txPr/a:p/a:pPr/a:defRPr", NS).get("sz"), "1600")
                 for run in axis.findall("c:title/c:tx/c:rich/a:p/a:r", NS):
-                    size = "1050" if run.find("a:rPr", NS).get("baseline") == "-25000" else "1400"
+                    size = "1200" if run.find("a:rPr", NS).get("baseline") == "-25000" else "1600"
                     self.assertEqual(run.find("a:rPr", NS).get("sz"), size)
-            self.assertEqual(chart.find(".//c:legend/c:txPr/a:p/a:pPr/a:defRPr", NS).get("sz"), "1400")
+            self.assertEqual(chart.find(".//c:legend/c:txPr/a:p/a:pPr/a:defRPr", NS).get("sz"), "1600")
         labels = charts[0].findall(".//c:dLbl/c:tx/c:rich", NS)
         boundary = next(label for label in labels if "αВНА" in "".join(label.itertext()))
         subscripts = [run.find("a:t", NS).text for run in boundary.findall("a:p/a:r", NS)
                       if run.find("a:rPr", NS).get("baseline") == "-25000"]
         self.assertEqual(subscripts, ["ВЛО", "ФГО+ФТО", "ВНА", "ГТУ"])
+        for run in boundary.findall("a:p/a:r", NS):
+            style = run.find("a:rPr", NS)
+            self.assertEqual(style.get("sz"), "750" if style.get("baseline") == "-25000" else "1000")
         self.assertIn("194,1 Па", "".join(boundary.itertext()))
         self.assertIn("275,0 Па", "".join(boundary.itertext()))
         self.assertTrue(any(label.find("a:bodyPr", NS).get("rot") == "-5400000" for label in labels))

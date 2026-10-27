@@ -839,6 +839,8 @@ class CalculationApp(tk.Tk):
                         degradation_values=vna_df,
                         degradation_deltas=output_tables.get("delta"),
                         vna_top10=vna_results,
+                        rh_values=rh_df,
+                        rh_results=rh_results,
                     ),
                     report_data=report_data,
                     input_files=tuple(path.resolve() for path in (file_path, raw_file_path) if path is not None),

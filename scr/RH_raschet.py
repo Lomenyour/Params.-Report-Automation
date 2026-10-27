@@ -6,6 +6,7 @@
 
 import sys
 from pathlib import Path
+from decimal import Decimal, ROUND_FLOOR
 
 import pandas as pd
 import numpy as np
@@ -563,12 +564,10 @@ def build_pair_frames(period_df, zone_size, start_id, end_id):
 # ОСНОВНАЯ ПРОГРАММА
 # ============================================================
 
-# Порог «номинального режима» для выбора граничных точек и подсчёта
-# наработки по ВНА.
-# Значения на границах периода берём не в первом/последнем ряду
-# (там турбина ещё выходит на режим), а в первом и последнем ряду,
-# где ВНА выше 80 % — то есть когда турбина реально на номинале.
+# Прежний порог отдельного показателя часов по ВНА сохраняется.
 VNA_NOMINAL_PERCENT = 80.0
+# Только для таблицы граничных точек, без изменения расчётных периодов.
+BOUNDARY_VNA_COVERAGE = 0.80
 
 # Порог мощности определяется по распределению рабочих значений:
 # из него исключаются строки, которые уже считаются остановом, затем
@@ -588,23 +587,38 @@ BOUNDARY_PARAMETERS = [
 ]
 
 
-def nominal_row(df, start, end, first):
-    """Первый/последний ряд в [start, end], где ВНА ≥ 80 %."""
+def boundary_vna_rows(df, start, end, period_number=None):
+    """Точки ВНА ≥ T: верхние ≥80% допустимых рабочих записей периода.
 
+    Возвращает выборку и диагностику. Исходные строки и метки периодов
+    не меняются; при пропусках покрытие относится к доступным показаниям.
+    """
     mask = (df["date"] >= start) & (df["date"] <= end)
+    if period_number is not None and "period" in df:
+        mask &= df["period"] == period_number
+    power = pd.to_numeric(df["power"], errors="coerce")
+    mask &= np.isfinite(power) & (power > LOW_POWER)
+    working = df.loc[mask].sort_values("date", kind="stable")
+    vna = pd.to_numeric(working.get("vna", pd.Series(np.nan, index=working.index)), errors="coerce")
+    valid = np.isfinite(vna) & vna.between(0, 100)
+    values = vna.loc[valid].sort_values(ascending=False, kind="stable")
+    summary = {"working_records": len(working), "valid_records": len(values),
+               "invalid_records": len(working) - len(values),
+               "threshold": np.nan, "coverage_percent": np.nan,
+               "availability_percent": 100. * len(values) / len(working) if len(working) else np.nan}
+    if values.empty:
+        return working.iloc[:0].copy(), summary
+    index = int(np.ceil(BOUNDARY_VNA_COVERAGE * len(values))) - 1
+    threshold = float(Decimal(str(float(values.iloc[index]))).quantize(
+        Decimal("0.1"), rounding=ROUND_FLOOR))
+    selected = working.loc[valid & (vna >= threshold)].copy()
+    summary.update(threshold=threshold, coverage_percent=100. * len(selected) / len(values))
+    return selected, summary
 
-    if "vna" in df.columns:
-        mask &= (
-            pd.to_numeric(df["vna"], errors="coerce")
-            >= VNA_NOMINAL_PERCENT
-        )
 
-    sub = df[mask]
-
-    if sub.empty:
-        return None
-
-    return sub.iloc[0] if first else sub.iloc[-1]
+def nominal_row(df, start, end, first):
+    selected, _ = boundary_vna_rows(df, start, end)
+    return None if selected.empty else selected.iloc[0 if first else -1]
 
 
 def build_power_distribution(
@@ -763,20 +777,25 @@ def format_boundary_value(value):
 def build_boundary_table(df, periods_df):
     """Таблица параметров на номинале по границам периодов."""
 
-    columns = ["Период", "дата"] + [title for _, title in BOUNDARY_PARAMETERS]
+    columns = ["Период", "дата", "Порог ВНА, %", "Покрытие, %"] + [title for _, title in BOUNDARY_PARAMETERS]
 
     rows = []
+    summaries = {}
 
     for row in periods_df.itertuples(index=False):
 
         number = int(row.period)
 
-        start_row = nominal_row(df, row.date_start, row.date_end, first=True)
-        end_row = nominal_row(df, row.date_start, row.date_end, first=False)
+        selected, summary = boundary_vna_rows(df, row.date_start, row.date_end, number)
+        summaries[number] = summary
+        start_row = None if selected.empty else selected.iloc[0]
+        end_row = None if selected.empty else selected.iloc[-1]
 
         for tag, boundary in (("нач", start_row), ("кон", end_row)):
 
-            record = {"Период": f"{number} {tag}"}
+            record = {"Период": f"{number} {tag}",
+                      "Порог ВНА, %": summary["threshold"],
+                      "Покрытие, %": round(summary["coverage_percent"], 2)}
 
             if boundary is None:
 
@@ -798,7 +817,9 @@ def build_boundary_table(df, periods_df):
 
             rows.append(record)
 
-    return pd.DataFrame(rows, columns=columns)
+    table = pd.DataFrame(rows, columns=columns)
+    table.attrs["vna_boundary_summary"] = summaries
+    return table
 
 
 def _dominant_vna_interval(period_df):
@@ -1133,11 +1154,18 @@ def main(data=None, periods_only=False, show_plots=True, vna_data=None,
         print()
         print(
             "Параметры на границах периодов "
-            f"(ВНА ≥ {VNA_NOMINAL_PERCENT:.0f} %):"
+            "(ВНА ≥ индивидуального порога покрытия 80 %):"
         )
         print()
 
         boundary_table = build_boundary_table(df, periods_df)
+        for number, summary in boundary_table.attrs["vna_boundary_summary"].items():
+            print(f"Период {number}: допустимых ВНА {summary['valid_records']} из "
+                  f"{summary['working_records']} рабочих записей; порог "
+                  f"{summary['threshold']:.1f} %, покрытие {summary['coverage_percent']:.2f} %.")
+            if summary["invalid_records"]:
+                print("WARNING: покрытие рассчитано по доступным показаниям ВНА; "
+                      f"пропусков/недопустимых значений: {summary['invalid_records']}.")
 
         print(boundary_table.to_string(index=False))
         delta_table = print_boundary_delta_table(
@@ -1346,11 +1374,33 @@ X_LIMITS = {
 # ============================================================
 
 PLOT_COLS = 3          # колонок в сетке графиков
-PLOT_CELL_W = 6.0      # ширина одной ячейки, дюймов
-PLOT_CELL_H = 4.5      # высота одной ячейки, дюймов
+PLOT_CELL_W = 9.0      # ширина одной ячейки, дюймов, для осей 16 пт
+PLOT_CELL_H = 6.0      # высота одной ячейки, дюймов
+
+
+def select_rh_variants(results):
+    """По одному из уже предложенных вариантов: первый kкон ≥ kнач, иначе первый."""
+    groups = {}
+    for result in results:
+        groups.setdefault(result["period"], []).append(result)
+    selected = []
+    for candidates in groups.values():
+        chosen = next((row for row in candidates
+            if np.isfinite(row["k_start"]) and np.isfinite(row["k_end"])
+            and row["k_end"] >= row["k_start"]), candidates[0])
+        selected.append(chosen)
+    return selected
+
+
+def rh_equation(name, slope, intercept):
+    k = f"{slope:.10f}".replace(".", ",")
+    b = f"{abs(intercept):.10f}".replace(".", ",")
+    return f"{name} = {k} × Nприв {'+' if intercept >= 0 else '−'} {b}"
 
 
 def plot_selected_windows(df, results, show=True):
+
+    results = select_rh_variants(results)
 
     if not results:
         print("Нет найденных результатов.")
@@ -1431,7 +1481,7 @@ def plot_selected_windows(df, results, show=True):
             start_data["fuel"],
             s=14,
             alpha=0.65,
-            label="START"
+            color="#4472C4", label="Условно-чистая"
         )
 
         ax.scatter(
@@ -1439,7 +1489,7 @@ def plot_selected_windows(df, results, show=True):
             end_data["fuel"],
             s=14,
             alpha=0.65,
-            label="END"
+            color="#C00000", label="Условно-загрязнённая"
         )
 
         # ====================================================
@@ -1461,14 +1511,14 @@ def plot_selected_windows(df, results, show=True):
             x_line,
             k_start * x_line + b_start,
             linewidth=1.4,
-            label="Регрессия START"
+            color="#4472C4", label="_Регрессия START"
         )
 
         ax.plot(
             x_line,
             k_end * x_line + b_end,
             linewidth=1.4,
-            label="Регрессия END"
+            color="#C00000", label="_Регрессия END"
         )
 
         # ====================================================
@@ -1497,51 +1547,34 @@ def plot_selected_windows(df, results, show=True):
         # ПОДПИСИ
         # ====================================================
 
-        ax.set_xlabel("Мощность", fontsize=8)
-        ax.set_ylabel("Расход топлива", fontsize=8)
+        ax.set_xlabel("Приведённая мощность, МВт", fontsize=16, fontfamily="Times New Roman")
+        ax.set_ylabel("Приведённый расход газа, нм³/ч", fontsize=16, fontfamily="Times New Roman")
 
         ax.set_title(
-            f"Период {period} — вариант №{rank}\n"
-            f"START: {start_begin:%d-%m-%Y %H:%M} → {start_end:%d-%m-%Y %H:%M}\n"
-            f"END:   {end_begin:%d-%m-%Y %H:%M} → {end_end:%d-%m-%Y %H:%M}",
-            fontsize=9
+            f"Период {period} — расходная характеристика, вариант №{rank}",
+            fontsize=10, fontfamily="Times New Roman"
         )
 
         # ====================================================
         # ИНФОРМАЦИЯ
         # ====================================================
 
-        text = (
-            f"START: k = {k_start:.6f}, "
-            f"b = {b_start:.6f}, "
-            f"R² = {result['R2_start']:.4f}\n"
-            f"END:   k = {k_end:.6f}, "
-            f"b = {b_end:.6f}, "
-            f"R² = {result['R2_end']:.4f}\n"
-            f"Δk = {result['delta_k_pct']:.3f}%    "
-            f"Δb = {result['delta_b_pct']:.3f}%"
-        )
-
-        ax.text(
-            0.02,
-            0.98,
-            text,
-            transform=ax.transAxes,
-            verticalalignment="top",
-            fontsize=6.5,
-            bbox=dict(
-                boxstyle="round",
-                alpha=0.85
-            )
-        )
+        for x, y, title, date, k, b, color in (
+            (.03, .95, "Условно-загрязнённое", end_begin, k_end, b_end, "#C00000"),
+            (.42, .24, "Условно-чистое", start_begin, k_start, b_start, "#4472C4"),
+        ):
+            text = f"{title} состояние {date:%d.%m.%Y}\n{rh_equation('B', k, b)}"
+            ax.text(x, y, text,
+                transform=ax.transAxes, va="top", fontsize=10, fontfamily="Times New Roman",
+                bbox=dict(boxstyle="square,pad=0.3", facecolor="white", edgecolor=color))
 
         ax.grid(
             True,
             alpha=0.25
         )
 
-        ax.tick_params(labelsize=7)
-        ax.legend(fontsize=7, loc="lower right")
+        ax.tick_params(labelsize=16)
+        ax.legend(prop={"family": "Times New Roman", "size": 16}, loc="lower right")
 
     # ========================================================
     # ГАСИМ НЕИСПОЛЬЗОВАННЫЕ ЯЧЕЙКИ СЕТКИ

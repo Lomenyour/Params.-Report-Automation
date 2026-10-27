@@ -8,13 +8,13 @@ import numpy as np
 import pandas as pd
 from openpyxl.cell import WriteOnlyCell
 from openpyxl.chart import Reference, ScatterChart, Series
-from openpyxl.chart.label import DataLabel, DataLabelList
+from openpyxl.chart.label import DataLabelList
 from openpyxl.chart.legend import LegendEntry
 from openpyxl.chart.layout import Layout, ManualLayout
 from openpyxl.chart.axis import ChartLines, NumericAxis
 from openpyxl.chart.data_source import NumData, NumVal
 from openpyxl.chart.shapes import GraphicalProperties
-from openpyxl.chart.text import RichText, Text
+from openpyxl.chart.text import RichText
 from openpyxl.drawing.line import LineEndProperties, LineProperties
 from openpyxl.drawing.text import (
     CharacterProperties, Font as DrawingFont, Paragraph, ParagraphProperties,
@@ -27,7 +27,7 @@ from openpyxl.worksheet.worksheet import Worksheet
 
 from data_loader import SHORT_NAMES, _map_headers
 from chart_events import ChartEvent
-from chart_text import FONT_SIZE, rich_text
+from chart_text import FONT_SIZE, LABEL_SIZE, RichDataLabel, rich_text
 from degradation_chart import (
     HELPER_COLUMN as DEGRADATION_HELPER_COLUMN,
     HELPER_HEADERS as DEGRADATION_HELPER_HEADERS,
@@ -38,6 +38,7 @@ from compressor_degradation_chart import (
     add_compressor_charts,
     prepare_compressor_plots,
 )
+from rh_chart import prepare_rh_plots, add_rh_charts
 
 
 PRESSURE_CHANNELS = {
@@ -65,6 +66,8 @@ class PressureChartData:
     degradation_values: pd.DataFrame | None = None
     degradation_deltas: pd.DataFrame | None = None
     vna_top10: list[pd.DataFrame] | None = None
+    rh_values: pd.DataFrame | None = None
+    rh_results: list[dict] | None = None
 
 
 def _number(frame, key):
@@ -123,25 +126,6 @@ def _axis_title(axis, title):
     axis.title.tx.rich = rich_text(title, bold=True)
 
 
-class _RichDataLabel(DataLabel):
-    """c:tx отсутствует в модели DataLabel openpyxl; сохраняем штатный XML."""
-    def __init__(self, text, *, vertical=False):
-        super().__init__(idx=0)
-        self.text = text
-        self.vertical = vertical
-
-    def to_tree(self, tagname=None, idx=None, namespace=None):
-        element = DataLabel(
-            idx=self.idx, dLblPos="ctr", showSerName=False,
-            showVal=False, showCatName=False, showLegendKey=False,
-        ).to_tree(tagname, idx, namespace)
-        text = rich_text(self.text, centered=True)
-        if self.vertical:
-            text.bodyPr.rot = -5400000
-        element.insert(1, Text(rich=text).to_tree("tx"))
-        return element
-
-
 def _scale_max(values):
     values = pd.to_numeric(pd.Series(values), errors="coerce")
     valid = values[np.isfinite(values) & (values >= 0)]
@@ -195,9 +179,9 @@ def _period_series(sheet, row, points, title, label=False, arrow=False, vertical
     if label:
         series.graphicalProperties.line.noFill = True
         series.dLbls = DataLabelList(
-            dLbl=[_RichDataLabel(title, vertical=vertical)],
+            dLbl=[RichDataLabel(title, vertical=vertical)],
             showSerName=False, showVal=False, showCatName=False,
-            showLegendKey=False, dLblPos="ctr", txPr=_text(centered=True),
+            showLegendKey=False, dLblPos="ctr", txPr=_text(LABEL_SIZE, centered=True),
             spPr=GraphicalProperties(
                 solidFill="FFFFFF", ln=LineProperties(solidFill="000000", w=12700),
             ),
@@ -222,7 +206,7 @@ def _boundary_record(boundaries, number, tag):
 
 def _callout(record, keys):
     if record is None or str(record.get("дата", "—")) == "—":
-        return "Нет номинальной точки\nВНА ≥ 80 %"
+        return "Нет подходящей граничной точки"
     date = _boundary_value(record.get("дата"), is_date=True)
     lines = [date.strftime("%d.%m.%Y") if isinstance(date, pd.Timestamp) else str(date)]
 
@@ -258,6 +242,19 @@ def _callout_dates(periods, lower, upper):
     restored = np.empty(len(positions))
     restored[order] = positions
     return [lower + span * float(position) for position in restored]
+
+
+def pressure_display_periods(periods, boundaries):
+    """Границы только Excel-диаграммы: по точкам таблицы, без правки периодов."""
+    display = periods.copy(deep=True)
+    if boundaries is None or boundaries.empty:
+        return display
+    for index, row in display.iterrows():
+        for tag, column in (("нач", "date_start"), ("кон", "date_end")):
+            record = _boundary_record(boundaries, int(row["period"]), tag)
+            value = None if record is None else _boundary_value(record.get("дата"), is_date=True)
+            display.loc[index, column] = value if isinstance(value, pd.Timestamp) else pd.NaT
+    return display.dropna(subset=["date_start", "date_end"])
 
 
 def _table_cell(sheet, value, kind="body"):
@@ -345,12 +342,13 @@ def write_pressure_sheet(book, headers, header_row, row_count, source: PressureC
     compressor_plots = prepare_compressor_plots(
         source.degradation_values, source.periods, source.vna_top10,
     ) if source.vna_top10 else []
+    rh_plots = prepare_rh_plots(source.rh_values, source.rh_results)
     if frame.empty or not keys:
         plot = prepare_degradation_plot(
             source.degradation_values, source.periods,
             source.degradation_deltas,
         )
-        if plot is None and not compressor_plots:
+        if plot is None and not compressor_plots and not rh_plots:
             sheet.append(["Нет исходных данных для диаграмм."])
             return sheet
         cells, visible_bottom = (
@@ -363,6 +361,11 @@ def write_pressure_sheet(book, headers, header_row, row_count, source: PressureC
         for row, row_cells in compressor_cells.items():
             cells.setdefault(row, {}).update(row_cells)
         visible_bottom = max(visible_bottom, compressor_bottom)
+        rh_cells, rh_bottom = add_rh_charts(sheet, rh_plots, visible_bottom + 3, two_columns=False)
+        for row, row_cells in rh_cells.items():
+            cells.setdefault(row, {}).update(row_cells)
+        if rh_plots:
+            visible_bottom = max(visible_bottom, rh_bottom)
         if plot is not None:
             sheet.column_dimensions.group("BJ", "BN", hidden=True)
         for column in range(1, 24):
@@ -458,7 +461,8 @@ def write_pressure_sheet(book, headers, header_row, row_count, source: PressureC
     helper_points = []
     hide_legend = []
     periods = source.periods if source.periods is not None else pd.DataFrame()
-    callout_dates = _callout_dates(periods, lower, upper)
+    display_periods = pressure_display_periods(periods, source.boundaries)
+    callout_dates = _callout_dates(display_periods, lower, upper)
 
     def add_helper(points, title, **kwargs):
         first = len(helper_points) + 2
@@ -466,16 +470,22 @@ def write_pressure_sheet(book, headers, header_row, row_count, source: PressureC
         hide_legend.append(len(chart.series))
         chart.series.append(_period_series(sheet, first, points, title, **kwargs))
 
-    for index, period in enumerate(periods.itertuples(index=False)):
+    title_positions = []
+    for index, period in enumerate(display_periods.itertuples(index=False)):
         number = int(period.period)
         for moment in (pd.Timestamp(period.date_start), pd.Timestamp(period.date_end)):
             points = [(moment, 0.0), (moment, pressure_max)]
             add_helper(points, f"Граница периода {number}")
-        arrow_y = pressure_max * 0.94
+        midpoint = pd.Timestamp(period.date_start) + (pd.Timestamp(period.date_end) - pd.Timestamp(period.date_start)) / 2
+        # Соседние короткие периоды не должны перекрывать верхние подписи.
+        crowded = any(abs(midpoint - x) < (upper - lower) * .115 and level == .97
+                      for x, level in title_positions)
+        level = .90 if crowded else .97
+        title_positions.append((midpoint, level))
+        arrow_y = pressure_max * level
         add_helper([(pd.Timestamp(period.date_start), arrow_y),
                     (pd.Timestamp(period.date_end), arrow_y)],
                    f"Диапазон периода {number}", arrow=True)
-        midpoint = pd.Timestamp(period.date_start) + (pd.Timestamp(period.date_end) - pd.Timestamp(period.date_start)) / 2
         add_helper([(midpoint, arrow_y)],
                    f"{number} период исследования\n"
                    f"{period.date_start:%d.%m.%Y} - {period.date_end:%d.%m.%Y}", label=True)
@@ -544,6 +554,12 @@ def write_pressure_sheet(book, headers, header_row, row_count, source: PressureC
     for row, row_cells in compressor_cells.items():
         table_cells.setdefault(row, {}).update(row_cells)
     visible_bottom = max(visible_bottom, compressor_bottom)
+    rh_cells, rh_bottom = add_rh_charts(sheet, rh_plots, visible_bottom + 3,
+                                     two_columns=degradation_plot is not None)
+    for row, row_cells in rh_cells.items():
+        table_cells.setdefault(row, {}).update(row_cells)
+    if rh_plots:
+        visible_bottom = max(visible_bottom, rh_bottom)
     sheet.print_options.horizontalCentered = True
     sheet.page_setup.orientation = "landscape"
     sheet.page_setup.paperSize = Worksheet.PAPERSIZE_A3

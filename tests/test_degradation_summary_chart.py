@@ -107,7 +107,7 @@ class DegradationSummaryChartTest(unittest.TestCase):
         self.assertEqual(len(chart_sheet._charts), 2)
         degradation_chart = chart_sheet._charts[1]
         self.assertEqual(len(degradation_chart._charts), 2)
-        self.assertEqual(len(degradation_chart.series), 3)
+        self.assertEqual(len(degradation_chart.series), 3 + 4 * 3)
         self.assertEqual(len(degradation_chart._charts[1].series), 1)
         self.assertEqual(degradation_chart.anchor._from.col, 25)  # Z2
         self.assertEqual(degradation_chart.anchor._from.row, 1)

@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' qrc:; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'none'; object-src 'none'; frame-src 'none'; base-uri 'none'">
+  <title>Параметрический расчёт ГТУ</title>
+  <link rel="stylesheet" href="style.css">
+  <script src="qrc:///qtwebchannel/qwebchannel.js" defer></script>
+  <script src="app.js" defer></script>
+</head>
+<body>
+<div id="desktop" data-palette="graphite">
+  <div class="gtu-app">
+    <header class="gtu-titlebar">
+      <div class="gtu-mark"><span data-icon="activity" aria-hidden="true"></span></div>
+      <div class="gtu-brand">ГТУ <small>Параметрический расчёт</small></div>
+    </header>
+    <div class="gtu-layout">
+      <aside class="gtu-settings" aria-label="Подготовка расчёта">
+        <div class="gtu-settings-scroll">
+          <h2 class="gtu-settings-heading">Подготовка расчёта</h2>
+          <p class="gtu-caption">Данные, станция и тарифы</p>
+          <section class="gtu-section">
+            <h3 class="gtu-section-name"><span class="gtu-step">1</span> Исходные данные</h3>
+            <div class="gtu-file"><span data-icon="file-sheet" aria-hidden="true"></span><div class="gtu-file-text"><strong id="filename">Файл не выбран</strong><span>Расчётная книга · лист «Данные»</span></div></div>
+            <button class="gtu-action gtu-wide" data-action="file" data-control="choose_button" type="button" disabled><span data-icon="folder" aria-hidden="true"></span><span id="choose-label">Выбрать Excel-файл</span></button>
+            <div class="gtu-station-field"><label class="gtu-field-label" for="station">Теплоэлектроцентраль</label><select id="station" class="gtu-field" data-field="station" data-control="station_combo" disabled><option value="">Выберите ТЭЦ</option></select></div>
+            <p class="gtu-caption gtu-station-hint" id="station-hint">Выберите ТЭЦ или загрузите файл.</p>
+          </section>
+          <section class="gtu-section">
+            <h3 class="gtu-section-name"><span class="gtu-step">2</span> Режим расчёта</h3>
+            <label class="gtu-radio"><input type="radio" name="mode" value="ready" checked disabled> Готовая расчётная книга</label>
+            <label class="gtu-radio"><input type="radio" name="mode" value="import" disabled> Обновить из выгрузки датчиков</label>
+            <div class="gtu-import" id="import-controls" hidden>
+              <button class="gtu-action gtu-wide" data-action="raw" data-control="raw_button" type="button" disabled><span data-icon="folder" aria-hidden="true"></span>Выбрать выгрузку</button>
+              <label class="gtu-field-label gtu-sheet-label" for="sheet">Лист выгрузки</label><select id="sheet" class="gtu-field" data-field="sheet" data-control="raw_sheet_combo" disabled></select>
+              <button class="gtu-action gtu-wide" data-action="mapping" data-control="mapping_button" type="button" disabled>Проверить колонки</button>
+              <button class="gtu-action gtu-quiet" data-action="clearRaw" data-control="clear_raw_button" type="button" disabled>Убрать выгрузку</button>
+              <p class="gtu-caption gtu-raw-label" id="raw-label"></p>
+            </div>
+          </section>
+          <section class="gtu-section">
+            <h3 class="gtu-section-name"><span class="gtu-step">3</span> Тарифы</h3>
+            <div class="gtu-tariffs">
+              <div class="gtu-tariff"><label for="gas">Газ<small>руб/нм³</small></label><input class="gtu-field" id="gas" data-field="gas" value="0" inputmode="decimal" disabled></div>
+              <div class="gtu-tariff"><label for="electricity">Электроэнергия<small>руб/МВт·ч</small></label><input class="gtu-field" id="electricity" data-field="electricity" value="0" inputmode="decimal" disabled></div>
+              <div class="gtu-tariff"><label for="cost">Себестоимость ЭЭ<small>руб/МВт·ч</small></label><input class="gtu-field" id="cost" data-field="cost" value="0" inputmode="decimal" disabled></div>
+            </div>
+          </section>
+        </div>
+        <div class="gtu-run-area"><button type="button" class="gtu-action gtu-primary gtu-wide" data-action="run" data-control="run_button" disabled><span data-icon="play" aria-hidden="true"></span><span id="run-label">Расчет</span></button><p class="gtu-run-note">Периоды подтверждаются перед расчётом</p></div>
+      </aside>
+      <main class="gtu-work">
+        <div class="gtu-work-heading"><div><span class="gtu-eyebrow">Результаты расчёта</span><h2 id="workspace-title">Рабочее пространство</h2><p id="workspace-subtitle">Графики, таблицы и отчёты</p></div><div class="gtu-export"><button type="button" class="gtu-action" data-action="excel" data-control="excel_button" disabled aria-label="Сформировать Excel"><span data-icon="file-sheet" aria-hidden="true"></span>Excel</button><button type="button" class="gtu-action" data-action="word" data-control="report_button" disabled aria-label="Сформировать Word"><span data-icon="file-text" aria-hidden="true"></span>Word</button></div></div>
+        <div class="gtu-results">
+          <nav class="gtu-tabs" aria-label="Разделы результатов" role="tablist">
+            <button type="button" class="gtu-tab" id="tab-pressure" role="tab" aria-controls="result-panel" aria-selected="true" data-tab="pressure">Перепады</button>
+            <button type="button" class="gtu-tab" id="tab-vna" role="tab" aria-controls="result-panel" aria-selected="false" data-tab="vna">ВНА</button>
+            <button type="button" class="gtu-tab" id="tab-boundary" role="tab" aria-controls="result-panel" aria-selected="false" data-tab="boundary">Границы</button>
+            <button type="button" class="gtu-tab" id="tab-top10" role="tab" aria-controls="result-panel" aria-selected="false" data-tab="top10">ТОП-10</button>
+            <button type="button" class="gtu-tab" id="tab-delta" role="tab" aria-controls="result-panel" aria-selected="false" data-tab="delta">Деградация</button>
+            <button type="button" class="gtu-tab" id="tab-rh" role="tab" aria-controls="result-panel" aria-selected="false" data-tab="rh">RH</button>
+            <button type="button" class="gtu-tab" id="tab-economics" role="tab" aria-controls="result-panel" aria-selected="false" data-tab="economics">Экономика</button>
+          </nav>
+          <div class="gtu-result-content" id="result-panel" role="tabpanel" aria-labelledby="tab-pressure"></div>
+        </div>
+        <details class="gtu-journal" open><summary><span data-icon="terminal" aria-hidden="true"></span>Журнал расчёта<span class="gtu-caption" id="journal-status">Ожидание данных</span><span class="gtu-chevron" data-icon="chevron" aria-hidden="true"></span></summary><pre class="gtu-log" id="log" aria-label="Журнал расчёта"></pre></details>
+        <footer class="gtu-foot"><span class="gtu-dot" id="status-dot"></span><span id="status" aria-live="polite">Подключение интерфейса…</span><button class="gtu-action gtu-quiet" type="button" data-action="events" data-control="events_button" disabled><span data-icon="flag" aria-hidden="true"></span><span id="events-label">События графика (0)</span></button><span class="gtu-progress" id="progress" hidden role="progressbar" aria-label="Выполняется расчёт"></span></footer>
+      </main>
+    </div>
+    <div class="gtu-overlay" id="dialog-layer" hidden></div>
+  </div>
+</div>
+<template id="empty-template"><div class="gtu-empty"><span data-icon="chart" aria-hidden="true"></span><h3 id="empty-title">Начните с исходных данных</h3><p id="empty-description">Выберите Excel-книгу и ТЭЦ в панели подготовки. Здесь появятся графики и таблицы расчёта.</p></div></template>
+</body>
+</html>

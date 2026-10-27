@@ -53,6 +53,7 @@ from result_export import collect_result_tables, read_data_sheet, save_result_wo
 from pressure_chart import PressureChartData
 from chart_events import ChartEvent, load_chart_events, save_chart_events
 from chart_events_ui import ChartEventsDialog
+from ui_theme import build_widgets, configure_theme, show_empty_states, update_status
 from calculation_snapshot import CalculationSnapshot
 from reporting import (
     DEFAULT_REPORT_DIR,
@@ -360,308 +361,10 @@ class CalculationApp(tk.Tk):
         self.after(100, self._poll_output)
 
     def _configure_dark_theme(self):
-        """Настраивает тёмную тему окна, лога и вкладок графиков."""
-
-        self.colors = {
-            "window": "#202124",
-            "panel": "#292b2f",
-            "input": "#17181a",
-            "text": "#e8eaed",
-            "muted": "#b8bdc7",
-            "accent": "#79a7ff",
-            "accent_active": "#9bbcff",
-            "selection": "#3d5f9e",
-            "trough": "#151619",
-        }
-
-        self.configure(bg=self.colors["window"])
-        style = ttk.Style(self)
-        try:
-            style.theme_use("clam")
-        except tk.TclError:
-            pass
-
-        style.configure(".",
-                        background=self.colors["panel"],
-                        foreground=self.colors["text"])
-        style.configure("TFrame", background=self.colors["panel"])
-        style.configure("TLabel",
-                        background=self.colors["panel"],
-                        foreground=self.colors["text"])
-        style.configure(
-            "TEntry",
-            foreground="#111111",
-            fieldbackground="#ffffff",
-            insertcolor="#111111",
-            selectforeground="#ffffff",
-            selectbackground=self.colors["selection"],
-        )
-        style.configure(
-            "TCombobox",
-            foreground="#111111",
-            fieldbackground="#ffffff",
-            background="#f2f2f2",
-            arrowcolor="#111111",
-            selectforeground="#111111",
-            selectbackground="#dce9ff",
-        )
-        style.map(
-            "TCombobox",
-            foreground=[("disabled", "#666666"), ("readonly", "#111111")],
-            fieldbackground=[("disabled", "#e8e8e8"), ("readonly", "#ffffff")],
-            selectforeground=[("readonly", "#111111")],
-            selectbackground=[("readonly", "#ffffff")],
-        )
-        self.option_add("*TCombobox*Listbox.background", "#ffffff")
-        self.option_add("*TCombobox*Listbox.foreground", "#111111")
-        self.option_add("*TCombobox*Listbox.selectBackground", "#3d5f9e")
-        self.option_add("*TCombobox*Listbox.selectForeground", "#ffffff")
-        style.configure("TButton",
-                        background="#3a3d43",
-                        foreground=self.colors["text"],
-                        padding=(10, 6))
-        style.map(
-            "TButton",
-            background=[
-                ("active", "#4a4e57"),
-                ("disabled", "#303238"),
-            ],
-            foreground=[("disabled", "#777b85")],
-        )
-        style.configure("TLabelFrame",
-                        background=self.colors["panel"],
-                        foreground=self.colors["text"])
-        style.configure("TLabelframe.Label",
-                        background=self.colors["panel"],
-                        foreground=self.colors["text"])
-        style.configure("TNotebook",
-                        background=self.colors["panel"],
-                        borderwidth=0)
-        style.configure("TNotebook.Tab",
-                        background="#34373d",
-                        foreground=self.colors["muted"],
-                        padding=(10, 5))
-        style.map(
-            "TNotebook.Tab",
-            background=[("selected", "#4a4f59"), ("active", "#41454d")],
-            foreground=[("selected", self.colors["text"])],
-        )
-        style.configure("TProgressbar",
-                        troughcolor=self.colors["trough"],
-                        background=self.colors["accent"],
-                        bordercolor=self.colors["trough"],
-                        lightcolor=self.colors["accent"],
-                        darkcolor=self.colors["accent"])
-        style.configure(
-            "Treeview",
-            background=self.colors["input"],
-            fieldbackground=self.colors["input"],
-            foreground=self.colors["text"],
-            rowheight=25,
-            borderwidth=0,
-        )
-        style.map(
-            "Treeview",
-            background=[("selected", self.colors["selection"])],
-            foreground=[("selected", self.colors["text"])],
-        )
-        style.configure(
-            "Treeview.Heading",
-            background="#3a3d43",
-            foreground=self.colors["text"],
-            padding=(7, 6),
-        )
-        style.map(
-            "Treeview.Heading",
-            background=[("active", "#4a4e57")],
-        )
+        configure_theme(self)
 
     def _build_widgets(self):
-        controls = ttk.Frame(self, padding=10)
-        controls.pack(fill="x")
-
-        self.choose_button = ttk.Button(
-            controls,
-            text="Выбрать Excel-файл",
-            command=self.choose_file,
-        )
-        self.choose_button.pack(side="left")
-
-        self.run_button = ttk.Button(
-            controls,
-            text="Запустить расчёт",
-            command=self.start_calculation,
-            state="disabled",
-        )
-        self.run_button.pack(side="left", padx=(10, 0))
-
-        self.excel_button = ttk.Button(
-            controls, text="Сформировать Excel", command=self.generate_excel_report,
-            state="disabled",
-        )
-        self.excel_button.pack(side="left", padx=(10, 0))
-
-        self.report_button = ttk.Button(
-            controls,
-            text="Сформировать Word",
-            command=self.generate_word_report,
-            state="disabled",
-        )
-        self.report_button.pack(side="left", padx=(10, 0))
-
-        self.progress = ttk.Progressbar(controls, mode="indeterminate", length=140)
-        self.progress.pack(side="right")
-
-        station_controls = ttk.Frame(self, padding=(10, 0, 10, 8))
-        station_controls.pack(fill="x")
-        ttk.Label(station_controls, text="ТЭЦ (обязательно):").pack(side="left", padx=(0, 6))
-        self.station_combo = ttk.Combobox(
-            station_controls, textvariable=self.station_var,
-            values=list(self.stations_by_name), state="readonly", width=25,
-        )
-        self.station_combo.pack(side="left")
-        self.station_combo.bind("<<ComboboxSelected>>", self._on_station_changed)
-        self.station_hint = ttk.Label(station_controls, text="Выберите ТЭЦ или загрузите файл.")
-        self.station_hint.pack(side="left", padx=(12, 0))
-
-        tariff_controls = ttk.Frame(self, padding=(10, 0, 10, 8))
-        tariff_controls.pack(fill="x")
-        self.tariff_entries = []
-        for title, variable in (
-            ("Газ, руб/нм³:", self.gas_tariff_var),
-            ("ЭЭ, руб/МВт·ч:", self.electricity_tariff_var),
-            ("Себестоимость ЭЭ, руб/МВт·ч:", self.electricity_cost_var),
-        ):
-            ttk.Label(tariff_controls, text=title).pack(side="left", padx=(0, 4))
-            entry = ttk.Entry(tariff_controls, textvariable=variable, width=10)
-            entry.pack(side="left")
-            entry.pack_configure(padx=(0, 12))
-            self.tariff_entries.append(entry)
-
-        self.file_label = ttk.Label(
-            self,
-            text="Файл не выбран",
-            anchor="w",
-        )
-        self.file_label.pack(fill="x", padx=10, pady=(0, 8))
-
-        mode_controls = ttk.Frame(self, padding=(10, 0, 10, 8))
-        mode_controls.pack(fill="x")
-        ttk.Label(mode_controls, text="Режим:").pack(side="left", padx=(0, 10))
-        self.mode_buttons = []
-        for title, value in (
-            ("Расчёт готовой книги", "ready"),
-            ("Обновление данными датчиков и расчёт", "import"),
-        ):
-            button = ttk.Radiobutton(
-                mode_controls, text=title, value=value,
-                variable=self.calculation_mode, command=self._on_mode_changed,
-            )
-            button.pack(side="left", padx=(0, 18))
-            self.mode_buttons.append(button)
-
-        self.events_button = ttk.Button(
-            mode_controls, text="События графика (0)", command=self.review_chart_events,
-        )
-        self.events_button.pack(side="right")
-
-        import_controls = ttk.Frame(self, padding=(10, 0, 10, 10))
-        import_controls.pack(fill="x")
-        self.raw_button = ttk.Button(
-            import_controls,
-            text="Выбрать выгрузку датчиков",
-            command=self.choose_raw_file,
-            state="disabled",
-        )
-        self.raw_button.pack(side="left")
-        ttk.Label(import_controls, text="Лист выгрузки:").pack(
-            side="left", padx=(12, 4)
-        )
-        self.raw_sheet_combo = ttk.Combobox(
-            import_controls,
-            textvariable=self.selected_raw_sheet,
-            state="disabled",
-            width=34,
-        )
-        self.raw_sheet_combo.pack(side="left")
-        self.raw_sheet_combo.bind(
-            "<<ComboboxSelected>>", self._on_raw_sheet_changed
-        )
-        self.mapping_button = ttk.Button(
-            import_controls,
-            text="Проверить колонки",
-            command=self.review_mapping,
-            state="disabled",
-        )
-        self.mapping_button.pack(side="left", padx=(10, 0))
-        self.clear_raw_button = ttk.Button(
-            import_controls, text="Убрать выгрузку", command=self.clear_raw_file,
-            state="disabled",
-        )
-        self.clear_raw_button.pack(side="left", padx=(8, 0))
-        self.raw_label = ttk.Label(
-            import_controls, text="Выгрузка не выбрана", anchor="w"
-        )
-        self.raw_label.pack(side="left", padx=(12, 0), fill="x", expand=True)
-
-        panes = ttk.PanedWindow(self, orient="horizontal")
-        panes.pack(fill="both", expand=True, padx=10, pady=(0, 10))
-
-        log_frame = ttk.LabelFrame(panes, text="Лог расчёта", padding=5)
-        panes.add(log_frame, weight=2)
-
-        self.log = tk.Text(
-            log_frame,
-            wrap="none",
-            state="disabled",
-            background=self.colors["input"],
-            foreground=self.colors["text"],
-            insertbackground=self.colors["text"],
-            selectbackground=self.colors["selection"],
-            selectforeground=self.colors["text"],
-            relief="flat",
-            borderwidth=0,
-            padx=8,
-            pady=8,
-            font=("Consolas", 10),
-        )
-        self.log.tag_configure(
-            "section_heading",
-            font=("Consolas", 10, "bold"),
-            foreground=self.colors["accent_active"],
-        )
-        self.log.tag_configure(
-            "degradation",
-            font=("Consolas", 11, "bold"),
-            foreground="#ffbd70",
-        )
-        log_scroll_y = ttk.Scrollbar(log_frame, orient="vertical", command=self.log.yview)
-        log_scroll_x = ttk.Scrollbar(log_frame, orient="horizontal", command=self.log.xview)
-        self.log.configure(yscrollcommand=log_scroll_y.set, xscrollcommand=log_scroll_x.set)
-        self.log.grid(row=0, column=0, sticky="nsew")
-        log_scroll_y.grid(row=0, column=1, sticky="ns")
-        log_scroll_x.grid(row=1, column=0, sticky="ew")
-        log_frame.rowconfigure(0, weight=1)
-        log_frame.columnconfigure(0, weight=1)
-
-        chart_frame = ttk.LabelFrame(panes, text="Графики и таблицы", padding=5)
-        panes.add(chart_frame, weight=3)
-
-        self.chart_tabs = ttk.Notebook(chart_frame)
-        self.chart_tabs.pack(fill="both", expand=True)
-        self.tab_frames = {}
-        for key, title in (
-            ("pressure", "Перепады давления"),
-            ("vna", "ВНА"),
-            ("boundary", "Параметры на границах"),
-            ("top10", "TOP-10 ВНА"),
-            ("delta", "Дельты по регрессиям"),
-            ("economics", "Экономика"),
-            ("rh", "Графики RH"),
-        ):
-            frame = ttk.Frame(self.chart_tabs)
-            self.chart_tabs.add(frame, text=title)
-            self.tab_frames[key] = frame
+        build_widgets(self)
 
     def _invalidate_results(self, *_args):
         self.last_result = None
@@ -694,7 +397,7 @@ class CalculationApp(tk.Tk):
         )
         self.run_button.configure(
             state="normal" if can_run else "disabled",
-            text="Перерасчёт" if self.has_calculation_run else "Запустить расчёт",
+            text="Перерасчет" if self.has_calculation_run else "Расчет",
         )
         export_state = "normal" if idle and self.last_result is not None else "disabled"
         self.excel_button.configure(state=export_state)
@@ -703,6 +406,7 @@ class CalculationApp(tk.Tk):
             "Выгрузка не используется в этом режиме" if not importing
             else str(self.selected_raw_file) if has_raw else "Выгрузка не выбрана"
         ))
+        update_status(self)
 
     def _apply_station(self, station, *, automatic: bool):
         """Меняет профиль, сбрасывает назначения датчиков и старый результат."""
@@ -1339,6 +1043,7 @@ class CalculationApp(tk.Tk):
         for frame in self.tab_frames.values():
             for child in frame.winfo_children():
                 child.destroy()
+        show_empty_states(self)
 
     def _clear_tab(self, key):
         frame = self.tab_frames[key]

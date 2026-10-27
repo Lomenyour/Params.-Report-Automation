@@ -8,13 +8,13 @@ import numpy as np
 import pandas as pd
 from openpyxl.cell import WriteOnlyCell
 from openpyxl.chart import Reference, ScatterChart, Series
-from openpyxl.chart.label import DataLabelList
+from openpyxl.chart.label import DataLabel, DataLabelList
 from openpyxl.chart.legend import LegendEntry
 from openpyxl.chart.layout import Layout, ManualLayout
 from openpyxl.chart.axis import ChartLines, NumericAxis
 from openpyxl.chart.data_source import NumData, NumVal
 from openpyxl.chart.shapes import GraphicalProperties
-from openpyxl.chart.text import RichText
+from openpyxl.chart.text import RichText, Text
 from openpyxl.drawing.line import LineEndProperties, LineProperties
 from openpyxl.drawing.text import (
     CharacterProperties, Font as DrawingFont, Paragraph, ParagraphProperties,
@@ -27,6 +27,7 @@ from openpyxl.worksheet.worksheet import Worksheet
 
 from data_loader import SHORT_NAMES, _map_headers
 from chart_events import ChartEvent
+from chart_text import FONT_SIZE, rich_text
 from degradation_chart import (
     HELPER_COLUMN as DEGRADATION_HELPER_COLUMN,
     HELPER_HEADERS as DEGRADATION_HELPER_HEADERS,
@@ -97,7 +98,7 @@ def _source_columns(headers):
     return result
 
 
-def _text(size=1000, bold=False, centered=False):
+def _text(size=FONT_SIZE, bold=False, centered=False):
     return RichText(
         bodyPr=RichTextProperties(lIns=45000, rIns=45000, tIns=35000, bIns=35000),
         p=[Paragraph(r=[], pPr=ParagraphProperties(
@@ -118,15 +119,27 @@ def _grid(color, width):
 
 def _axis_title(axis, title):
     axis.title = title
-    axis.title.txPr = _text(1100, bold=True)
-    for paragraph in axis.title.tx.rich.p:
-        paragraph.pPr = ParagraphProperties(defRPr=CharacterProperties(
-            sz=1100, b=True, latin=DrawingFont(typeface="Times New Roman"),
-        ))
-        for run in paragraph.r:
-            run.rPr = CharacterProperties(
-                sz=1100, b=True, latin=DrawingFont(typeface="Times New Roman"),
-            )
+    axis.title.txPr = _text(bold=True)
+    axis.title.tx.rich = rich_text(title, bold=True)
+
+
+class _RichDataLabel(DataLabel):
+    """c:tx отсутствует в модели DataLabel openpyxl; сохраняем штатный XML."""
+    def __init__(self, text, *, vertical=False):
+        super().__init__(idx=0)
+        self.text = text
+        self.vertical = vertical
+
+    def to_tree(self, tagname=None, idx=None, namespace=None):
+        element = DataLabel(
+            idx=self.idx, dLblPos="ctr", showSerName=False,
+            showVal=False, showCatName=False, showLegendKey=False,
+        ).to_tree(tagname, idx, namespace)
+        text = rich_text(self.text, centered=True)
+        if self.vertical:
+            text.bodyPr.rot = -5400000
+        element.insert(1, Text(rich=text).to_tree("tx"))
+        return element
 
 
 def _scale_max(values):
@@ -182,8 +195,9 @@ def _period_series(sheet, row, points, title, label=False, arrow=False, vertical
     if label:
         series.graphicalProperties.line.noFill = True
         series.dLbls = DataLabelList(
-            showSerName=True, showVal=False, showCatName=False,
-            showLegendKey=False, dLblPos="ctr", txPr=_text(1000, centered=True),
+            dLbl=[_RichDataLabel(title, vertical=vertical)],
+            showSerName=False, showVal=False, showCatName=False,
+            showLegendKey=False, dLblPos="ctr", txPr=_text(centered=True),
             spPr=GraphicalProperties(
                 solidFill="FFFFFF", ln=LineProperties(solidFill="000000", w=12700),
             ),
@@ -219,8 +233,8 @@ def _callout(record, keys):
 
     for key in keys:
         title = PRESSURE_CHANNELS[key][0].removesuffix(", Па")
-        lines.append(f"ΔP {title} = {value(title)} Па;")
-    lines += [f"ВНА = {value('ВНА')} %;", f"Nгту = {value('N')} МВт."]
+        lines.append(f"ΔP{title} = {value(title)} Па;")
+    lines += [f"αВНА = {value('ВНА')} %;", f"NГТУ = {value('N')} МВт."]
     return "\n".join(lines)
 
 

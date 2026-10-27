@@ -920,6 +920,10 @@ def build_boundary_delta_table(df, periods_df, vna_data=None):
         delta_eta, raw_eta = _regression_delta(
             regressions["eta"][0], hours_start, hours_end
         )
+        # В основных колонках только ухудшение; исходные знаки сохраняются
+        # отдельно. NaN остаётся признаком отсутствующего расчёта.
+        delta_n = min(raw_n, 0.0) if np.isfinite(raw_n) else raw_n
+        delta_b = max(raw_b, 0.0) if np.isfinite(raw_b) else raw_b
         start_n = _regression_value(
             regressions["N"][0], regressions["N"][1], hours_start
         )
@@ -1012,7 +1016,8 @@ def build_weighted_delta_summary(table):
     delta_b = pd.to_numeric(table.loc[valid, "Δbприв"], errors="coerce")
     delta_eta = pd.to_numeric(table.loc[valid, "Δη, п.п."], errors="coerce")
     # В сводке учитываем только ухудшение: потерю мощности и рост расхода.
-    # Таблица периодов выше сохраняет исходные знаковые дельты без изменений.
+    # Отсечка идемпотентна для новой таблицы и поддерживает прежние таблицы
+    # с исходными знаковыми дельтами в основных колонках.
     weighted_n = float((weights * (-delta_n).clip(lower=0)).sum() / total_hours)
     weighted_b = float((weights * delta_b.clip(lower=0)).sum() / total_hours)
     weighted_eta = float((weights * delta_eta).sum() / total_hours)
@@ -1040,8 +1045,9 @@ def print_boundary_delta_table(df, periods_df, vna_data=None):
 
     print()
     print("Дельты по регрессиям от часов наработки:")
-    print("Итоговая дельта = k × (часы конца − часы начала).")
-    print("Дельты знаковые: отрицательное значение означает снижение параметра.")
+    print("Исходная дельта = k × (часы конца − часы начала), показана в «до отсечки».")
+    print("Основные ΔNприв и Δbприв содержат только снижение мощности и рост расхода; улучшения = 0.")
+    print("Снижение мощности сохраняет знак минус. Дельта КПД остаётся знаковой.")
     print()
 
     table = build_boundary_delta_table(df, periods_df, vna_data=vna_data)

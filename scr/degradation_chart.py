@@ -17,6 +17,7 @@ from openpyxl.drawing.text import (
     RichTextProperties,
 )
 from openpyxl.utils.datetime import to_excel
+from chart_text import FONT_SIZE, rich_text
 
 from RH_raschet import _dominant_vna_interval
 
@@ -151,7 +152,7 @@ def _series(sheet, plot: DegradationPlot, key: str, title: str,
     return series
 
 
-def _text(size=1000, bold=False):
+def _text(size=FONT_SIZE, bold=False):
     return RichText(
         bodyPr=RichTextProperties(lIns=45000, rIns=45000, tIns=35000, bIns=35000),
         p=[Paragraph(r=[], pPr=ParagraphProperties(
@@ -171,15 +172,8 @@ def _grid(color, width):
 
 def _axis_title(axis, title):
     axis.title = title
-    axis.title.txPr = _text(1100, bold=True)
-    for paragraph in axis.title.tx.rich.p:
-        paragraph.pPr = ParagraphProperties(defRPr=CharacterProperties(
-            sz=1100, b=True, latin=DrawingFont(typeface="Times New Roman"),
-        ))
-        for run in paragraph.r:
-            run.rPr = CharacterProperties(
-                sz=1100, b=True, latin=DrawingFont(typeface="Times New Roman"),
-            )
+    axis.title.txPr = _text(bold=True)
+    axis.title.tx.rich = rich_text(title, bold=True)
 
 
 def _summary_cells(sheet, plot: DegradationPlot, start_row: int, start_col: int):

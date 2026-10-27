@@ -25,6 +25,7 @@ py -m PyInstaller `
     --noconfirm `
     --clean `
     --windowed `
+    --icon "$PSScriptRoot\scr\desktop_ui\app-icon.ico" `
     --name $Name `
     --paths "$PSScriptRoot\scr" `
     --collect-all CoolProp `

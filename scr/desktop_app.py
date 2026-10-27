@@ -6,7 +6,7 @@ from pathlib import Path
 import sys
 
 from PySide6.QtCore import QUrl, Qt
-from PySide6.QtGui import QColor, QFont
+from PySide6.QtGui import QColor, QFont, QIcon
 from PySide6.QtWebChannel import QWebChannel
 from PySide6.QtWebEngineCore import QWebEnginePage, QWebEngineUrlRequestInterceptor, QWebEngineSettings
 from PySide6.QtWebEngineWidgets import QWebEngineView
@@ -16,6 +16,7 @@ from desktop_controller import DesktopController
 
 
 UI_DIR = Path(__file__).resolve().parent / "desktop_ui"
+APP_ICON = UI_DIR / "app-icon.ico"
 
 
 class LocalResources(QWebEngineUrlRequestInterceptor):
@@ -39,6 +40,7 @@ class DesktopWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Параметрический расчёт ГТУ")
+        self.setWindowIcon(QIcon(str(APP_ICON)))
         self.setMinimumSize(900, 600)
         available = QApplication.primaryScreen().availableGeometry()
         self.resize(min(1200, available.width() - 32), min(800, available.height() - 40))
@@ -92,6 +94,7 @@ class DesktopWindow(QMainWindow):
 def main():
     application = QApplication.instance() or QApplication(sys.argv)
     application.setApplicationName("Параметрический расчёт ГТУ")
+    application.setWindowIcon(QIcon(str(APP_ICON)))
     application.setFont(QFont("Segoe UI", 10))
     application.styleHints().setColorScheme(Qt.ColorScheme.Dark)
     window = DesktopWindow()

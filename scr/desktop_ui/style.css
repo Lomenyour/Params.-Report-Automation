@@ -204,7 +204,8 @@ html, body { margin: 0; height: 100%; background: #252525; overflow: hidden; }
   --gtu-soft-accent: #3b3b3b; --gtu-green: #a5c9b4; --gtu-grid: #3b3b3b;
 }
 #desktop .gtu-titlebar { background: var(--gtu-bg); height: 62px; border-bottom: 0; }
-#desktop .gtu-mark { background: transparent; color: var(--gtu-text); border: 1px solid var(--gtu-line); border-radius: 10px; }
+#desktop .gtu-mark { background: transparent; color: var(--gtu-text); border: 0; border-radius: 10px; }
+#desktop .gtu-mark img { display: block; width: 32px; height: 32px; }
 #desktop .gtu-theme-strip { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 8px 22px 16px; background: var(--gtu-bg); border-bottom: 1px solid var(--gtu-line); }
 #desktop .gtu-theme-strip label { color: var(--gtu-sub); font-size: 12px; }
 #desktop .gtu-theme-strip select { font-family: inherit; font-size: 12px; padding: 7px 30px 7px 10px; background: var(--gtu-field); border: 1px solid var(--gtu-line); border-radius: 8px; color: var(--gtu-text); max-width: 100%; }

@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+  <title>Характеристика — вариант значка параметрического расчёта ГТУ</title>
+  <rect x="8" y="8" width="240" height="240" rx="54" fill="#242424" stroke="#484848" stroke-width="2"/>
+  <path d="M59 65V195H197" fill="none" stroke="#777777" stroke-width="9" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M76 169C99 154 111 145 132 128C155 109 174 88 198 65" fill="none" stroke="#eeeeee" stroke-width="13" stroke-linecap="round"/>
+  <circle cx="83" cy="164" r="10" fill="#a5c9b4"/>
+  <circle cx="139" cy="122" r="10" fill="#a5c9b4"/>
+  <circle cx="191" cy="72" r="10" fill="#a5c9b4"/>
+</svg>

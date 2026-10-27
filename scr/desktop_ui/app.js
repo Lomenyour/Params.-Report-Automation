@@ -26,6 +26,61 @@
   }
   const views = {}, zoom = {}, scrolls = {};
   let backend = null, model = null, selected = 'pressure', dialogPayload = null;
+  function initializeSidebarResize() {
+    const layout = root.querySelector('.gtu-layout');
+    const sidebar = byId('settings-panel');
+    const separator = byId('sidebar-resizer');
+    const defaults = {width:324, min:280, max:560, workspace:500, divider:8, step:16};
+    const storageKey = 'gtu.sidebar.width.v1';
+    let preferred = defaults.width;
+    try {
+      const saved = Number(localStorage.getItem(storageKey));
+      if (Number.isFinite(saved) && saved >= defaults.min && saved <= defaults.max) preferred = saved;
+    } catch (_error) { /* Сохранение UI-настроек может быть запрещено профилем. */ }
+    function maximum() { return Math.max(defaults.min, Math.min(defaults.max, layout.clientWidth - defaults.workspace - defaults.divider)); }
+    function applyWidth(width, remember = false) {
+      const actual = Math.round(Math.max(defaults.min, Math.min(maximum(), width)));
+      layout.style.setProperty('--gtu-sidebar-width', `${actual}px`);
+      separator.setAttribute('aria-valuenow', String(actual));
+      separator.setAttribute('aria-valuemax', String(maximum()));
+      separator.setAttribute('aria-valuetext', `${actual} пикселей`);
+      if (remember) {
+        preferred = actual;
+        try { localStorage.setItem(storageKey, String(preferred)); } catch (_error) {}
+      }
+    }
+    let drag = null;
+    separator.addEventListener('pointerdown', event => {
+      if (event.button !== 0) return;
+      event.preventDefault();
+      drag = {x:event.clientX, width:sidebar.getBoundingClientRect().width, pointer:event.pointerId};
+      separator.setPointerCapture(event.pointerId);
+      separator.classList.add('dragging');
+      document.body.classList.add('gtu-resizing');
+    });
+    separator.addEventListener('pointermove', event => {
+      if (drag && event.pointerId === drag.pointer) applyWidth(drag.width + event.clientX - drag.x);
+    });
+    function endDrag(event) {
+      if (!drag || event.pointerId !== drag.pointer) return;
+      applyWidth(sidebar.getBoundingClientRect().width, true);
+      if (separator.hasPointerCapture(event.pointerId)) separator.releasePointerCapture(event.pointerId);
+      drag = null;
+      separator.classList.remove('dragging');
+      document.body.classList.remove('gtu-resizing');
+    }
+    separator.addEventListener('pointerup', endDrag);
+    separator.addEventListener('pointercancel', endDrag);
+    separator.addEventListener('lostpointercapture', endDrag);
+    separator.addEventListener('dblclick', () => applyWidth(defaults.width, true));
+    separator.addEventListener('keydown', event => {
+      const current = sidebar.getBoundingClientRect().width;
+      const width = event.key === 'ArrowLeft' ? current - defaults.step : event.key === 'ArrowRight' ? current + defaults.step : event.key === 'Home' ? defaults.width : event.key === 'End' ? maximum() : null;
+      if (width !== null) { event.preventDefault(); applyWidth(width, true); }
+    });
+    applyWidth(preferred);
+    new ResizeObserver(() => applyWidth(preferred)).observe(layout);
+  }
   function send(name, data = {}) { if (backend) backend.action(name, JSON.stringify(data)); }
   function element(tag, className, text) {
     const node = document.createElement(tag);
@@ -248,7 +303,7 @@
     if (event.ctrlKey && event.key === 'Tab' && !dialogPayload) { event.preventDefault(); send('tab', {key:keys[(keys.indexOf(selected) + (event.shiftKey ? keys.length - 1 : 1)) % keys.length]}); }
   });
   new ResizeObserver(() => panel.querySelector('.gtu-view-viewport')?._resizeFigure?.()).observe(panel);
-  fillIcons(); emptyState();
+  initializeSidebarResize(); fillIcons(); emptyState();
   new QWebChannel(qt.webChannelTransport, channel => {
     backend = channel.objects.backend;
     backend.state_changed.connect(json => applyState(JSON.parse(json)));

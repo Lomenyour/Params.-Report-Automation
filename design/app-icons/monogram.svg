@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+  <title>ГТУ — монограмма для значка приложения</title>
+  <rect x="8" y="8" width="240" height="240" rx="54" fill="#242424" stroke="#484848" stroke-width="2"/>
+  <g fill="#eeeeee">
+    <path d="M43 78H88V94H59V171H43Z"/>
+    <path d="M94 78H150V94H130V171H114V94H94Z"/>
+    <path d="M151 78H169L187 119L204 78H222L191 145C183 162 172 173 154 174V157C165 156 172 150 178 139Z"/>
+  </g>
+  <rect x="80" y="190" width="96" height="7" rx="3.5" fill="#a5c9b4"/>
+</svg>

@@ -251,8 +251,15 @@ html, body { margin: 0; height: 100%; background: #252525; overflow: hidden; }
 /* Те же компоненты референса в реальном десктопном viewport. */
 #desktop .gtu-app { height: 100%; min-height: 0; border: 0; border-radius: 0; }
 #desktop .gtu-titlebar { height: 62px; padding: 0 24px; border-bottom: 1px solid var(--gtu-line); }
-#desktop .gtu-layout { height: calc(100% - 62px); min-height: 0; grid-template-columns: 264px minmax(0, 1fr); }
-#desktop .gtu-settings { padding: 0; display: flex; flex-direction: column; min-height: 0; }
+#desktop .gtu-layout { height: calc(100% - 62px); min-height: 0; grid-template-columns: var(--gtu-sidebar-width, 324px) 8px minmax(0, 1fr); }
+#desktop .gtu-settings { padding: 0; display: flex; flex-direction: column; min-height: 0; border-right: 0; }
+#desktop .gtu-sidebar-resizer { position: relative; cursor: col-resize; touch-action: none; background: var(--gtu-bg); }
+#desktop .gtu-sidebar-resizer::before { content: ""; position: absolute; left: 3px; top: 0; bottom: 0; width: 1px; background: var(--gtu-line); }
+#desktop .gtu-sidebar-resizer::after { content: ""; position: absolute; top: calc(50% - 20px); left: 2px; width: 3px; height: 40px; border-radius: 4px; background: #646464; opacity: .65; }
+#desktop .gtu-sidebar-resizer:hover::before, #desktop .gtu-sidebar-resizer.dragging::before, #desktop .gtu-sidebar-resizer:focus-visible::before { background: #919191; }
+#desktop .gtu-sidebar-resizer:hover::after, #desktop .gtu-sidebar-resizer.dragging::after, #desktop .gtu-sidebar-resizer:focus-visible::after { opacity: 1; background: var(--gtu-sub); }
+#desktop .gtu-sidebar-resizer:focus-visible { outline: 2px solid #787878; outline-offset: -2px; }
+body.gtu-resizing, body.gtu-resizing * { cursor: col-resize !important; user-select: none !important; }
 #desktop .gtu-settings-scroll { padding: 26px 20px 18px; overflow: auto; min-height: 0; }
 #desktop .gtu-run-area { padding: 16px 20px 18px; margin-top: auto; flex-shrink: 0; border-top: 1px solid var(--gtu-line); }
 #desktop .gtu-run-area .gtu-primary { min-height: 42px; }
@@ -274,7 +281,15 @@ html, body { margin: 0; height: 100%; background: #252525; overflow: hidden; }
 #desktop .gtu-empty p { max-width: 340px; line-height: 1.6; }
 #desktop .gtu-file-text strong { font-size: 12px; line-height: 1.45; }
 #desktop .gtu-file-text span { font-size: 11px; line-height: 1.4; }
-#desktop .gtu-file > span > svg { color: var(--gtu-green); width: 18px; height: 18px; }
+#desktop .gtu-file > span[data-icon] > svg { color: var(--gtu-green); width: 30px; height: 30px; }
+#desktop .gtu-settings .gtu-section-name { font-size: 14px; line-height: 1.5; }
+#desktop .gtu-settings .gtu-step { font-size: 14px; font-weight: 500; }
+#desktop .gtu-settings .gtu-station-field .gtu-field-label { font-size: 14px; }
+#desktop .gtu-settings .gtu-radio { font-size: 14px; line-height: 1.5; }
+#desktop .gtu-settings .gtu-tariff label { font-size: 14px; }
+#desktop .gtu-settings .gtu-field { font-size: 14px; }
+#desktop .gtu-settings .gtu-file-text strong { font-size: 13px; }
+#desktop .gtu-settings .gtu-file-text span { font-size: 12px; }
 #desktop .gtu-file { gap: 10px; }
 #desktop .gtu-station-field { margin-top: 14px; }
 #desktop .gtu-station-hint { margin-top: 6px; line-height: 1.5; }

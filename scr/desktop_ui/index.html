@@ -17,7 +17,7 @@
       <div class="gtu-brand">ГТУ <small>Параметрический расчёт</small></div>
     </header>
     <div class="gtu-layout">
-      <aside class="gtu-settings" aria-label="Подготовка расчёта">
+      <aside class="gtu-settings" id="settings-panel" aria-label="Подготовка расчёта">
         <div class="gtu-settings-scroll">
           <h2 class="gtu-settings-heading">Подготовка расчёта</h2>
           <p class="gtu-caption">Данные, станция и тарифы</p>
@@ -25,13 +25,13 @@
             <h3 class="gtu-section-name"><span class="gtu-step">1</span> Исходные данные</h3>
             <div class="gtu-file"><span data-icon="file-sheet" aria-hidden="true"></span><div class="gtu-file-text"><strong id="filename">Файл не выбран</strong><span>Расчётная книга · лист «Данные»</span></div></div>
             <button class="gtu-action gtu-wide" data-action="file" data-control="choose_button" type="button" disabled><span data-icon="folder" aria-hidden="true"></span><span id="choose-label">Выбрать Excel-файл</span></button>
-            <div class="gtu-station-field"><label class="gtu-field-label" for="station">Теплоэлектроцентраль</label><select id="station" class="gtu-field" data-field="station" data-control="station_combo" disabled><option value="">Выберите ТЭЦ</option></select></div>
+            <div class="gtu-station-field"><label class="gtu-field-label" for="station">ТЭЦ</label><select id="station" class="gtu-field" data-field="station" data-control="station_combo" disabled><option value="">Выберите ТЭЦ</option></select></div>
             <p class="gtu-caption gtu-station-hint" id="station-hint">Выберите ТЭЦ или загрузите файл.</p>
           </section>
           <section class="gtu-section">
             <h3 class="gtu-section-name"><span class="gtu-step">2</span> Режим расчёта</h3>
             <label class="gtu-radio"><input type="radio" name="mode" value="ready" checked disabled> Готовая расчётная книга</label>
-            <label class="gtu-radio"><input type="radio" name="mode" value="import" disabled> Обновить из выгрузки датчиков</label>
+            <label class="gtu-radio"><input type="radio" name="mode" value="import" disabled> Добавить выгрузку с датчиков</label>
             <div class="gtu-import" id="import-controls" hidden>
               <button class="gtu-action gtu-wide" data-action="raw" data-control="raw_button" type="button" disabled><span data-icon="folder" aria-hidden="true"></span>Выбрать выгрузку</button>
               <label class="gtu-field-label gtu-sheet-label" for="sheet">Лист выгрузки</label><select id="sheet" class="gtu-field" data-field="sheet" data-control="raw_sheet_combo" disabled></select>
@@ -51,6 +51,7 @@
         </div>
         <div class="gtu-run-area"><button type="button" class="gtu-action gtu-primary gtu-wide" data-action="run" data-control="run_button" disabled><span data-icon="play" aria-hidden="true"></span><span id="run-label">Расчет</span></button><p class="gtu-run-note">Периоды подтверждаются перед расчётом</p></div>
       </aside>
+      <div class="gtu-sidebar-resizer" id="sidebar-resizer" role="separator" tabindex="0" aria-orientation="vertical" aria-controls="settings-panel" aria-label="Ширина панели подготовки" aria-valuemin="280" aria-valuemax="560" aria-valuenow="324" title="Потяните границу, чтобы изменить ширину. Двойной щелчок — исходная ширина."></div>
       <main class="gtu-work">
         <div class="gtu-work-heading"><div><span class="gtu-eyebrow">Результаты расчёта</span><h2 id="workspace-title">Рабочее пространство</h2><p id="workspace-subtitle">Графики, таблицы и отчёты</p></div><div class="gtu-export"><button type="button" class="gtu-action" data-action="excel" data-control="excel_button" disabled aria-label="Сформировать Excel"><span data-icon="file-sheet" aria-hidden="true"></span>Excel</button><button type="button" class="gtu-action" data-action="word" data-control="report_button" disabled aria-label="Сформировать Word"><span data-icon="file-text" aria-hidden="true"></span>Word</button></div></div>
         <div class="gtu-results">

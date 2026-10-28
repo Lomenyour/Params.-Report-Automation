@@ -3,6 +3,8 @@
 import io
 import sys
 import unittest
+import xml.etree.ElementTree as ET
+from zipfile import ZipFile
 from pathlib import Path
 
 import pandas as pd
@@ -101,6 +103,16 @@ class DegradationSummaryChartTest(unittest.TestCase):
         )
         output = io.BytesIO()
         book.save(output)
+        with ZipFile(output) as archive:
+            ns = {"c": "http://schemas.openxmlformats.org/drawingml/2006/chart",
+                  "a": "http://schemas.openxmlformats.org/drawingml/2006/main"}
+            chart_xml = ET.fromstring(archive.read("xl/charts/chart2.xml"))
+            labels = chart_xml.findall(".//c:dLbl/c:tx/c:rich", ns)
+            self.assertEqual(len(labels), 12)
+            for label in labels:
+                for style in label.findall("a:p/a:pPr/a:defRPr", ns):
+                    self.assertEqual(style.get("sz"), "1600")
+                    self.assertEqual(style.get("b"), "1")
         output.seek(0)
         saved = load_workbook(output)
         chart_sheet = saved["Графики"]

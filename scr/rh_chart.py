@@ -4,6 +4,7 @@ import math
 
 import numpy as np
 import pandas as pd
+from openpyxl.cell import WriteOnlyCell
 from openpyxl.chart import Reference, ScatterChart, Series
 from openpyxl.chart.axis import ChartLines
 from openpyxl.chart.data_source import NumData, NumVal
@@ -12,8 +13,10 @@ from openpyxl.chart.layout import Layout, ManualLayout
 from openpyxl.chart.shapes import GraphicalProperties
 from openpyxl.drawing.line import LineProperties
 from openpyxl.utils import get_column_letter
+from openpyxl.styles import Alignment, Font, PatternFill
 
 from chart_text import rich_text, label_series
+from chart_layout import cell_anchor
 from RH_raschet import select_rh_variants, rh_equation
 
 
@@ -74,41 +77,78 @@ def _series(sheet, x_column, y_column, first, last, x_values, y_values, title, c
     return series
 
 
-def add_rh_charts(sheet, plots, start_row, *, two_columns=True):
-    cells = {}
-    bottom = start_row
-    for index, plot in enumerate(plots):
+def _write_data_blocks(book, plots):
+    sheet = book.create_sheet("Данные РХ")
+    sheet.freeze_panes = "A3"
+    sheet.sheet_view.showGridLines = False
+    for column in ("A", "B", "C", "D", "E", "G", "H", "I"):
+        sheet.column_dimensions[column].width = 25
+    blocks, offset = {}, 0
+
+    def cell(value, *, header=False):
+        item = WriteOnlyCell(sheet, value=value)
+        item.font = Font(name="Calibri", size=11, bold=header,
+                         color="FFFFFF" if header else "000000")
+        item.alignment = Alignment(vertical="center", wrap_text=True)
+        if header:
+            item.fill = PatternFill("solid", fgColor="24476A")
+        if isinstance(value, pd.Timestamp):
+            item.value = value.to_pydatetime()
+            item.number_format = "dd.mm.yyyy hh:mm"
+        elif isinstance(value, float):
+            item.number_format = "0.000"
+        return item
+
+    for plot in plots:
         result = plot.result
         number = int(result["period"])
-        data_sheet = sheet.parent.create_sheet(f"РХ П{number}")
-        data_sheet.append([f"Период {number}: РХ, вариант {result['rank']}"])
-        data_sheet.append(["Состояние", "Дата", "Nприв, МВт", "Bприв, нм³/ч", "Строка исходного Excel",
-                           None, "N линии", "Bчист", "Bзагр"])
+        first = offset + 3
+        sheet.merged_cells.add(f"A{offset + 1}:I{offset + 1}")
+        sheet.row_dimensions[offset + 1].height = 24
+        sheet.row_dimensions[offset + 2].height = 36
+        sheet.append([cell(f"Период {number}: РХ, вариант {result['rank']}", header=True)])
+        sheet.append([cell(value, header=True) for value in
+            ("Состояние", "Дата", "Nприв, МВт", "Bприв, нм³/ч", "Строка исходного Excel",
+             None, "N линии", "Bчист", "Bзагр")])
         combined = pd.concat([plot.start, plot.end], ignore_index=True)
         x = np.linspace(combined.power.min(), combined.power.max(), 100)
         clean = result["k_start"] * x + result["b_start"]
         dirty = result["k_end"] * x + result["b_end"]
-        for i in range(max(len(combined), len(x))):
+        length = max(len(combined), len(x))
+        for i in range(length):
             row = [None] * 9
             if i < len(combined):
                 point = combined.iloc[i]
                 row[:5] = ["Условно-чистое" if i < len(plot.start) else "Условно-загрязнённое",
-                    pd.Timestamp(point["date"]).to_pydatetime(), float(point.power), float(point.fuel),
+                    pd.Timestamp(point["date"]), float(point.power), float(point.fuel),
                     int(point.excel_row) if "excel_row" in point and pd.notna(point.excel_row) else None]
             if i < len(x):
                 row[6:] = [float(x[i]), float(clean[i]), float(dirty[i])]
-            data_sheet.append(row)
-        data_sheet.freeze_panes = "A3"
-        for column in ("A", "B", "C", "D", "E", "G", "H", "I"):
-            data_sheet.column_dimensions[column].width = 25
+            sheet.append([cell(value) for value in row])
+        blocks[number] = (first, combined, x, clean, dirty)
+        sheet.append([])
+        sheet.append([])
+        offset += length + 4
+    return sheet, blocks
 
-        column = 1 + (index % 2) * 25 if two_columns else 1
-        top = start_row + (index // 2 if two_columns else index) * 42
+
+def add_rh_charts(sheet, plots, start_row, *, two_columns=True):
+    cells = {}
+    bottom = start_row
+    if not plots:
+        return cells, bottom
+    data_sheet, blocks = _write_data_blocks(sheet.parent, plots)
+    for index, plot in enumerate(plots):
+        result = plot.result
+        number = int(result["period"])
+        first_data, combined, x, clean, dirty = blocks[number]
+
+        column = 1 + (index % 2) * 16 if two_columns else 1
+        top = start_row + (index // 2 if two_columns else index) * 38
         cells.setdefault(top, {})[column] = (f"Период {number}: расходная характеристика, вариант {result['rank']}", "period")
-        sheet.merged_cells.add(f"{get_column_letter(column)}{top}:{get_column_letter(column + 22)}{top}")
+        sheet.merged_cells.add(f"{get_column_letter(column)}{top}:{get_column_letter(column + 13)}{top}")
         sheet.row_dimensions[top].height = 24
         chart = ScatterChart()
-        chart.width, chart.height = 42, 18
         chart.title = None
         chart.scatterStyle = "lineMarker"
         chart.graphical_properties = GraphicalProperties(solidFill="FFFFFF", ln=LineProperties(noFill=True))
@@ -119,7 +159,7 @@ def add_rh_charts(sheet, plots, start_row, *, two_columns=True):
             axis.title.txPr = rich_text("", bold=True)
             axis.txPr = rich_text("")
             axis.delete = False
-            axis.numFmt = "0.0"
+            axis.numFmt = "0" if axis is chart.y_axis else "0.0"
             axis.majorGridlines = ChartLines(spPr=GraphicalProperties(ln=LineProperties(solidFill="808080", w=9525)))
             axis.minorGridlines = ChartLines(spPr=GraphicalProperties(ln=LineProperties(solidFill="C0C0C0", w=4762)))
         chart.x_axis.scaling.min, chart.x_axis.scaling.max, chart.x_axis.majorUnit = _bounds(x)
@@ -132,13 +172,15 @@ def add_rh_charts(sheet, plots, start_row, *, two_columns=True):
         chart.legend.txPr = rich_text("")
         chart.legend.layout = Layout(manualLayout=ManualLayout(xMode="edge", yMode="edge", x=.1, y=.94, w=.8, h=.05))
         chart.layout = Layout(manualLayout=ManualLayout(layoutTarget="inner", xMode="edge", yMode="edge",
-                                                       x=.09, y=.04, w=.86, h=.79))
-        for part, first, title, color in ((plot.start, 3, "Условно-чистая", "4472C4"),
-                (plot.end, len(plot.start) + 3, "Условно-загрязнённая", "C00000")):
+                                                       x=.16, y=.04, w=.79, h=.79))
+        for part, first, title, color in ((plot.start, first_data, "Условно-чистая", "4472C4"),
+                (plot.end, len(plot.start) + first_data, "Условно-загрязнённая", "C00000")):
             chart.series.append(_series(data_sheet, 3, 4, first, first + len(part) - 1,
                                         part.power, part.fuel, title, color))
-        chart.series.append(_series(data_sheet, 7, 8, 3, 102, x, clean, "Линия чистая", "4472C4", True))
-        chart.series.append(_series(data_sheet, 7, 9, 3, 102, x, dirty, "Линия загрязнённая", "C00000", True))
+        chart.series.append(_series(data_sheet, 7, 8, first_data, first_data + len(x) - 1,
+                                    x, clean, "Линия чистая", "4472C4", True))
+        chart.series.append(_series(data_sheet, 7, 9, first_data, first_data + len(x) - 1,
+                                    x, dirty, "Линия загрязнённая", "C00000", True))
         xlow, xhigh = chart.x_axis.scaling.min, chart.x_axis.scaling.max
         ylow, yhigh = chart.y_axis.scaling.min, chart.y_axis.scaling.max
         for prefix, name, state, xr, yr, color in (
@@ -150,6 +192,6 @@ def add_rh_charts(sheet, plots, start_row, *, two_columns=True):
             chart.series.append(label_series(xlow + (xhigh - xlow) * xr,
                 ylow + (yhigh - ylow) * yr, text, bold=True, color=color))
         chart.legend.legendEntry = [LegendEntry(idx=i, delete=True) for i in range(2, len(chart.series))]
-        sheet.add_chart(chart, f"{get_column_letter(column)}{top + 2}")
-        bottom = max(bottom, top + 39)
+        sheet.add_chart(chart, cell_anchor(column, top + 2, 14, 33))
+        bottom = max(bottom, top + 35)
     return cells, bottom

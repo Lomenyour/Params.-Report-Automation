@@ -8,6 +8,7 @@ from zipfile import ZipFile
 
 import pandas as pd
 from openpyxl import Workbook, load_workbook
+from openpyxl.utils.datetime import from_excel
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scr"))
 from compressor_degradation_chart import (  # noqa: E402
@@ -101,19 +102,23 @@ class CompressorDegradationChartTest(unittest.TestCase):
         output.seek(0)
         saved = load_workbook(output)
         sheet = saved["Графики"]
-        self.assertEqual(saved.sheetnames[-3:], ["Компрессор П1", "Компрессор П2", "Компрессор П3"])
+        self.assertEqual(saved.sheetnames, ["Данные", "Графики", "Данные компрессора"])
         self.assertEqual(len(sheet._charts), 5)  # Перепады, общая деградация, 3 периода
         for number, chart in enumerate(sheet._charts[2:], start=1):
             self.assertEqual(len(chart._charts), 2)
             self.assertEqual(len(chart.series), 6)  # КПД и пять элементов подписей
-            source = saved[f"Компрессор П{number}"]
+            first = 6 + (number - 1) * 9
+            source = saved["Данные компрессора"]
             self.assertEqual(source.sheet_state, "visible")
-            self.assertEqual(source["A6"].value, pd.Timestamp(2026, number, 1))
-            self.assertAlmostEqual(source["E6"].value, 84.01)
-            self.assertAlmostEqual(source["F6"].value, 13.1)
-            self.assertEqual(source["G6"].value, (number - 1) * 7 + 2)
-            self.assertIn(f"'Компрессор П{number}'!$E$6:$E$7", chart.series[0].yVal.numRef.f)
-            self.assertIn(f"'Компрессор П{number}'!$F$6:$F$7", chart._charts[1].series[0].yVal.numRef.f)
+            self.assertEqual(source[f"A{first}"].value, pd.Timestamp(2026, number, 1))
+            self.assertAlmostEqual(source[f"E{first}"].value, 84.01)
+            self.assertAlmostEqual(source[f"F{first}"].value, 13.1)
+            self.assertEqual(source[f"G{first}"].value, (number - 1) * 7 + 2)
+            self.assertIn(f"'Данные компрессора'!$E${first}:$E${first+1}", chart.series[0].yVal.numRef.f)
+            self.assertIn(f"'Данные компрессора'!$F${first}:$F${first+1}", chart._charts[1].series[0].yVal.numRef.f)
+            self.assertEqual(chart.anchor.to.col - chart.anchor._from.col, 18)
+            self.assertEqual(chart.anchor.to.row - chart.anchor._from.row, 32)
+            self.assertEqual(chart.anchor.editAs, "twoCell")
             labels = [item for item in chart.series if item.dLbls is not None]
             self.assertEqual(len(labels), 3)
             for label in labels:
@@ -197,10 +202,68 @@ class CompressorDegradationChartTest(unittest.TestCase):
                     self.assertLessEqual(
                         (axis.scaling.max - axis.scaling.min) / axis.majorUnit, 10,
                     )
+                    self.assertGreaterEqual(axis.majorUnit, 1)
+                self.assertGreaterEqual(chart.y_axis.scaling.max - chart.y_axis.scaling.min, 6)
+                self.assertGreaterEqual(chart._charts[1].y_axis.scaling.max - chart._charts[1].y_axis.scaling.min, 5)
                 left, right = chart.y_axis.scaling, chart._charts[1].y_axis.scaling
                 eta_bottom = (min(eta) - left.min) / (left.max - left.min)
                 pi_top = (max(pi_k) - right.min) / (right.max - right.min)
                 self.assertGreater(eta_bottom, pi_top)
+
+    def test_short_and_long_periods_use_ten_percent_date_padding_and_readable_ticks(self):
+        for days in (0, 22, 138, 365):
+            with self.subTest(days=days):
+                dates = pd.Series([pd.Timestamp("2026-01-01 12:00"),
+                                   pd.Timestamp("2026-01-01 12:00") + pd.Timedelta(days=days)])
+                points = pd.DataFrame({"date": dates, "eta": [86.09, 86.13], "pi_k": [13.35, 13.33]})
+                top = pd.Series({"date_1": dates[0], "date_2": dates[1],
+                    "eta_1": 86.09, "eta_2": 86.13, "pi_k_1": 13.35, "pi_k_2": 13.33})
+                book = Workbook()
+                add_compressor_charts(book.active,
+                    [CompressorPlot(1, points, top, 85.3, 86.3, 27., 27.3, 997., 1001.7)], 1)
+                axis = book.active._charts[0].x_axis
+                expected = pd.Timedelta(days=max(1, days * .1))
+                self.assertEqual(from_excel(axis.scaling.min), dates[0] - expected)
+                self.assertEqual(from_excel(axis.scaling.max), dates[1] + expected)
+                self.assertGreaterEqual(axis.majorUnit, 1)
+                if days >= 22:
+                    ticks = (axis.scaling.max - axis.scaling.min) / axis.majorUnit + 1
+                    self.assertGreaterEqual(ticks, 8)
+                    self.assertLessEqual(ticks, 10)
+
+    def test_combined_data_sheet_handles_period_blocks_of_different_lengths(self):
+        plots = []
+        for number, count in enumerate((1, 4, 2), 1):
+            dates = pd.date_range(pd.Timestamp(2026, number, 1), periods=count, freq="D")
+            points = pd.DataFrame({"date": dates, "vna": 86.2, "t": 10., "p": 990.,
+                                  "eta": 84. + number / 10, "pi_k": 14. + number / 10,
+                                  "excel_row": [number * 100 + i for i in range(count)]})
+            top = pd.Series({"date_1": dates[0], "date_2": dates[-1],
+                "eta_1": points.eta.iloc[0], "eta_2": points.eta.iloc[-1],
+                "pi_k_1": points.pi_k.iloc[0], "pi_k_2": points.pi_k.iloc[-1]})
+            plots.append(CompressorPlot(number, points, top, 86, 87, 10, 10, 990, 990))
+        originals = [plot.points.copy(deep=True) for plot in plots]
+        book = Workbook(write_only=True)
+        sheet = book.create_sheet("Графики")
+        _, bottom = add_compressor_charts(sheet, plots, 1)
+        for _ in range(bottom):
+            sheet.append([])
+        output = io.BytesIO()
+        book.save(output)
+        output.seek(0)
+        saved = load_workbook(output)
+        self.assertEqual(saved.sheetnames, ["Графики", "Данные компрессора"])
+        source = saved["Данные компрессора"]
+        for plot, original, chart, first in zip(plots, originals, saved["Графики"]._charts, (6, 14, 25)):
+            last = first + len(original) - 1
+            address = f"$E${first}" + (f":$E${last}" if last != first else "")
+            self.assertEqual(chart.series[0].yVal.numRef.f,
+                             f"'Данные компрессора'!{address}")
+            for offset, expected in enumerate(original.itertuples(index=False)):
+                self.assertEqual(source.cell(first + offset, 1).value, expected.date)
+                self.assertAlmostEqual(source.cell(first + offset, 5).value, expected.eta)
+                self.assertEqual(source.cell(first + offset, 7).value, expected.excel_row)
+            pd.testing.assert_frame_equal(plot.points, original)
 
 
 if __name__ == "__main__":

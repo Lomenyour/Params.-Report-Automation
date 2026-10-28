@@ -323,12 +323,13 @@ body.gtu-resizing, body.gtu-resizing * { cursor: col-resize !important; user-sel
 #desktop .gtu-data-table th, #desktop .gtu-data-table td { max-width: 720px; padding: 12px 14px; font-size: 12px; }
 #desktop .gtu-table-section + .gtu-table-section { margin-top: 28px; }
 #desktop .gtu-table-section h4 { font-size: 13px; font-weight: 500; margin: 0 0 10px; }
-#desktop .gtu-dialog { max-height: calc(100% - 40px); display: flex; flex-direction: column; }
+#desktop .gtu-overlay { grid-template-rows: minmax(0, 1fr); grid-template-columns: minmax(0, 1fr); min-height: 0; overflow: hidden; }
+#desktop .gtu-dialog { max-height: calc(100dvh - 40px); min-height: 0; overflow: hidden; display: flex; flex-direction: column; }
 #desktop .gtu-dialog-head { flex-shrink: 0; display: flex; align-items: flex-start; gap: 12px; margin-bottom: 10px; }
 #desktop .gtu-dialog h3 { font-size: 20px; letter-spacing: -.3px; margin: 0; }
 #desktop .gtu-dialog-head button { margin-left: auto; }
 #desktop .gtu-dialog textarea { font: 13px/1.8 Consolas, monospace; min-height: 150px; margin: 0; }
-#desktop .gtu-dialog-body { min-height: 0; overflow: auto; }
+#desktop .gtu-dialog-body { flex: 1 1 auto; min-height: 0; overflow: auto; overscroll-behavior: contain; }
 #desktop .gtu-dialog-actions { flex-shrink: 0; display: flex; justify-content: flex-end; gap: 8px; flex-wrap: wrap; margin-top: 18px; }
 #desktop .gtu-dialog p { line-height: 1.6; }
 #desktop .gtu-dialog[data-kind="mapping"] { width: min(900px, 100%); }
@@ -343,6 +344,7 @@ body.gtu-resizing, body.gtu-resizing * { cursor: col-resize !important; user-sel
 #desktop .gtu-overlay.periods .gtu-dialog-head { cursor: move; user-select: none; }
 #desktop .gtu-dialog.collapsed .gtu-dialog-body, #desktop .gtu-dialog.collapsed .gtu-dialog-actions { display: none; }
 #desktop .gtu-dialog.collapsed .gtu-dialog-head { margin: 0; }
+#desktop .gtu-empty > span[data-icon] > svg { width: 40px; height: 40px; color: var(--gtu-sub); }
 #desktop * { scrollbar-width: thin; scrollbar-color: #535353 transparent; }
 #desktop ::-webkit-scrollbar { width: 8px; height: 8px; }
 #desktop ::-webkit-scrollbar-track { background: transparent; }

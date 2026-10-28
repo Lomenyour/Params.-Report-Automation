@@ -92,11 +92,48 @@ class RHSingleChartTest(unittest.TestCase):
                 self.assertEqual(label.find("c:tx/c:rich/a:p/a:pPr/a:defRPr", ns).get("sz"), "1000")
         output.seek(0)
         saved = load_workbook(output)
-        data = saved["РХ П1"]
+        data = saved["Данные РХ"]
         self.assertEqual(data["C3"].value, values.iloc[0].power)
         self.assertEqual(data["D3"].value, values.iloc[0].fuel)
         self.assertEqual(data["E3"].value, values.iloc[0].excel_row)
         self.assertEqual(len(saved["Графики"]._charts), 1)
+        chart = saved["Графики"]._charts[0]
+        self.assertEqual(chart.anchor.to.col - chart.anchor._from.col, 14)
+        self.assertEqual(chart.anchor.to.row - chart.anchor._from.row, 33)
+        self.assertEqual(chart.anchor.editAs, "twoCell")
+        pd.testing.assert_frame_equal(values, original)
+
+    def test_three_periods_share_sheet_without_crossing_data_or_curve_ranges(self):
+        parts, candidates = [], []
+        for number in (1, 2, 3):
+            part = self.values()
+            part["period"] = number
+            part["date"] += pd.DateOffset(months=number - 1)
+            part["fuel"] += number * 1000
+            parts.append(part)
+            candidates.append(self.candidate(1, 201., number))
+        values = pd.concat(parts, ignore_index=True)
+        original = values.copy(deep=True)
+        book = Workbook(write_only=True)
+        sheet = book.create_sheet("Графики")
+        cells, bottom = add_rh_charts(sheet, prepare_rh_plots(values, candidates), 1)
+        for _ in range(bottom):
+            sheet.append([])
+        output = io.BytesIO()
+        book.save(output)
+        output.seek(0)
+        saved = load_workbook(output)
+        self.assertEqual(saved.sheetnames, ["Графики", "Данные РХ"])
+        source = saved["Данные РХ"]
+        for number, chart in enumerate(saved["Графики"]._charts, 1):
+            first = 3 + (number - 1) * 104
+            self.assertIn(f"'Данные РХ'!$D${first}:$D${first+47}", chart.series[0].yVal.numRef.f)
+            self.assertIn(f"'Данные РХ'!$D${first+48}:$D${first+95}", chart.series[1].yVal.numRef.f)
+            self.assertIn(f"'Данные РХ'!$H${first}:$H${first+99}", chart.series[2].yVal.numRef.f)
+            self.assertEqual(source[f"B{first}"].value, pd.Timestamp(2026, number, 1))
+            self.assertEqual(source[f"D{first}"].value, parts[number-1].iloc[0].fuel)
+            self.assertAlmostEqual(source[f"H{first}"].value,
+                candidates[number-1]["k_start"] * source[f"G{first}"].value + candidates[number-1]["b_start"])
         pd.testing.assert_frame_equal(values, original)
 
 

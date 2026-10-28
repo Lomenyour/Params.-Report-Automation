@@ -253,7 +253,7 @@ def _delta_label(symbol, value, unit):
 
 def _add_period_labels(chart, plot):
     first_label = len(chart.series)
-    placed = []
+    placed = {key: [] for key in ("fuel_specific", "vna", "power", "eta_gtu")}
     span = chart.x_axis.scaling.max - chart.x_axis.scaling.min
     for period in plot.periods:
         first = period["points_start"]
@@ -269,19 +269,20 @@ def _add_period_labels(chart, plot):
             if value is None:
                 continue
             y = (value - 65.) * 350. / 35. if key == "vna" else value
-            base = min(335., max(15., y + 20.))
+            offset = {"fuel_specific": 30., "vna": 25., "power": 25., "eta_gtu": 20.}[key]
+            base = min(340., max(20., y + offset))
             x = to_excel(moment.to_pydatetime())
             # Короткие соседние периоды: оставляем X над своими данными,
             # но раздвигаем подписи по высоте, не сдвигая сами точки.
-            nearby = [py for px, py in placed if abs(x - px) < .14 * span]
-            candidates = sorted({base + offset for offset in (0, 18, 36, 54, -18, -36, -54)}
-                | {py + offset for py in nearby for offset in (18, -18)},
+            nearby = [py for px, py in placed[key] if abs(x - px) < .20 * span]
+            candidates = sorted({base + delta for delta in (0, 20, 40, 60, -20, -40, -60)}
+                | {py + delta for py in nearby for delta in (20, -20)},
                 key=lambda candidate: (candidate < base, abs(candidate - base)))
-            y = next((candidate for candidate in candidates if 15 <= candidate <= 335
-                and all(abs(x - px) >= .14 * span or abs(candidate - py) >= 16
-                        for px, py in placed)), base)
-            placed.append((x, y))
-            chart.series.append(label_series(moment, y, text, dates=True))
+            y = next((candidate for candidate in candidates if 20 <= candidate <= 340
+                and all(abs(x - px) >= .20 * span or abs(candidate - py) >= 18
+                        for px, py in placed[key])), base)
+            placed[key].append((x, y))
+            chart.series.append(label_series(moment, y, text, dates=True, size=FONT_SIZE, bold=True))
     chart.legend.legendEntry = [LegendEntry(idx=index, delete=True)
                                 for index in range(first_label, len(chart.series))]
 

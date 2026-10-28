@@ -26,13 +26,14 @@ from openpyxl.drawing.text import (
 from openpyxl.utils.datetime import to_excel
 from openpyxl.styles import Alignment, Font, PatternFill
 from chart_text import FONT_SIZE, LABEL_SIZE, RichDataLabel
+from chart_layout import cell_anchor
 
 DATA_COLUMNS = (
     ("date", "Дата"), ("vna", "ВНА, %"), ("t", "tнк, °C"),
     ("p", "Pнк, мбар"), ("eta", "КПД компрессора, %"), ("pi_k", "πк"),
     ("excel_row", "Строка исходного Excel"),
 )
-CHART_ROWS = 49
+CHART_ROWS = 40
 
 
 @dataclass
@@ -128,16 +129,19 @@ def _chart_criteria(plot):
 
 def _write_data_sheets(book, plots):
     sheets = {}
+    if not plots:
+        return sheets
+    sheet = book.create_sheet("Данные компрессора")
+    sheet.sheet_view.showGridLines = False
+    sheet.freeze_panes = "A6"
+    for index, width in enumerate((23, 14, 17, 20, 26, 16, 24), start=1):
+        sheet.column_dimensions[_letter(index)].width = width
+    offset = 0
     for plot in plots:
-        sheet = book.create_sheet(f"Компрессор П{plot.period}")
-        sheet.sheet_view.showGridLines = False
-        sheet.freeze_panes = "A6"
-        for index, width in enumerate((23, 14, 17, 20, 26, 16, 24), start=1):
-            sheet.column_dimensions[_letter(index)].width = width
-        sheet.row_dimensions[1].height = 26
-        sheet.row_dimensions[2].height = 45
-        sheet.merged_cells.add("A1:G1")
-        sheet.merged_cells.add("A2:G2")
+        sheet.row_dimensions[offset + 1].height = 26
+        sheet.row_dimensions[offset + 2].height = 45
+        sheet.merged_cells.add(f"A{offset + 1}:G{offset + 1}")
+        sheet.merged_cells.add(f"A{offset + 2}:G{offset + 2}")
         def cell(value, *, header=False):
             if value is None or pd.isna(value):
                 value = None
@@ -157,7 +161,7 @@ def _write_data_sheets(book, plots):
         sheet.append([cell("Сопоставление границ — на точности TOP-10 (3 знака); значения ниже без округления.")])
         sheet.append([])
         sheet.append([cell(title, header=True) for _, title in DATA_COLUMNS])
-        plot.data_first = 6
+        plot.data_first = offset + 6
         for record in plot.points.to_dict("records"):
             cells = []
             for key, _ in DATA_COLUMNS:
@@ -167,8 +171,10 @@ def _write_data_sheets(book, plots):
                 )
                 cells.append(item)
             sheet.append(cells)
-        sheet.auto_filter.ref = f"A5:G{plot.data_first + len(plot.points) - 1}"
         sheets[plot.period] = sheet
+        sheet.append([])
+        sheet.append([])
+        offset += 7 + len(plot.points)
     return sheets
 
 
@@ -268,21 +274,32 @@ def _format_axis(axis, title):
 def _value_scale(axis, values, *, upper=False):
     """Читаемая шкала по всем точкам, включая постоянные ряды."""
     low, high = float(values.min()), float(values.max())
-    span = max(high - low, max(abs(low), abs(high)) * .001, .1)
-    raw_step = span
+    divisions = 6 if upper else 5
+    span = max(float(divisions), 5 * (high - low))
+    raw_step = max(1., span / divisions)
     magnitude = 10 ** math.floor(math.log10(raw_step))
     step = next(unit * magnitude for unit in (1, 2, 5, 10)
                 if unit * magnitude >= raw_step)
-    anchor = math.floor(low / step) * step
-    units = max(1, math.ceil((high - anchor) / step - 1e-10))
-    extent = units * step
-    # После округления делений сохраняем отдельные полосы: КПД 60–80%,
-    # πк 20–40% высоты. При постоянном ряде шкала остаётся ненулевой.
-    axis.scaling.min = anchor - extent * (3 if upper else 1)
-    axis.scaling.max = anchor + extent * (2 if upper else 4)
+    span = max(divisions, math.ceil(span / step)) * step
+    center = (low + high) / 2
+    fraction = .70 if upper else .25
+    lower = math.floor((center - fraction * span) / step + .5) * step
+    axis.scaling.min = lower
+    axis.scaling.max = lower + span
     axis.majorUnit = step
     axis.minorUnit = step / 5
-    axis.numFmt = "0.0" if step >= 0.1 else "0.00"
+    axis.numFmt = "0.0"
+
+
+def _date_scale(axis, dates):
+    first, last = dates.iloc[[0, -1]]
+    padding = max(pd.Timedelta(days=1), (last - first) * .1)
+    axis.scaling.min = to_excel((first - padding).to_pydatetime())
+    axis.scaling.max = to_excel((last + padding).to_pydatetime())
+    span = axis.scaling.max - axis.scaling.min
+    steps = (1, 2, 3, 5, 7, 10, 14, 20, 25, 30, 50, 60, 90, 100, 150, 200, 365)
+    axis.majorUnit = min(steps, key=lambda step: abs(span / step + 1 - 9))
+    axis.minorUnit = axis.majorUnit / 5
 
 
 def _annotation(points, text, *, label=False):
@@ -346,11 +363,11 @@ def add_compressor_charts(sheet, plots, start_row, *, two_columns=True):
     cells = {}
     data_sheets = _write_data_sheets(sheet.parent, plots)
     for index, plot in enumerate(plots):
-        column = 1 + (index % 2) * 25 if two_columns else 1
+        column = 1 + (index % 2) * 20 if two_columns else 1
         block_row = start_row + (index // 2 if two_columns else index) * CHART_ROWS
         top = plot.top
         sheet.merged_cells.add(
-            f"{_letter(column)}{block_row}:{_letter(column + 22)}{block_row}"
+            f"{_letter(column)}{block_row}:{_letter(column + 17)}{block_row}"
         )
         cells.setdefault(block_row, {})[column] = (
             f"Период {plot.period}. Деградация компрессора — TOP-1 ВНА", "period"
@@ -358,7 +375,7 @@ def add_compressor_charts(sheet, plots, start_row, *, two_columns=True):
         sheet.row_dimensions[block_row].height = 25
         criteria = _criteria(plot)
         sheet.merged_cells.add(
-            f"{_letter(column)}{block_row + 1}:{_letter(column + 22)}{block_row + 1}"
+            f"{_letter(column)}{block_row + 1}:{_letter(column + 17)}{block_row + 1}"
         )
         cells.setdefault(block_row + 1, {})[column] = (criteria, "body")
         sheet.row_dimensions[block_row + 1].height = 24
@@ -372,8 +389,6 @@ def add_compressor_charts(sheet, plots, start_row, *, two_columns=True):
             solidFill="FFFFFF", ln=LineProperties(solidFill="808080", w=9525),
         )
         chart.scatterStyle = "marker"
-        chart.width = 42 if two_columns else 36
-        chart.height = 18
         chart.x_axis.axId = 200 + index * 4
         chart.y_axis.axId = 201 + index * 4
         chart.x_axis.crossAx = chart.y_axis.axId
@@ -410,19 +425,7 @@ def add_compressor_charts(sheet, plots, start_row, *, two_columns=True):
         ))
         chart.visible_cells_only = False
         chart.display_blanks = "gap"
-        first_date, last_date = plot.points["date"].iloc[[0, -1]]
-        chart.x_axis.scaling.min = to_excel(
-            (first_date.normalize() - pd.DateOffset(months=2)).to_pydatetime()
-        )
-        chart.x_axis.scaling.max = to_excel(
-            (last_date.normalize() + pd.DateOffset(months=2)).to_pydatetime()
-        )
-        span_days = chart.x_axis.scaling.max - chart.x_axis.scaling.min
-        chart.x_axis.majorUnit = next(
-            (days for days in (1, 2, 5, 10, 20, 25, 50, 100, 150, 200, 365)
-             if days >= span_days / 6), 365,
-        )
-        chart.x_axis.minorUnit = chart.x_axis.majorUnit / 5
+        _date_scale(chart.x_axis, plot.points["date"])
         chart.series.append(_series(
             data_sheets[plot.period], plot, "eta", "КПД", "00B050", trend=True
         ))
@@ -457,14 +460,14 @@ def add_compressor_charts(sheet, plots, start_row, *, two_columns=True):
             LegendEntry(idx=first_trend + index, delete=True)
             for index in range(trend_count)
         )
-        sheet.add_chart(chart, f"{_letter(column)}{block_row + 3}")
+        sheet.add_chart(chart, cell_anchor(column, block_row + 3, 18, 32))
 
         for offset, side, suffix in ((0, "Начальная точка", "1"),
-                                     (12, "Конечная точка", "2")):
-            row = block_row + 43
-            target = column + offset
+                                     (1, "Конечная точка", "2")):
+            row = block_row + 36 + offset
+            target = column
             sheet.merged_cells.add(
-                f"{_letter(target)}{row}:{_letter(target + 10)}{row}"
+                f"{_letter(target)}{row}:{_letter(target + 17)}{row}"
             )
             date = pd.Timestamp(top[f"date_{suffix}"])
             text = (

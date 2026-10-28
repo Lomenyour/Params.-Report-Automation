@@ -51,14 +51,15 @@ def rich_text(text, *, size=FONT_SIZE, bold=False, centered=False):
 
 class RichDataLabel(DataLabel):
     """Нативный c:tx с рамкой по тексту, без фиксированной ширины/высоты."""
-    def __init__(self, text, *, bold=False, vertical=False):
+    def __init__(self, text, *, bold=False, vertical=False, size=LABEL_SIZE):
         super().__init__(idx=0)
         self.text, self.bold, self.vertical = text, bold, vertical
+        self.size = size
 
     def to_tree(self, tagname=None, idx=None, namespace=None):
         element = DataLabel(idx=self.idx, dLblPos="ctr", showSerName=False,
             showVal=False, showCatName=False, showLegendKey=False).to_tree(tagname, idx, namespace)
-        text = rich_text(self.text, size=LABEL_SIZE, bold=self.bold, centered=True)
+        text = rich_text(self.text, size=self.size, bold=self.bold, centered=True)
         text.bodyPr.spAutoFit = True
         text.bodyPr.lIns = text.bodyPr.rIns = 35000
         text.bodyPr.tIns = text.bodyPr.bIns = 25000
@@ -68,7 +69,7 @@ class RichDataLabel(DataLabel):
         return element
 
 
-def label_series(x, y, text, *, dates=False, bold=False, color="000000"):
+def label_series(x, y, text, *, dates=False, bold=False, color="000000", size=LABEL_SIZE):
     """Один блок подписи в координатах диаграммы, без служебных ячеек."""
     series = XYSeries(tx=SeriesLabel(v=text),
         xVal=AxDataSource(numLit=NumData(ptCount=1, pt=[NumVal(idx=0,
@@ -76,8 +77,8 @@ def label_series(x, y, text, *, dates=False, bold=False, color="000000"):
         yVal=NumDataSource(numLit=NumData(ptCount=1, pt=[NumVal(idx=0, v=float(y))])))
     series.marker.symbol = "none"
     series.graphicalProperties.line.noFill = True
-    series.dLbls = DataLabelList(dLbl=[RichDataLabel(text, bold=bold)],
+    series.dLbls = DataLabelList(dLbl=[RichDataLabel(text, bold=bold, size=size)],
         showSerName=False, showVal=False, showCatName=False, showLegendKey=False,
-        dLblPos="ctr", txPr=rich_text("", size=LABEL_SIZE, bold=bold, centered=True),
+        dLblPos="ctr", txPr=rich_text("", size=size, bold=bold, centered=True),
         spPr=GraphicalProperties(solidFill="FFFFFF", ln=LineProperties(solidFill=color, w=12700)))
     return series

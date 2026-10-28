@@ -59,6 +59,7 @@ html, body { margin: 0; height: 100%; background: #252525; overflow: hidden; }
 #desktop .gtu-action.gtu-primary { color: var(--gtu-on-accent); border-color: var(--gtu-accent); background: var(--gtu-accent); font-weight: 600; }
 #desktop .gtu-primary:hover { filter: brightness(1.08); }
 #desktop .gtu-wide { width: 100%; }
+#desktop .gtu-gas-passport { margin-top: 12px; }
 #desktop .gtu-quiet { padding: 5px 0; border: 0; min-height: 30px; font-size: 12px; color: var(--gtu-sub); background: transparent; justify-content: flex-start; }
 #desktop .gtu-radio { display: flex; align-items: flex-start; gap: 8px; padding: 9px 10px; margin: 6px 0; border: 1px solid var(--gtu-line); border-radius: 7px; color: var(--gtu-sub); font-size: 12px; }
 #desktop .gtu-radio:has(input:checked) { background: var(--gtu-soft-accent); color: var(--gtu-text); border-color: var(--gtu-accent); }

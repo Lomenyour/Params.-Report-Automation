@@ -239,10 +239,11 @@
     }
     const body = element('div', 'gtu-dialog-body');
     const description = element('p');
-    description.textContent = periods ? 'Проверьте автоматическую разбивку. Одна строка — один период: дата начала; дата конца. График остаётся доступен.' : payload.kind === 'events' ? 'Каждая строка: дата; подпись события. Например: 01.05.2026; Замена ВЛО. Можно указать время.' : 'Проверьте каналы, колонки листа «Данные» и коэффициенты перевода единиц. Колонку можно ввести вручную по букве.';
+    description.textContent = periods ? 'Проверьте автоматическую разбивку. Одна строка — один период: дата начала; дата конца. График остаётся доступен.' : payload.kind === 'events' ? 'Каждая строка: дата; подпись события. Например: 01.05.2026; Замена ВЛО. Можно указать время.' : payload.kind === 'gasPassport' ? 'Значения относятся к указанным ТЭЦ и ГТ. Допустимы точка и запятая. Состав — молярные доли 0..1; пустые компоненты не сохраняются.' : 'Проверьте каналы, колонки листа «Данные» и коэффициенты перевода единиц. Колонку можно ввести вручную по букве.';
     body.append(description);
     let editor = null;
     const mappingInputs = [];
+    const gasInputs = [];
     if (payload.kind === 'mapping') {
       const choices = element('datalist'); choices.id = 'target-options';
       payload.choices.forEach(value => choices.append(new Option(value, value)));
@@ -258,6 +259,21 @@
         mappingInputs.push({target, factor});
       });
       body.append(choices, table);
+    } else if (payload.kind === 'gasPassport') {
+      if (payload.warning) body.append(element('p', 'gtu-caption', payload.warning));
+      const table = element('table', 'gtu-mapping-table');
+      const head = table.createTHead().insertRow();
+      ['Параметр', 'Значение', 'Единицы'].forEach(title => head.append(element('th', '', title)));
+      const rows = table.createTBody();
+      payload.fields.forEach(field => {
+        const row = rows.insertRow(); row.insertCell().textContent = field.label;
+        const input = element('input', 'gtu-field'); input.value = field.value;
+        input.inputMode = 'decimal'; input.setAttribute('aria-label', field.label);
+        input.dataset.gasKey = field.key;
+        row.insertCell().append(input); row.insertCell().textContent = field.unit;
+        gasInputs.push({key:field.key, input});
+      });
+      body.append(table);
     } else {
       editor = element('textarea'); editor.value = payload.text; editor.spellcheck = false; editor.setAttribute('aria-label', payload.kind === 'periods' ? 'Периоды расчёта' : 'События на графике'); body.append(editor);
     }
@@ -267,8 +283,8 @@
     }
     const cancel = element('button', 'gtu-action', periods ? 'Автоматические периоды' : 'Отмена'); cancel.type = 'button';
     cancel.onclick = () => send('dialog', {action: periods ? 'auto' : 'cancel'});
-    const accept = element('button', 'gtu-action gtu-primary', periods ? 'Применить периоды' : 'Применить'); accept.type = 'button';
-    accept.onclick = () => send('dialog', {action: periods ? 'manual' : 'accept', text: editor?.value || '', rows: mappingInputs.map(({target, factor}) => ({target:target.value, factor:factor.value}))});
+    const accept = element('button', 'gtu-action gtu-primary', periods ? 'Применить периоды' : payload.kind === 'gasPassport' ? 'Сохранить' : 'Применить'); accept.type = 'button';
+    accept.onclick = () => send('dialog', {action: periods ? 'manual' : 'accept', text: editor?.value || '', rows: mappingInputs.map(({target, factor}) => ({target:target.value, factor:factor.value})), values:Object.fromEntries(gasInputs.map(({key, input}) => [key, input.value]))});
     actions.append(cancel, accept); dialog.append(header, body, actions); layer.replaceChildren(dialog); layer.hidden = false;
     requestAnimationFrame(() => (editor || dialog.querySelector('input') || accept).focus());
     dialog.onkeydown = event => {

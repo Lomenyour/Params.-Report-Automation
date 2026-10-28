@@ -18,6 +18,7 @@ import chart_events_ui as events_ui
 from chart_events import format_chart_events
 from station_profiles import sensor_target_columns, unit_number
 from ui_theme import RESULT_TABS
+from gas_passport_ui import passport_fields, passport_from_fields
 
 
 # Это те же code objects, что и у проверенного сценария. Меняется только
@@ -27,7 +28,7 @@ WORKFLOW_METHODS = (
     "_on_station_changed", "_on_mode_changed", "_on_raw_sheet_changed",
     "clear_raw_file", "choose_file", "review_chart_events", "_clear_mapping",
     "choose_raw_file", "review_mapping", "start_calculation", "_parse_tariff",
-    "_calculation_worker", "_poll_output", "_periods_text", "_format_cell",
+    "_calculation_worker", "_poll_output", "_periods_text", "_format_cell", "review_gas_passport",
     "_build_vna_overview", "_show_results", "generate_excel_report",
     "generate_word_report", "_start_export", "_export_worker", "_show_export_result",
 )
@@ -190,6 +191,22 @@ class EventsDialog(Dialog):
         self._apply()
 
 
+class GasPassportDialog(Dialog):
+    def __init__(self, parent, passport, station_id, unit, station_name):
+        super().__init__(parent, {"kind": "gasPassport", "title": f"Паспорт газа — {station_name} ГТ-{unit}",
+                                  "fields": passport_fields(passport),
+                                  "warning": passport.composition_warning if passport else ""})
+        self.station_id, self.unit = station_id, unit
+
+    def accept(self, payload):
+        try:
+            self.result = passport_from_fields(payload.get("values", {}), self.station_id, self.unit)
+        except ValueError as error:
+            self.controller.messages.showerror("Паспорт газа", str(error))
+            return
+        self.destroy()
+
+
 class DesktopController(QObject):
     state_changed = Signal(str)
     view_changed = Signal(str)
@@ -204,7 +221,8 @@ class DesktopController(QObject):
         self.dialog, self.period_request = None, None
         self.messages, self.files = Messages(window), FileDialogs(window)
         replacements = {"filedialog": self.files, "messagebox": self.messages,
-                        "MappingDialog": MappingDialog, "ChartEventsDialog": EventsDialog}
+                        "MappingDialog": MappingDialog, "ChartEventsDialog": EventsDialog,
+                        "GasPassportDialog": GasPassportDialog}
         for name in WORKFLOW_METHODS:
             descriptor = inspect.getattr_static(workflow.CalculationApp, name)
             static = isinstance(descriptor, staticmethod)
@@ -229,7 +247,7 @@ class DesktopController(QObject):
         self.gas_tariff_var = Value("0", self.changed)
         self.electricity_tariff_var = Value("0", self.changed)
         self.electricity_cost_var = Value("0", self.changed)
-        names = ("station_combo", "events_button", "choose_button", "raw_button", "mapping_button",
+        names = ("station_combo", "events_button", "choose_button", "raw_button", "mapping_button", "gas_passport_button",
                  "clear_raw_button", "raw_sheet_combo", "run_button", "excel_button", "report_button",
                  "raw_label", "file_label", "station_hint", "import_controls", "status_label", "progress")
         self.controls = {name: Control(self.changed) for name in names}
@@ -404,10 +422,12 @@ class DesktopController(QObject):
                 self.chart_tabs.select(payload.get("key", "pressure"))
             return
         actions = {"file": self.choose_file, "raw": self.choose_raw_file,
+                   "gasPassport": self.review_gas_passport,
                    "clearRaw": self.clear_raw_file, "mapping": self.review_mapping,
                    "events": self.review_chart_events, "run": self.start_calculation,
                    "excel": self.generate_excel_report, "word": self.generate_word_report}
         guards = {"file": "choose_button", "raw": "raw_button", "clearRaw": "clear_raw_button",
+                  "gasPassport": "gas_passport_button",
                   "mapping": "mapping_button", "events": "events_button", "run": "run_button",
                   "excel": "excel_button", "word": "report_button"}
         if name in actions:

@@ -416,6 +416,11 @@ def _validate_calculation_profile(profile: dict) -> dict[str, float]:
         raise ValueError("В профиле поправок есть нечисловые значения.")
     if numbers["gas_density"] <= 0 or numbers["qnr_denominator"] <= 0:
         raise ValueError("В профиле поправок некорректная плотность газа.")
+    if "gas_q_lower" in profile:
+        q_lower = float(profile["gas_q_lower"])
+        if not np.isfinite(q_lower) or q_lower <= 0:
+            raise ValueError("В паспорте газа некорректное Qнр.")
+        numbers["gas_q_lower"] = q_lower
     return numbers
 
 
@@ -426,9 +431,9 @@ def _load_cached_calculation_profile(book_path: str | Path) -> dict[str, float]:
         profile = saved[_profile_key(book_path)]
     except (OSError, KeyError, TypeError, ValueError) as error:
         raise ValueError(
-            "В выбранной книге только лист «Данные», а профиль поправок "
-            "для этой станции и ГТ не сохранён. Один раз выберите исходную "
-            "расчётную книгу с листами «Поправки» и «Результаты»."
+            "В выбранной книге нет листа «Поправки», а прежний локальный профиль "
+            "для этой станции и ГТ недоступен. Выберите исходную расчётную книгу "
+            "с листом «Поправки». Паспорт газа задаётся отдельно."
         ) from error
     print("Использован сохранённый профиль поправок для этой станции и ГТ.")
     return _validate_calculation_profile(profile)
@@ -449,26 +454,45 @@ def _save_calculation_profile(
     path.write_text(json.dumps(saved, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
-def read_calculation_profile(book_path: str | Path) -> dict[str, float]:
+def read_calculation_profile(book_path: str | Path, *, gas_passport=None) -> dict[str, float]:
     """Читает только используемые поправки и постоянные выбранной ГТ."""
     with pd.ExcelFile(book_path, engine="calamine") as workbook:
-        if not {"Поправки", "Результаты"} <= set(workbook.sheet_names):
-            return _load_cached_calculation_profile(book_path)
+        if "Поправки" not in workbook.sheet_names:
+            profile = _load_cached_calculation_profile(book_path)
+            return _with_gas_passport(profile, gas_passport)
         corrections = workbook.parse("Поправки", header=None)
-        results = workbook.parse("Результаты", header=None)
+        results = (workbook.parse("Результаты", header=None, nrows=2)
+                   if "Результаты" in workbook.sheet_names else None)
     profile: dict[str, float] = {}
     for cell in _profile_cells():
         match = re.fullmatch(r"([A-Z]+)(\d+)", cell)
         assert match is not None
         from openpyxl.utils import column_index_from_string
         column, row = match.groups()
-        value = corrections.iat[int(row) - 1, column_index_from_string(column) - 1]
+        try:
+            value = corrections.iat[int(row) - 1, column_index_from_string(column) - 1]
+        except IndexError as error:
+            raise ValueError(f"На листе «Поправки» нет ячейки {cell} принятой структуры СызТЭЦ.") from error
         try:
             profile[cell] = float(value)
         except (TypeError, ValueError) as error:
             raise ValueError(f"Нет числовой поправки {cell} для этой ГТ.") from error
-    profile["gas_c_h"] = float(results.iat[1, 30])  # Результаты!AE2
-    profile["gas_density"] = float(results.iat[1, 28])  # Результаты!AC2
+    if gas_passport is not None:
+        return _with_gas_passport(profile, gas_passport)
+    # Совместимость с прямым старым вызовом: экспортированная книга имеет
+    # паспорт на «Поправки» и не требует прежнего листа «Результаты».
+    from gas_passport import embedded_passport
+    from station_profiles import unit_number
+    station = resolve_station(book_path)
+    turbine = unit_number(book_path)
+    if station is not None and turbine:
+        embedded = embedded_passport(corrections, station.id, turbine)
+        if embedded is not None:
+            return _with_gas_passport(profile, embedded)
+    if results is None:
+        raise ValueError("Нет паспорта газа. Заполните его кнопкой «Паспорт газа» для выбранной ТЭЦ и ГТ.")
+    profile["gas_c_h"] = float(results.iat[1, 30])  # Совместимость прежнего API.
+    profile["gas_density"] = float(results.iat[1, 28])
     # В ГТ-10 AK2 делит на Результаты!AC2, а в ГТ-11 — на 0.698.
     formula_book = load_workbook(book_path, read_only=True, data_only=False)
     try:
@@ -486,6 +510,16 @@ def read_calculation_profile(book_path: str | Path) -> dict[str, float]:
     except (OSError, ValueError) as error:
         print(f"Не удалось сохранить профиль поправок: {error}")
     return profile
+
+
+def _with_gas_passport(profile, passport):
+    if passport is None:
+        return _validate_calculation_profile(profile)
+    profile = {**profile, "gas_c_h": passport.carbon_hydrogen_ratio,
+               "gas_density": passport.density_kg_per_nm3,
+               "qnr_denominator": passport.density_kg_per_nm3,
+               "gas_q_lower": passport.q_lower_mj_per_nm3}
+    return _validate_calculation_profile(profile)
 
 
 def _number(frame: pd.DataFrame, column: str) -> np.ndarray:
@@ -580,13 +614,6 @@ def calculate_data_columns(data: AssembledData,
         + _polynomial(profile, 969, ("AC", "AD", "AE"), p)
     )
     frame["AI"] = q("T1107") * _number(frame, "AH") + q("U1107")
-    frame["AJ"] = profile["gas_c_h"]
-    frame["AK"] = 34.26 / profile["qnr_denominator"]
-    aj, ak = (_number(frame, col) for col in ("AJ", "AK"))
-    frame["AL"] = (
-        _polynomial(profile, 1019, ("L", "M", "N"), aj) * ak
-        + _polynomial(profile, 1019, ("R", "S", "T"), aj)
-    )
     rpm = _number(frame, "AM") / 5200.0
     frame["AN"] = (
         _polynomial(profile, 851, ("U", "V", "W", "X", "Y", "Z"), p) * rpm**3
@@ -595,6 +622,22 @@ def calculate_data_columns(data: AssembledData,
         + _polynomial(profile, 851, ("AS", "AT", "AU", "AV", "AW", "AX"), p)
     )
     _coolprop_columns(frame)
+    recalculate_gas_columns(frame, profile)
+    return data
+
+
+def recalculate_gas_columns(frame: pd.DataFrame, profile: dict[str, float]) -> None:
+    """Меняет только газозависимую часть, остальные поправки остаются прежними."""
+    q = lambda cell: profile[cell]
+    frame["AJ"] = profile["gas_c_h"]
+    # Старый вызов без паспорта сохраняет прежнюю методику; GUI передаёт
+    # паспортный gas_q_lower и плотность, без фиксированного числителя.
+    frame["AK"] = profile.get("gas_q_lower", 34.26) / profile["qnr_denominator"]
+    aj, ak = (_number(frame, col) for col in ("AJ", "AK"))
+    frame["AL"] = (
+        _polynomial(profile, 1019, ("L", "M", "N"), aj) * ak
+        + _polynomial(profile, 1019, ("R", "S", "T"), aj)
+    )
     denominator = np.ones(len(frame), dtype=float)
     for column in ("D", "H", "O", "T", "AE", "AI", "AL", "AN"):
         denominator *= _number(frame, column)
@@ -602,8 +645,9 @@ def calculate_data_columns(data: AssembledData,
         power = _number(frame, "AO") / denominator
     power[~np.isfinite(power)] = np.nan
     frame["AQ"] = power
-    frame["AT"] = _number(frame, "AS") * 3600.0 / 0.698
-    frame["AV"] = (power * q("M605") + q("O605")) * 3600.0 / 0.6993
+    density = profile.get("gas_density")
+    frame["AT"] = _number(frame, "AS") * 3600.0 / (density if "gas_q_lower" in profile else 0.698)
+    frame["AV"] = (power * q("M605") + q("O605")) * 3600.0 / (density if "gas_q_lower" in profile else 0.6993)
     with np.errstate(divide="ignore", invalid="ignore"):
         specific = _number(frame, "AV") / power
     specific[~np.isfinite(specific)] = np.nan
@@ -617,7 +661,6 @@ def calculate_data_columns(data: AssembledData,
             if np.isfinite(pair).any():
                 averaged[i] = float(np.nanmean(pair))
         frame[output] = averaged
-    return data
 
 
 def apply_economic_columns(data: AssembledData, economics_result: dict) -> None:

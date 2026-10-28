@@ -47,7 +47,10 @@ from data_assembly import (
     template_columns,
     validate_mappings,
 )
-from station_profiles import get_station_repository, sensor_target_columns
+from station_profiles import get_station_repository, sensor_target_columns, unit_number
+from gas_passport import resolve_passport, save_passport
+from gas_passport_ui import GasPassportDialog
+from correction_sheet import read_correction_sheet, correction_sheet_from_profile
 from periods import parse_periods_arg
 from result_export import collect_result_tables, read_data_sheet, save_result_workbook
 from pressure_chart import PressureChartData
@@ -383,6 +386,8 @@ class CalculationApp(tk.Tk):
             text=f"События графика ({len(self.chart_events)})",
         )
         self.choose_button.configure(state="normal" if idle else "disabled")
+        if hasattr(self, "gas_passport_button"):
+            self.gas_passport_button.configure(state="normal" if idle and has_book and has_station else "disabled")
         for button in self.mode_buttons:
             button.configure(state="normal" if idle else "disabled")
         for entry in self.tariff_entries:
@@ -434,6 +439,28 @@ class CalculationApp(tk.Tk):
 
     def _on_station_changed(self, _event=None):
         self._apply_station(self.stations_by_name.get(self.station_var.get()), automatic=False)
+
+    def review_gas_passport(self):
+        if self.calculation_running or self.export_running or self.selected_file is None:
+            return
+        station = self.stations_by_name.get(self.station_var.get())
+        turbine = unit_number(self.selected_file)
+        if station is None or turbine is None:
+            messagebox.showerror("Паспорт газа", "Выберите ТЭЦ; имя книги должно содержать номер ГТ, например ГТ-11.", parent=self)
+            return
+        try:
+            passport = resolve_passport(self.selected_file, station.id, turbine)
+            dialog = GasPassportDialog(self, passport, station.id, turbine, station.name)
+            self.wait_window(dialog)
+            if dialog.result is None:
+                return
+            saved = save_passport(dialog.result)
+            self._invalidate_results()
+            self._append_log(f"Паспорт газа сохранён: {station.name} ГТ-{turbine}. Для применения выполните перерасчёт.\n")
+            if saved.composition_warning:
+                messagebox.showwarning("Состав газа", saved.composition_warning, parent=self)
+        except (ValueError, OSError) as error:
+            messagebox.showerror("Паспорт газа", str(error), parent=self)
 
     def _on_mode_changed(self):
         self._invalidate_results()
@@ -682,6 +709,29 @@ class CalculationApp(tk.Tk):
                 print(f"Выбран файл: {file_path}")
                 print("Лист: Данные")
 
+                turbine = unit_number(file_path)
+                passport = resolve_passport(file_path, station.id, turbine)
+                corrections = read_correction_sheet(file_path)
+                profile = None
+                if passport is not None:
+                    profile = read_calculation_profile(file_path, gas_passport=passport)
+                    print(f"Паспорт газа: {station.name} ГТ-{turbine}; ρ = {passport.density_kg_per_nm3:g} кг/нм³; "
+                          f"Qнр = {passport.q_lower_mj_per_nm3:g} МДж/нм³; C/H = {passport.carbon_hydrogen_ratio:g}.")
+                    print(f"Qнр для массовой поправки: {passport.q_lower_mj_per_kg:g} МДж/кг.")
+                    if passport.composition_warning:
+                        print("WARNING: " + passport.composition_warning)
+                elif raw_file_path is not None:
+                    raise ValueError("Нет паспорта газа для выбранной ТЭЦ и ГТ. Заполните его кнопкой «Паспорт газа».")
+                else:
+                    print("Паспорт газа отсутствует: готовые газозависимые колонки книги сохранены. Для их обновления заполните «Паспорт газа».")
+                    try:
+                        profile = read_calculation_profile(file_path)
+                    except ValueError:
+                        print("WARNING: нет профиля поправок; такой экспорт потребует исходную книгу для следующего добавления выгрузки.")
+                if corrections is None and profile is not None:
+                    corrections = correction_sheet_from_profile(profile)
+                    print("Листа «Поправки» нет: в экспорт включены используемые коэффициенты из прежнего локального профиля; полный исходный лист недоступен.")
+
                 periods_mod.PERIOD_OVERRIDES = []
                 assembled = None
                 if raw_file_path is not None:
@@ -708,7 +758,6 @@ class CalculationApp(tk.Tk):
                             "каналами и не дублируются: "
                             + ", ".join(assembled.verified_duplicate_columns)
                         )
-                    profile = read_calculation_profile(file_path)
                     calculate_data_columns(assembled, profile)
                     missing = {
                         column: int(pd.to_numeric(
@@ -725,7 +774,14 @@ class CalculationApp(tk.Tk):
                     data_for_export = assembled
                 else:
                     data_for_export = read_data_sheet(file_path)
+                    if passport is not None:
+                        data_for_export.apply_gas_profile(profile)
+                        print("Газозависимые расчётные колонки готовой книги обновлены по выбранному паспорту.")
                     source = load_source_data(data_for_export.as_headered_frame())
+                if passport is not None:
+                    # AK хранит массовое Qнр для полинома поправки (МДж/кг),
+                    # а расчёт КПД ГТУ принимает объёмное Qнр (МДж/нм³).
+                    source["q_lower"] = passport.q_lower_mj_per_nm3
                 rh_data = prepare_rh_data(source)
                 vna_data = prepare_vna_data(source)
 
@@ -845,6 +901,7 @@ class CalculationApp(tk.Tk):
                     report_data=report_data,
                     input_files=tuple(path.resolve() for path in (file_path, raw_file_path) if path is not None),
                     filename_stem=f"{file_path.stem}{suffix}",
+                    correction_sheet=corrections, gas_passport=passport,
                 )
 
                 pressure_figure = plot_pressure_drops(
@@ -1276,6 +1333,8 @@ class CalculationApp(tk.Tk):
                 save_result_workbook(
                     snapshot.data, snapshot.sections, path,
                     pressure_chart=snapshot.pressure_chart,
+                    correction_sheet=snapshot.correction_sheet,
+                    gas_passport=snapshot.gas_passport,
                 )
             else:
                 generate_report(snapshot.report_data, template_path=DEFAULT_TEMPLATE, output_path=path)

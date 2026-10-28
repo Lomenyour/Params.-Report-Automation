@@ -17,13 +17,27 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scr"))
 import app as workflow
 from calculation_snapshot import CalculationSnapshot
 from data_assembly import SensorMapping
-from desktop_controller import DesktopController, EventsDialog, MappingDialog, WORKFLOW_METHODS
+from desktop_controller import DesktopController, EventsDialog, MappingDialog, GasPassportDialog, WORKFLOW_METHODS
 
 
 _application = None
 
 
 class DesktopBridgeTest(unittest.TestCase):
+    def test_gas_dialog_validates_without_closing_on_bad_input(self):
+        c = self.controller
+        dialog = GasPassportDialog(c, None, "syz_tec", "11", "СызТЭЦ")
+        c.dialog = dialog
+        dialog.accept({"values": {"density_kg_per_nm3": "-1"}})
+        self.assertIs(c.dialog, dialog)
+        self.assertIsNone(dialog.result)
+        c.messages.showerror.assert_called_once()
+        dialog.accept({"values": {"density_kg_per_nm3": "0,7", "q_lower_mj_per_nm3": "34,13",
+                                    "carbon_hydrogen_ratio": "3,066677", "component:Methane": "1"}})
+        self.assertIsNone(c.dialog)
+        self.assertEqual(dialog.result.unit, "11")
+        self.assertEqual(dialog.result.q_lower_mj_per_nm3, 34.13)
+
     def setUp(self):
         global _application
         _application = QApplication.instance() or QApplication([])

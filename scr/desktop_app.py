@@ -5,18 +5,14 @@ import ctypes
 from pathlib import Path
 import sys
 
-from PySide6.QtCore import QUrl, Qt
-from PySide6.QtGui import QColor, QFont, QIcon
+from PySide6.QtCore import QUrl
+from PySide6.QtGui import QColor, QIcon
 from PySide6.QtWebChannel import QWebChannel
 from PySide6.QtWebEngineCore import QWebEnginePage, QWebEngineUrlRequestInterceptor, QWebEngineSettings
 from PySide6.QtWebEngineWidgets import QWebEngineView
 from PySide6.QtWidgets import QApplication, QMainWindow
 
-from desktop_controller import DesktopController
-
-
-UI_DIR = Path(__file__).resolve().parent / "desktop_ui"
-APP_ICON = UI_DIR / "app-icon.ico"
+from desktop_resources import UI_DIR, APP_ICON
 
 
 class LocalResources(QWebEngineUrlRequestInterceptor):
@@ -38,6 +34,7 @@ class LocalPage(QWebEnginePage):
 
 class DesktopWindow(QMainWindow):
     def __init__(self):
+        from desktop_controller import DesktopController
         super().__init__()
         self.setWindowTitle("Параметрический расчёт ГТУ")
         self.setWindowIcon(QIcon(str(APP_ICON)))
@@ -92,15 +89,9 @@ class DesktopWindow(QMainWindow):
 
 
 def main():
-    application = QApplication.instance() or QApplication(sys.argv)
-    application.setApplicationName("Параметрический расчёт ГТУ")
-    application.setWindowIcon(QIcon(str(APP_ICON)))
-    application.setFont(QFont("Segoe UI", 10))
-    application.styleHints().setColorScheme(Qt.ColorScheme.Dark)
-    window = DesktopWindow()
-    window.show()
-    sys.exit(application.exec())
+    from desktop_bootstrap import main as start_application
+    return start_application()
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

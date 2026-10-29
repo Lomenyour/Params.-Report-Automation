@@ -48,7 +48,7 @@ py -m PyInstaller `
     --distpath "$PSScriptRoot\dist_test" `
     --workpath "$PSScriptRoot\build_test\work" `
     --specpath "$PSScriptRoot\build_test" `
-    "$PSScriptRoot\scr\desktop_app.py"
+    "$PSScriptRoot\scr\desktop_bootstrap.py"
 
 $env:PATH = $buildOriginalPath
 

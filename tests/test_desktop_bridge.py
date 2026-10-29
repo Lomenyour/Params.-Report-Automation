@@ -17,13 +17,27 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scr"))
 import app as workflow
 from calculation_snapshot import CalculationSnapshot
 from data_assembly import SensorMapping
-from desktop_controller import DesktopController, EventsDialog, MappingDialog, GasPassportDialog, WORKFLOW_METHODS
+from desktop_controller import DesktopController, EventsDialog, MappingDialog, GasPassportDialog, CorrectionDialog, WORKFLOW_METHODS
 
 
 _application = None
 
 
 class DesktopBridgeTest(unittest.TestCase):
+    def test_correction_dialog_requires_all_fields_and_preserves_identity(self):
+        from correction_profiles import FIELDS
+        c=self.controller
+        dialog=CorrectionDialog(c,None,"syz_tec","10","СызТЭЦ")
+        c.dialog=dialog
+        dialog.accept({"values":{}})
+        self.assertIs(c.dialog,dialog)
+        self.assertIsNone(dialog.result)
+        dialog.accept({"values":{field.key:"1,234E-5" for field in FIELDS}})
+        self.assertIsNone(c.dialog)
+        self.assertEqual(dialog.result.unit,"10")
+        self.assertEqual(len(dialog.result.values),63)
+        self.assertEqual(dialog.result.values["pressure_power.p1"],1.234e-5)
+
     def test_gas_dialog_validates_without_closing_on_bad_input(self):
         c = self.controller
         dialog = GasPassportDialog(c, None, "syz_tec", "11", "СызТЭЦ")

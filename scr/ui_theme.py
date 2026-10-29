@@ -248,6 +248,8 @@ def build_widgets(app):
     app.station_hint = ttk.Label(inputs, text="Выберите ТЭЦ или загрузите файл.",
                                   style="Muted.TLabel", wraplength=255)
     app.station_hint.pack(fill="x", pady=(6, 0))
+    app.corrections_button = ttk.Button(inputs, text="Поправки ГТ", command=app.review_corrections)
+    app.corrections_button.pack(fill="x",pady=(8,0))
 
     mode = _section(content, "2", "Режим расчёта")
     app.mode_buttons = []

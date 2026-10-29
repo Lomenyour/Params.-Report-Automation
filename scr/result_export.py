@@ -27,6 +27,33 @@ class DataSheetValues:
     values: pd.DataFrame
     header_row: int
 
+    def apply_correction_profile(self, profile):
+        """Применяет все именованные коэффициенты; готовую термодинамику сохраняет."""
+        from data_assembly import calculate_data_columns
+        from openpyxl.utils import column_index_from_string
+        frame = self.values.iloc[self.header_row + 1:].copy()
+        frame.columns = [get_column_letter(i+1) for i in range(len(frame.columns))]
+        selected = frame.loc[pd.to_datetime(frame["B"],errors="coerce").notna()].copy()
+        # Та же поддержка старого расположения, что и в assemble_sensor_data,
+        # но только в рабочей копии: исходная AC и AD в экспорте не меняются.
+        if "AD" in selected and pd.isna(self.values.iat[self.header_row,29]):
+            shifted = selected["AC"].isna() & selected["AD"].notna()
+            if shifted.any():
+                selected["AC"] = selected["AC"].astype(object)
+                selected.loc[shifted,"AC"] = selected.loc[shifted,"AD"]
+                print(f"Для поправки давления ух.газов использована AD вместо пустой AC: {int(shifted.sum())} строк; исходные колонки сохранены.")
+        data = AssembledData(selected, {}, 0, 0, {}, [])
+        calculate_data_columns(data, profile, thermodynamics=False)
+        outputs = ("D","H","N","O","S","T","U","Y","AE","AI","AN",
+                   "AJ","AK","AL","AQ","AT","AV","AX","AR","AU","AW")
+        for column in outputs:
+            index = column_index_from_string(column)-1
+            if index >= len(self.values.columns):
+                raise ValueError(f"В принятой структуре СызТЭЦ нет колонки {column}.")
+            destination = self.values.columns[index]
+            self.values[destination] = self.values[destination].astype(object)
+            self.values.loc[selected.index,destination] = selected[column].to_numpy()
+
     def apply_gas_profile(self, profile):
         """Обновляет газозависимые столбцы только датированных строк текущей книги."""
         from data_assembly import recalculate_gas_columns
@@ -41,7 +68,9 @@ class DataSheetValues:
             index = column_index_from_string(column) - 1
             if index >= len(self.values.columns):
                 raise ValueError(f"В структуре книги СызТЭЦ нет расчётной колонки {column}.")
-            self.values.loc[selected.index, self.values.columns[index]] = selected[column].to_numpy()
+            destination = self.values.columns[index]
+            self.values[destination] = self.values[destination].astype(object)
+            self.values.loc[selected.index, destination] = selected[column].to_numpy()
 
     def as_headered_frame(self) -> pd.DataFrame:
         frame = self.values.iloc[self.header_row + 1:].copy()
@@ -225,7 +254,7 @@ def save_result_workbook(
     sections: list[tuple[str, pd.DataFrame | None]],
     output_path: str | Path,
     *, pressure_chart: PressureChartData | None = None,
-    correction_sheet=None, gas_passport=None,
+    correction_sheet=None, gas_passport=None, correction_profile=None,
 ) -> Path:
     """Пишет новую книгу атомарно, сохраняя прежний файл при ошибке экспорта."""
     path = Path(output_path)
@@ -239,7 +268,7 @@ def save_result_workbook(
         _write_tables_sheet(book, sections)
         write_pressure_sheet(book, *layout, pressure_chart)
         from correction_sheet import write_correction_sheet
-        write_correction_sheet(book, correction_sheet, gas_passport)
+        write_correction_sheet(book, correction_sheet, gas_passport, correction_profile)
         with tempfile.NamedTemporaryFile(prefix=".gtu_result_", suffix=".xlsx", dir=path.parent, delete=False) as handle:
             temporary = Path(handle.name)
         book.save(temporary)

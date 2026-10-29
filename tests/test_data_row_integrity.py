@@ -10,19 +10,21 @@ import pandas as pd
 from openpyxl import Workbook
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scr"))
-from data_assembly import (AssembledData, SensorMapping, _profile_cells,
+from data_assembly import (AssembledData, SensorMapping,
                            assemble_sensor_data, calculate_data_columns)
+from correction_profiles import named_legacy_values, LEGACY_CELLS
 
 
 class DataRowIntegrityTest(unittest.TestCase):
     def profile(self):
-        result = dict.fromkeys(_profile_cells(), 0.0)
+        result = dict.fromkeys(LEGACY_CELLS, 0.0)
         result.update({"N669": 1.0, "AF788": 1.0, "AD888": 1.0,
                        "P712": 1.0, "T507": 1.0, "AE969": 1.0,
                        "U1107": 1.0, "T1019": 1.0, "AX851": 1.0,
                        "M605": .05, "O605": 100.0,
-                       "gas_c_h": 3.0, "qnr_denominator": 1.0})
-        return result
+                       "gas_c_h": 3.0, "qnr_denominator": 1.0,
+                       "gas_density":1., "gas_q_lower":34.26})
+        return named_legacy_values(result)
 
     def calculate(self, values):
         data = AssembledData(values.copy(deep=True), {}, 0, 0, {}, [])

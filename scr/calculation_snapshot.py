@@ -22,6 +22,7 @@ class CalculationSnapshot:
     filename_stem: str
     correction_sheet: Any = None
     gas_passport: Any = None
+    correction_profile: Any = None
 
     def validate_destination(self, path: Path, suffix: str) -> None:
         if path.suffix.lower() != suffix:

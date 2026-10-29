@@ -334,6 +334,9 @@ body.gtu-resizing, body.gtu-resizing * { cursor: col-resize !important; user-sel
 #desktop .gtu-dialog-actions { flex-shrink: 0; display: flex; justify-content: flex-end; gap: 8px; flex-wrap: wrap; margin-top: 18px; }
 #desktop .gtu-dialog p { line-height: 1.6; }
 #desktop .gtu-dialog[data-kind="mapping"] { width: min(900px, 100%); }
+#desktop .gtu-dialog[data-kind="corrections"] { width: min(920px, 100%); }
+#desktop .gtu-coefficient-group { padding: 10px 0; border-bottom: 1px solid var(--gtu-border); }
+#desktop .gtu-coefficient-group summary { cursor: pointer; font-weight: 600; padding: 6px 0; }
 #desktop .gtu-mapping-table { border-collapse: collapse; width: 100%; table-layout: fixed; font-size: 12px; }
 #desktop .gtu-mapping-table th { text-align: left; font-weight: 500; color: var(--gtu-sub); padding: 8px 6px; }
 #desktop .gtu-mapping-table th:first-child { width: 32%; }

@@ -19,9 +19,10 @@ from gas_passport import (GasPassport, MARKER, load_passport, save_passport,
                           read_book_passport, resolve_passport)
 from gas_passport_ui import passport_from_fields
 from correction_sheet import read_correction_sheet
-from data_assembly import (_profile_cells, read_calculation_profile, recalculate_gas_columns,
+from data_assembly import (read_calculation_profile, recalculate_gas_columns,
                            AssembledData, calculate_data_columns)
 from result_export import DataSheetValues, save_result_workbook
+from correction_profiles import CorrectionProfile, KEYS, named_legacy_values, LEGACY_CELLS
 
 
 def passport(unit="11", density=.7, q=34.13):
@@ -32,7 +33,7 @@ def passport(unit="11", density=.7, q=34.13):
 
 
 def profile():
-    result = dict.fromkeys(_profile_cells(), 0.)
+    result = dict.fromkeys(LEGACY_CELLS, 0.)
     result.update({"N669": 1., "AF788": 1., "AD888": 1., "P712": 1.,
         "T507": 1., "AE969": 1., "U1107": 1., "T1019": 1., "AX851": 1.,
         "M605": .05, "O605": 100., "gas_c_h": 3., "gas_density": .7,
@@ -48,7 +49,7 @@ def make_book(path):
     data.append([0, pd.Timestamp("2026-01-01").to_pydatetime()] + [1.] * 48)
     corrections = book.create_sheet("Поправки")
     for key, value in profile().items():
-        if key in _profile_cells():
+        if key in LEGACY_CELLS:
             corrections[key] = value
     corrections["A1"] = "Исходные поправки"
     corrections["A1"].font = Font(name="Times New Roman", size=16, bold=True)
@@ -75,6 +76,12 @@ def make_book(path):
     with ZipFile(path, "w", ZIP_DEFLATED) as output:
         for name, content in members.items():
             output.writestr(name, content)
+
+
+def corrections():
+    values = named_legacy_values(profile())
+    return CorrectionProfile.from_dict({"station_id":"syz_tec","unit":"11",
+                                        "coefficients":{key:values[key] for key in KEYS}})
 
 
 class GasPassportTest(unittest.TestCase):
@@ -142,7 +149,7 @@ class CorrectionRoundTripTest(unittest.TestCase):
             before = source.read_bytes()
             snapshot = read_correction_sheet(source)
             values = DataSheetValues(pd.DataFrame([[None, "Дата"], [0, pd.Timestamp("2026-01-01")]]), 0)
-            save_result_workbook(values, [], target, correction_sheet=snapshot, gas_passport=passport())
+            save_result_workbook(values, [], target, correction_sheet=snapshot, gas_passport=passport(), correction_profile=corrections())
             book = load_workbook(target)
             sheet = book["Поправки"]
             self.assertEqual(sheet["A4"].value, 4)
@@ -156,10 +163,10 @@ class CorrectionRoundTripTest(unittest.TestCase):
             self.assertEqual(book.sheetnames[0], "Данные")
             book.close()
             source.unlink()  # Для повторного чтения доступна только сформированная книга.
-            with patch("data_assembly._load_cached_calculation_profile", side_effect=AssertionError("cache used")):
+            with patch("correction_profiles.load_profile", return_value=None):
                 actual = read_calculation_profile(target)
-            for key in _profile_cells():
-                self.assertEqual(actual[key], profile()[key])
+            for key in KEYS:
+                self.assertEqual(actual[key], corrections().values[key])
             self.assertEqual(actual["gas_q_lower"], 34.13)
             self.assertEqual(read_book_passport(target, "syz_tec", "11"), passport())
 
@@ -190,15 +197,15 @@ class CorrectionRoundTripTest(unittest.TestCase):
             "W": [365., 388.], "AC": [.8, 1.1], "AH": [20., 30.], "AM": [5100., 5150.],
             "AO": [85., 90.], "AS": [4., 5.]})
         data = AssembledData(raw.copy(), {}, 0, 0, {}, [])
-        calculated = calculate_data_columns(data, profile()).values
+        calculated = calculate_data_columns(data, named_legacy_values(profile())).values
         same = calculated.copy(deep=True)
-        recalculate_gas_columns(same, profile())
+        recalculate_gas_columns(same, named_legacy_values(profile()))
         pd.testing.assert_frame_equal(calculated, same)
         pd.testing.assert_frame_equal(raw, calculated[raw.columns])
         self.assertAlmostEqual(calculated.loc[0, "AK"], 34.13 / .7)
         self.assertAlmostEqual(calculated.loc[0, "AT"], 4 * 3600 / .7)
         changed = calculated.copy(deep=True)
-        recalculate_gas_columns(changed, {**profile(), "gas_density": .8, "qnr_denominator": .8})
+        recalculate_gas_columns(changed, {**named_legacy_values(profile()), "gas_density": .8, "qnr_denominator": .8})
         self.assertNotEqual(calculated.loc[0, "AV"], changed.loc[0, "AV"])
 
     def test_extra_notes_after_exported_passport_are_preserved(self):

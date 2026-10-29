@@ -50,7 +50,9 @@ from data_assembly import (
 from station_profiles import get_station_repository, sensor_target_columns, unit_number
 from gas_passport import resolve_passport, save_passport
 from gas_passport_ui import GasPassportDialog
-from correction_sheet import read_correction_sheet, correction_sheet_from_profile
+from correction_sheet import read_correction_sheet
+from correction_profiles import resolve_profile, require_profile, save_profile
+from correction_profiles_ui import CorrectionDialog
 from periods import parse_periods_arg
 from result_export import collect_result_tables, read_data_sheet, save_result_workbook
 from pressure_chart import PressureChartData
@@ -388,6 +390,8 @@ class CalculationApp(tk.Tk):
         self.choose_button.configure(state="normal" if idle else "disabled")
         if hasattr(self, "gas_passport_button"):
             self.gas_passport_button.configure(state="normal" if idle and has_book and has_station else "disabled")
+        if hasattr(self, "corrections_button"):
+            self.corrections_button.configure(state="normal" if idle and has_book and has_station else "disabled")
         for button in self.mode_buttons:
             button.configure(state="normal" if idle else "disabled")
         for entry in self.tariff_entries:
@@ -439,6 +443,26 @@ class CalculationApp(tk.Tk):
 
     def _on_station_changed(self, _event=None):
         self._apply_station(self.stations_by_name.get(self.station_var.get()), automatic=False)
+
+    def review_corrections(self):
+        if self.calculation_running or self.export_running or self.selected_file is None:
+            return
+        station = self.stations_by_name.get(self.station_var.get())
+        turbine = unit_number(self.selected_file)
+        if station is None or turbine is None:
+            messagebox.showerror("Поправки", "Выберите ТЭЦ; имя книги должно содержать номер ГТ.", parent=self)
+            return
+        try:
+            profile = resolve_profile(self.selected_file, station.id, turbine)
+            dialog = CorrectionDialog(self, profile, station.id, turbine, station.name)
+            self.wait_window(dialog)
+            if dialog.result is None:
+                return
+            saved = save_profile(dialog.result)
+            self._invalidate_results()
+            self._append_log(f"Поправки сохранены: {station.name} ГТ-{turbine}, версия {saved.revision}. Для применения выполните перерасчёт.\n")
+        except (ValueError, OSError) as error:
+            messagebox.showerror("Поправки", str(error), parent=self)
 
     def review_gas_passport(self):
         if self.calculation_running or self.export_running or self.selected_file is None:
@@ -710,11 +734,15 @@ class CalculationApp(tk.Tk):
                 print("Лист: Данные")
 
                 turbine = unit_number(file_path)
+                correction_profile = require_profile(file_path, station.id, turbine)
+                print(f"Именованные поправки: ГТ-{turbine}, метод {correction_profile.method}, "
+                      f"версия {correction_profile.revision}; 63 коэффициента.")
                 passport = resolve_passport(file_path, station.id, turbine)
                 corrections = read_correction_sheet(file_path)
                 profile = None
                 if passport is not None:
-                    profile = read_calculation_profile(file_path, gas_passport=passport)
+                    profile = read_calculation_profile(file_path, gas_passport=passport,
+                        correction_profile=correction_profile, station_id=station.id)
                     print(f"Паспорт газа: {station.name} ГТ-{turbine}; ρ = {passport.density_kg_per_nm3:g} кг/нм³; "
                           f"Qнр = {passport.q_lower_mj_per_nm3:g} МДж/нм³; C/H = {passport.carbon_hydrogen_ratio:g}.")
                     print(f"Qнр для массовой поправки: {passport.q_lower_mj_per_kg:g} МДж/кг.")
@@ -724,13 +752,8 @@ class CalculationApp(tk.Tk):
                     raise ValueError("Нет паспорта газа для выбранной ТЭЦ и ГТ. Заполните его кнопкой «Паспорт газа».")
                 else:
                     print("Паспорт газа отсутствует: готовые газозависимые колонки книги сохранены. Для их обновления заполните «Паспорт газа».")
-                    try:
-                        profile = read_calculation_profile(file_path)
-                    except ValueError:
-                        print("WARNING: нет профиля поправок; такой экспорт потребует исходную книгу для следующего добавления выгрузки.")
-                if corrections is None and profile is not None:
-                    corrections = correction_sheet_from_profile(profile)
-                    print("Листа «Поправки» нет: в экспорт включены используемые коэффициенты из прежнего локального профиля; полный исходный лист недоступен.")
+                if corrections is None:
+                    print("В экспорте будет создан именованный лист «Поправки» из используемого JSON-профиля.")
 
                 periods_mod.PERIOD_OVERRIDES = []
                 assembled = None
@@ -775,8 +798,8 @@ class CalculationApp(tk.Tk):
                 else:
                     data_for_export = read_data_sheet(file_path)
                     if passport is not None:
-                        data_for_export.apply_gas_profile(profile)
-                        print("Газозависимые расчётные колонки готовой книги обновлены по выбранному паспорту.")
+                        data_for_export.apply_correction_profile(profile)
+                        print("Коэффициентные и газозависимые колонки обновлены по выбранным именованным профилям.")
                     source = load_source_data(data_for_export.as_headered_frame())
                 if passport is not None:
                     # AK хранит массовое Qнр для полинома поправки (МДж/кг),
@@ -902,6 +925,7 @@ class CalculationApp(tk.Tk):
                     input_files=tuple(path.resolve() for path in (file_path, raw_file_path) if path is not None),
                     filename_stem=f"{file_path.stem}{suffix}",
                     correction_sheet=corrections, gas_passport=passport,
+                    correction_profile=correction_profile,
                 )
 
                 pressure_figure = plot_pressure_drops(
@@ -1335,6 +1359,7 @@ class CalculationApp(tk.Tk):
                     pressure_chart=snapshot.pressure_chart,
                     correction_sheet=snapshot.correction_sheet,
                     gas_passport=snapshot.gas_passport,
+                    correction_profile=snapshot.correction_profile,
                 )
             else:
                 generate_report(snapshot.report_data, template_path=DEFAULT_TEMPLATE, output_path=path)

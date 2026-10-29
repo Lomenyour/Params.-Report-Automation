@@ -7,16 +7,17 @@ import pandas as pd
 from openpyxl.cell import WriteOnlyCell
 from openpyxl.chart import Reference, ScatterChart, Series
 from openpyxl.chart.axis import ChartLines
-from openpyxl.chart.data_source import NumData, NumVal
+from openpyxl.chart.data_source import AxDataSource, NumData, NumDataSource, NumVal
+from openpyxl.chart.series import SeriesLabel, XYSeries
 from openpyxl.chart.legend import LegendEntry
 from openpyxl.chart.layout import Layout, ManualLayout
 from openpyxl.chart.shapes import GraphicalProperties
-from openpyxl.drawing.line import LineProperties
+from openpyxl.drawing.line import LineEndProperties, LineProperties
 from openpyxl.utils import get_column_letter
 from openpyxl.styles import Alignment, Font, PatternFill
 
-from chart_text import rich_text, label_series
-from chart_layout import cell_anchor
+from chart_text import rich_text, label_series, fitted_label_layout
+from chart_layout import cell_anchor, cell_size_points
 from RH_raschet import select_rh_variants, rh_equation
 
 
@@ -25,6 +26,16 @@ class RHPlot:
     result: dict
     start: pd.DataFrame
     end: pd.DataFrame
+
+
+def _arrow(start, end, color):
+    series = XYSeries(tx=SeriesLabel(v="Стрелка состояния"),
+        xVal=AxDataSource(numLit=NumData(ptCount=2, pt=[NumVal(idx=i, v=float(point[0])) for i, point in enumerate((start,end))])),
+        yVal=NumDataSource(numLit=NumData(ptCount=2, pt=[NumVal(idx=i, v=float(point[1])) for i, point in enumerate((start,end))])))
+    series.marker.symbol = "none"
+    series.graphicalProperties.line = LineProperties(solidFill=color, w=19050,
+        tailEnd=LineEndProperties(type="triangle", w="sm", len="sm"))
+    return series
 
 
 def prepare_rh_plots(values, results):
@@ -183,14 +194,20 @@ def add_rh_charts(sheet, plots, start_row, *, two_columns=True):
                                     x, dirty, "Линия загрязнённая", "C00000", True))
         xlow, xhigh = chart.x_axis.scaling.min, chart.x_axis.scaling.max
         ylow, yhigh = chart.y_axis.scaling.min, chart.y_axis.scaling.max
-        for prefix, name, state, xr, yr, color in (
-            ("end", "Bзагр", "Условно-загрязнённое", .38, .82, "C00000"),
-            ("start", "Bчист", "Условно-чистое", .68, .25, "4472C4"),
+        for prefix, name, state, xr, yr, target_fraction, color in (
+            ("end", "Bзагр", "Условно-загрязнённое", .36, .84, .50, "C00000"),
+            ("start", "Bчист", "Условно-чистое", .65, .21, .88, "4472C4"),
         ):
-            text = (f"{state} состояние {result[f'{prefix}_window_begin']:%d.%m.%Y}\n"
+            text = (f'"{state}"\nсостояние {result[f"{prefix}_window_begin"]:%d.%m.%Y}\n'
                     f"{rh_equation(name, result[f'k_{prefix}'], result[f'b_{prefix}'])}")
+            target_x = float(x[0] + (x[-1] - x[0]) * target_fraction)
+            target_y = result[f"k_{prefix}"] * target_x + result[f"b_{prefix}"]
+            chart.series.append(_arrow((xlow + (xhigh-xlow)*xr, ylow + (yhigh-ylow)*yr),
+                                       (target_x, target_y), color))
             chart.series.append(label_series(xlow + (xhigh - xlow) * xr,
-                ylow + (yhigh - ylow) * yr, text, bold=True, color=color))
+                ylow + (yhigh - ylow) * yr, text, bold=True, color=color, size=1400,
+                layout=fitted_label_layout(text, cell_size_points(sheet,column,top+2,14,33),
+                                           (.16+.79*xr, .04+.79*(1-yr)))))
         chart.legend.legendEntry = [LegendEntry(idx=i, delete=True) for i in range(2, len(chart.series))]
         sheet.add_chart(chart, cell_anchor(column, top + 2, 14, 33))
         bottom = max(bottom, top + 35)

@@ -25,8 +25,8 @@ from openpyxl.drawing.text import (
 )
 from openpyxl.utils.datetime import to_excel
 from openpyxl.styles import Alignment, Font, PatternFill
-from chart_text import FONT_SIZE, LABEL_SIZE, RichDataLabel
-from chart_layout import cell_anchor
+from chart_text import FONT_SIZE, RichDataLabel, fitted_label_layout
+from chart_layout import cell_anchor, cell_size_points
 
 DATA_COLUMNS = (
     ("date", "Дата"), ("vna", "ВНА, %"), ("t", "tнк, °C"),
@@ -34,6 +34,7 @@ DATA_COLUMNS = (
     ("excel_row", "Строка исходного Excel"),
 )
 CHART_ROWS = 40
+LABEL_SIZE = 1400
 
 
 @dataclass
@@ -251,12 +252,13 @@ def _rich_text(text, *, size=LABEL_SIZE, bold=True, centered=True):
 
 class _RichDataLabel(DataLabel):
     """openpyxl 3.1 не описывает c:tx; добавляем штатный rich text Excel."""
-    def __init__(self, text):
+    def __init__(self, text, layout=None):
         super().__init__(idx=0, dLblPos="ctr", showSerName=False, showVal=False, showCatName=False)
         self.text = text
+        self.layout = layout
 
     def to_tree(self, tagname=None, idx=None, namespace=None):
-        return RichDataLabel(self.text, bold=True).to_tree(tagname, idx, namespace)
+        return RichDataLabel(self.text, bold=True, size=LABEL_SIZE, layout=self.layout).to_tree(tagname, idx, namespace)
 
 
 def _format_axis(axis, title):
@@ -302,7 +304,7 @@ def _date_scale(axis, dates):
     axis.minorUnit = axis.majorUnit / 5
 
 
-def _annotation(points, text, *, label=False):
+def _annotation(points, text, *, label=False, layout=None):
     series = XYSeries(
         tx=SeriesLabel(v=text),
         xVal=AxDataSource(numLit=NumData(ptCount=len(points), pt=[
@@ -318,7 +320,7 @@ def _annotation(points, text, *, label=False):
     if label:
         series.graphicalProperties.line.noFill = True
         series.dLbls = DataLabelList(
-            dLbl=[_RichDataLabel(text)],
+            dLbl=[_RichDataLabel(text, layout)],
             showSerName=False, showVal=False, showCatName=False,
             showLegendKey=False, dLblPos="ctr", txPr=_text(LABEL_SIZE, bold=True, centered=True),
             spPr=GraphicalProperties(
@@ -335,9 +337,12 @@ def _annotation(points, text, *, label=False):
     return series
 
 
-def _add_annotations(chart, secondary, plot):
+def _add_annotations(chart, secondary, plot, chart_size):
     low, high = chart.y_axis.scaling.min, chart.y_axis.scaling.max
     other_low, other_high = secondary.y_axis.scaling.min, secondary.y_axis.scaling.max
+    def layout(text, moment, fraction):
+        x = (to_excel(pd.Timestamp(moment).to_pydatetime()) - chart.x_axis.scaling.min) / (chart.x_axis.scaling.max-chart.x_axis.scaling.min)
+        return fitted_label_layout(text,chart_size,(.09+.81*x,.04+.80*(1-fraction)))
     for suffix in ("1", "2"):
         moment = pd.Timestamp(plot.top[f"date_{suffix}"])
         eta = float(plot.top[f"eta_{suffix}"])
@@ -347,12 +352,14 @@ def _add_annotations(chart, secondary, plot):
         eta_text = f"{eta:.1f}".replace(".", ",")
         pi_text = f"{pi_k:.1f}".replace(".", ",")
         text = f"{moment:%d.%m.%Y}\nηoi = {eta_text} %\nπк = {pi_text}"
-        chart.series.append(_annotation([(moment, low + (high - low) * 0.48)], text, label=True))
+        chart.series.append(_annotation([(moment, low + (high - low) * 0.48)], text, label=True,
+                                        layout=layout(text,moment,.48)))
     middle = pd.Timestamp(plot.top["date_1"]) + (
         pd.Timestamp(plot.top["date_2"]) - pd.Timestamp(plot.top["date_1"])
     ) / 2
     chart.series.append(_annotation(
         [(middle, low + (high - low) * 0.90)], _chart_criteria(plot), label=True,
+        layout=layout(_chart_criteria(plot),middle,.90),
     ))
     chart.legend.legendEntry = [LegendEntry(idx=index, delete=True)
                                 for index in range(1, len(chart.series))]
@@ -451,7 +458,7 @@ def add_compressor_charts(sheet, plots, start_row, *, two_columns=True):
         secondary.series.append(_series(
             data_sheets[plot.period], plot, "pi_k", "Степень сжатия", "7030A0", trend=True
         ))
-        _add_annotations(chart, secondary, plot)
+        _add_annotations(chart, secondary, plot, cell_size_points(sheet,column,block_row+3,18,32))
         chart += secondary
         first_trend = sum(len(part.series) for part in chart._charts)
         trend_count = sum(series.trendline is not None

@@ -132,7 +132,10 @@ class AnnualizedEconomicsTest(unittest.TestCase):
             gas_tariff=2000.0,
             electricity_tariff=100.0,
             electricity_cost=20.0,
+            turbine={"name": "ГТУ-11", "number": "11", "model": "PG6111FA"},
         )
+        self.assertEqual(context["turbine"]["name"], "ГТУ-11")
+        self.assertEqual(context["turbine"]["model"], "PG6111FA")
         self.assertEqual(set(context["economics"]["annualized"]), {
             "fuel_overrun_nm3", "fuel_overrun_rub",
             "underproduction_mwh", "underproduction_rub",

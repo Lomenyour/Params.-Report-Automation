@@ -320,6 +320,7 @@ def build_report_data(
     electricity_tariff: float,
     electricity_cost: float,
     source_file: str | Path | None = None,
+    turbine: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Собирает JSON-контекст после финального выбора периодов."""
 
@@ -376,6 +377,7 @@ def build_report_data(
 
     return {
         "schema_version": "1.1",
+        "turbine": dict(turbine or {"name": "", "number": "", "model": ""}),
         "source": {
             "file_name": Path(source_file).name if source_file else "",
             "generated_at": datetime.now().isoformat(timespec="seconds"),
@@ -506,6 +508,7 @@ def generate_report(
         keep_trailing_newline=True,
     )
     context = dict(report_data)
+    context.setdefault("turbine", {"name": "", "number": "", "model": ""})
     # Дата относится к моменту формирования Word, а не к запуску расчёта.
     context["current_date"] = datetime.now().strftime("%d.%m.%Y")
     periods = context.get("periods", [])

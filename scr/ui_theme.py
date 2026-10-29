@@ -245,6 +245,12 @@ def build_widgets(app):
                                     values=list(app.stations_by_name), state="readonly")
     app.station_combo.pack(fill="x")
     app.station_combo.bind("<<ComboboxSelected>>", app._on_station_changed)
+    ttk.Label(inputs, text="ГТУ", style="Muted.TLabel").pack(anchor="w", pady=(10, 6))
+    app.unit_combo = ttk.Combobox(inputs, textvariable=app.unit_var, values=(), state="disabled")
+    app.unit_combo.pack(fill="x")
+    app.unit_combo.bind("<<ComboboxSelected>>", app._on_unit_changed)
+    app.unit_model_label = ttk.Label(inputs, text="Выберите ГТУ.", style="Muted.TLabel", wraplength=255)
+    app.unit_model_label.pack(fill="x", pady=(6,0))
     app.station_hint = ttk.Label(inputs, text="Выберите ТЭЦ или загрузите файл.",
                                   style="Muted.TLabel", wraplength=255)
     app.station_hint.pack(fill="x", pady=(6, 0))
@@ -401,6 +407,8 @@ def update_status(app):
         text = "Выберите исходную книгу"
     elif app.station_var.get() not in app.stations_by_name:
         text = "Выберите ТЭЦ"
+    elif app._selected_turbine() is None:
+        text = "Выберите ГТУ"
     else:
         text = "Готово к расчету"
     app.status_label.configure(text=text)

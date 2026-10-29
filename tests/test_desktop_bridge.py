@@ -24,6 +24,31 @@ _application = None
 
 
 class DesktopBridgeTest(unittest.TestCase):
+    def test_manual_turbine_overrides_filename_and_invalidates_results(self):
+        self.choose_book()
+        c = self.controller
+        self.assertEqual(c.unit_var.get(), 'ГТУ-11')
+        self.assertEqual(c.state()['units'], ['ГТУ-10', 'ГТУ-11'])
+        self.assertIn('PG6111FA', c.unit_model_label['text'])
+        c.last_result = object()
+        c.sensor_mappings = [SensorMapping('G2.CSGV', 'V')]
+        c.dispatch('value', json.dumps({'key':'unit','value':'ГТУ-10'}))
+        self.assertIsNone(c.last_result)
+        self.assertIsNone(c.sensor_mappings)
+        with patch.object(workflow.threading, 'Thread') as thread:
+            c.start_calculation()
+        self.assertEqual(thread.call_args.kwargs['args'][-2:], ('syz_tec','10'))
+        c.calculation_running = False
+        c.dispatch('value', json.dumps({'key':'station','value':'ТЭЦ-21'}))
+        self.assertEqual(c.unit_var.get(), '')
+        self.assertEqual(c.run_button['state'], 'disabled')
+        self.assertEqual(c.gas_tariff_var.get(), '')
+        c.dispatch('value', json.dumps({'key':'unit','value':'ГТУ-11Б'}))
+        with patch.object(workflow.threading, 'Thread') as thread:
+            c.start_calculation()
+        thread.assert_not_called()
+        c.messages.showerror.assert_called()
+
     def test_correction_dialog_requires_all_fields_and_preserves_identity(self):
         from correction_profiles import FIELDS
         c=self.controller
@@ -98,7 +123,7 @@ class DesktopBridgeTest(unittest.TestCase):
         self.assertEqual(c.gas_tariff_var.get(), "9,5")
         self.assertIsNone(c.last_result)
         self.assertEqual(c.excel_button["state"], "disabled")
-        self.choose_book("НКТЭЦ ГТ-11.xlsx")
+        self.choose_book("Неизвестная ТЭЦ ГТ-11.xlsx")
         self.assertEqual(c.station_var.get(), "")
         self.assertEqual(c.run_button["state"], "disabled")
 
@@ -125,7 +150,7 @@ class DesktopBridgeTest(unittest.TestCase):
             c.start_calculation()
         args = thread.call_args.kwargs["args"]
         self.assertEqual(args[4:7], (9.5, 2400.25, 1100.))
-        self.assertEqual(args[-1], "syz_tec")
+        self.assertEqual(args[-2:], ("syz_tec", "11"))
         self.assertIs(thread.call_args.kwargs["target"].__func__.__code__, workflow.CalculationApp._calculation_worker.__code__)
 
     def test_import_mode_keeps_sheet_choice_and_manual_tariffs(self):

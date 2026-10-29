@@ -85,11 +85,23 @@ class RHSingleChartTest(unittest.TestCase):
                          ("noFill", "solidFill", "gradFill", "pattFill")]
                 self.assertLessEqual(sum(fill is not None for fill in fills), 1)
             labels = ["".join(label.itertext()) for label in chart.findall(".//c:dLbl/c:tx/c:rich", ns)]
-            self.assertIn("Условно-чистое состояние 01.01.2026", labels[1])
-            self.assertIn("Условно-загрязнённое состояние 03.01.2026", labels[0])
+            self.assertIn('"Условно-чистое"состояние 01.01.2026', labels[1])
+            self.assertIn('"Условно-загрязнённое"состояние 03.01.2026', labels[0])
             for label in chart.findall(".//c:dLbl", ns):
-                self.assertIsNone(label.find("c:layout", ns))
-                self.assertEqual(label.find("c:tx/c:rich/a:p/a:pPr/a:defRPr", ns).get("sz"), "1000")
+                self.assertIsNotNone(label.find("c:layout/c:manualLayout/c:w", ns))
+                self.assertEqual(label.find("c:tx/c:rich/a:p/a:pPr/a:defRPr", ns).get("sz"), "1400")
+                paragraphs = label.findall("c:tx/c:rich/a:p", ns)
+                self.assertEqual(len(paragraphs), 3)
+                text = ''.join(label.itertext())
+                self.assertIn(' · N', text)
+                self.assertNotIn('×', text)
+            arrows = [series for series in chart.findall('.//c:ser', ns)
+                      if series.find('c:spPr/a:ln/a:tailEnd', ns) is not None]
+            self.assertEqual(len(arrows), 2)
+            for arrow, prefix in zip(arrows, ('end', 'start')):
+                x = float(arrow.findall('c:xVal/c:numLit/c:pt/c:v', ns)[-1].text)
+                y = float(arrow.findall('c:yVal/c:numLit/c:pt/c:v', ns)[-1].text)
+                self.assertAlmostEqual(y, plots[0].result[f'k_{prefix}']*x + plots[0].result[f'b_{prefix}'])
         output.seek(0)
         saved = load_workbook(output)
         data = saved["Данные РХ"]

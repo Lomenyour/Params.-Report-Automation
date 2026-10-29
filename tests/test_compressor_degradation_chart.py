@@ -89,7 +89,7 @@ class CompressorDegradationChartTest(unittest.TestCase):
                 for rich in rich_labels:
                     for paragraph in rich.findall("a:p", ns):
                         style = paragraph.find("a:pPr/a:defRPr", ns)
-                        self.assertEqual(style.get("sz"), "1000")
+                        self.assertEqual(style.get("sz"), "1400")
                         self.assertEqual(style.find("a:latin", ns).get("typeface"), "Times New Roman")
                 self.assertTrue(root.findall(".//a:rPr[@baseline='-25000']", ns))
                 criteria_lines = ["".join(node.itertext())

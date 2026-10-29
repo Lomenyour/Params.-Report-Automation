@@ -105,7 +105,8 @@ class CorrectionProfile:
         if not isinstance(data, dict):
             raise ValueError("Некорректная запись профиля поправок.")
         station, turbine = str(data.get("station_id", "")), str(data.get("unit", ""))
-        if not station or not turbine.isdigit():
+        from station_profiles import valid_unit_number
+        if not station or not valid_unit_number(turbine):
             raise ValueError("В профиле поправок не указаны ТЭЦ и номер ГТ.")
         if (station_id is not None and station != station_id) or (unit is not None and turbine != str(unit)):
             raise ValueError("Профиль поправок относится к другой ТЭЦ или ГТ.")

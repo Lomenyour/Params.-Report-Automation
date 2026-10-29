@@ -112,6 +112,7 @@ def _profile_key(book_path: str | Path) -> str:
 def load_saved_mappings(
     book_path: str | Path, sheet_headers: list[str],
     *, station_id: str | None = None,
+    unit: str | None = None,
     repository: StationRepository | None = None,
 ) -> list[SensorMapping] | None:
     station = resolve_station(book_path, station_id, repository)
@@ -122,11 +123,12 @@ def load_saved_mappings(
         return None
     try:
         saved = json.loads(path.read_text(encoding="utf-8"))
-        key = f"{station.id}|{unit_number(book_path) or ''}|{'|'.join(sheet_headers)}"
+        turbine = unit or unit_number(book_path)
+        key = f"{station.id}|{turbine or ''}|{'|'.join(sheet_headers)}"
         entries = saved.get(key)
         # Старые назначения переносим только при совпадении станции по имени.
         detected = resolve_station(book_path, repository=repository)
-        if entries is None and detected is not None and detected.id == station.id:
+        if entries is None and detected is not None and detected.id == station.id and turbine == unit_number(book_path):
             entries = saved.get(f"{_profile_key(book_path)}|{'|'.join(sheet_headers)}")
         if entries is None:
             return None
@@ -139,6 +141,7 @@ def save_mappings(
     book_path: str | Path, sheet_headers: list[str],
     mappings: list[SensorMapping],
     *, station_id: str | None = None,
+    unit: str | None = None,
     repository: StationRepository | None = None,
 ) -> None:
     station = resolve_station(book_path, station_id, repository)
@@ -151,7 +154,7 @@ def save_mappings(
             saved = {}
     except (OSError, ValueError):
         saved = {}
-    key = f"{station.id}|{unit_number(book_path) or ''}|{'|'.join(sheet_headers)}"
+    key = f"{station.id}|{unit or unit_number(book_path) or ''}|{'|'.join(sheet_headers)}"
     saved[key] = [
         {"source": item.source, "target": item.target, "factor": item.factor}
         for item in mappings
@@ -164,12 +167,13 @@ def suggest_mappings(
     source_headers: list[str], book_path: str | Path,
     verified_duplicates: set[str] | None = None,
     *, station_id: str | None = None,
+    unit: str | None = None,
     repository: StationRepository | None = None,
 ) -> list[SensorMapping]:
     """Предлагает только каналы выбранной ТЭЦ и ГТ; неизвестные — вручную."""
     repository = repository or get_station_repository()
     station = resolve_station(book_path, station_id, repository)
-    gt_number = unit_number(book_path)
+    gt_number = unit or unit_number(book_path)
     channels = repository.get_channels(station.id) if station else ()
     by_code = {channel.code.casefold(): channel for channel in channels
                if channel.unit_number == gt_number}
@@ -325,6 +329,7 @@ def assemble_sensor_data(
     source_sheet: str,
     mappings: list[SensorMapping],
     *, station_id: str | None = None,
+    unit: str | None = None,
     repository: StationRepository | None = None,
 ) -> AssembledData:
     repository = repository or get_station_repository()
@@ -336,7 +341,7 @@ def assemble_sensor_data(
     duplicates = _verified_duplicates(raw, station.id, repository)
     validate_mappings(mappings, list(raw.columns), duplicates, headers,
                       allowed_targets=sensor_target_columns(station.id, repository))
-    gt_number = unit_number(book_path)
+    gt_number = unit or unit_number(book_path)
     if gt_number:
         channels = repository.get_channels(station.id)
         codes = {str(col).casefold() for col in raw.columns}
@@ -383,21 +388,23 @@ def assemble_sensor_data(
 
 
 def read_calculation_profile(book_path: str | Path, *, gas_passport=None,
-                             correction_profile=None, station_id=None):
+                             correction_profile=None, station_id=None, unit=None, repository=None):
     """Рабочий профиль: только именованный JSON/встроенный набор и паспорт газа."""
     from correction_profiles import require_profile
     from gas_passport import resolve_passport
     from station_profiles import unit_number
-    station = resolve_station(book_path, station_id)
+    station = resolve_station(book_path, station_id, repository)
     if station is None:
         raise ValueError("Выберите ТЭЦ для профиля поправок.")
-    turbine = unit_number(book_path)
+    turbine = unit or unit_number(book_path)
     corrections = correction_profile or require_profile(book_path, station.id, turbine)
     if corrections.station_id != station.id or corrections.unit != turbine:
         raise ValueError("Выбран профиль поправок другой ТЭЦ или ГТ.")
     passport = gas_passport or resolve_passport(book_path, station.id, turbine)
     if passport is None:
         raise ValueError("Заполните паспорт газа для выбранных ТЭЦ и ГТ.")
+    if passport.station_id != station.id or passport.unit != turbine:
+        raise ValueError("Паспорт газа относится к другой ТЭЦ или ГТУ.")
     return {**corrections.values, "gas_c_h": passport.carbon_hydrogen_ratio,
             "gas_density": passport.density_kg_per_nm3,
             "qnr_denominator": passport.density_kg_per_nm3,

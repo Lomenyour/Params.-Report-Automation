@@ -55,7 +55,8 @@ class GasPassport:
     @classmethod
     def from_dict(cls, data, station_id=None, unit=None):
         station, turbine = str(data.get("station_id", "")), str(data.get("unit", ""))
-        if not station or not turbine or not turbine.isdigit():
+        from station_profiles import valid_unit_number
+        if not station or not valid_unit_number(turbine):
             raise ValueError("В паспорте газа не указаны ТЭЦ и номер ГТ.")
         if station_id is not None and station != station_id or unit is not None and turbine != str(unit):
             raise ValueError("Паспорт газа относится к другой ТЭЦ или ГТ.")

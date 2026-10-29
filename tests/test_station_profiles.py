@@ -26,7 +26,7 @@ class StationProfilesTest(unittest.TestCase):
         for filename in ("СызТЭЦ ГТ-11 2кв.xlsm", "сызтэц ГТ-10.xlsx",
                          "Сызранская_ТЭЦ ГТ-11.xlsx", "Сыз-ТЭЦ ГТ-11.xlsx"):
             self.assertEqual(self.repository.detect_station(filename).id, "syz_tec")
-        self.assertIsNone(self.repository.detect_station("НКТЭЦ ГТ-11.xlsx"))
+        self.assertEqual(self.repository.detect_station("НКТЭЦ ГТ-11.xlsx").id, "novokuybyshevskaya_tec")
         self.assertIsNone(self.repository.detect_station("данные.xlsx"))
         self.assertEqual(unit_number("Новая ТЭЦ ГТ-123.xlsx"), "123")
         tariffs = self.repository.get_tariffs("syz_tec")
@@ -181,7 +181,7 @@ class StationGuiTest(unittest.TestCase):
         self.assertEqual(self.app.gas_tariff_var.get(), "7,773")
 
     def test_unknown_file_clears_auto_selection_and_manual_override_works(self):
-        for filename in ("СызТЭЦ ГТ-11.xlsx", "НКТЭЦ ГТ-11.xlsx"):
+        for filename in ("СызТЭЦ ГТ-11.xlsx", "Неизвестная ТЭЦ ГТ-11.xlsx"):
             with patch("app.filedialog.askopenfilename", return_value=filename), \
                  patch("app.load_chart_events", return_value=()):
                 self.app.choose_file()
@@ -201,7 +201,7 @@ class StationGuiTest(unittest.TestCase):
             self.app.start_calculation()
         args = worker.call_args.kwargs["args"]
         self.assertEqual(args[4:7], (9.5, 2400.25, 1100.))
-        self.assertEqual(args[-1], "syz_tec")
+        self.assertEqual(args[-2:], ("syz_tec", "11"))
 
 
 if __name__ == "__main__":

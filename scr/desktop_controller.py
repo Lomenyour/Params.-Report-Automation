@@ -26,7 +26,7 @@ from correction_profiles_ui import correction_groups, profile_from_fields
 # окружение UI: диалоги и переменные вместо Tkinter общаются с Qt WebChannel.
 WORKFLOW_METHODS = (
     "_invalidate_results", "_update_input_controls", "_apply_station",
-    "_on_station_changed", "_on_mode_changed", "_on_raw_sheet_changed",
+    "_on_station_changed", "_selected_turbine", "_on_unit_changed", "_on_mode_changed", "_on_raw_sheet_changed",
     "clear_raw_file", "choose_file", "review_chart_events", "_clear_mapping",
     "choose_raw_file", "review_mapping", "start_calculation", "_parse_tariff",
     "_calculation_worker", "_poll_output", "_periods_text", "_format_cell", "review_gas_passport", "review_corrections",
@@ -260,11 +260,12 @@ class DesktopController(QObject):
         self.station_repository = workflow.get_station_repository()
         self.stations_by_name = {station.name: station for station in self.station_repository.list_stations()}
         self.station_var = Value("", self.changed)
+        self.unit_var = Value("", self.changed)
         self.station_manually_selected = False
         self.gas_tariff_var = Value("0", self.changed)
         self.electricity_tariff_var = Value("0", self.changed)
         self.electricity_cost_var = Value("0", self.changed)
-        names = ("station_combo", "events_button", "choose_button", "raw_button", "mapping_button", "gas_passport_button", "corrections_button",
+        names = ("station_combo", "unit_combo", "unit_model_label", "events_button", "choose_button", "raw_button", "mapping_button", "gas_passport_button", "corrections_button",
                  "clear_raw_button", "raw_sheet_combo", "run_button", "excel_button", "report_button",
                  "raw_label", "file_label", "station_hint", "import_controls", "status_label", "progress")
         self.controls = {name: Control(self.changed) for name in names}
@@ -297,12 +298,13 @@ class DesktopController(QObject):
         return {
             "controls": {name: control.attributes for name, control in self.controls.items()},
             "values": {name: getattr(self, name).get() for name in (
-                "calculation_mode", "selected_raw_sheet", "station_var", "gas_tariff_var",
+                "calculation_mode", "selected_raw_sheet", "station_var", "unit_var", "gas_tariff_var",
                 "electricity_tariff_var", "electricity_cost_var")},
             "stations": list(self.stations_by_name), "tab": self.chart_tabs.key,
             "file": str(self.selected_file) if self.selected_file else "",
             "filename": self.selected_file.name if self.selected_file else "",
-            "station": self.station_var.get(), "unit": unit_number(self.selected_file.name) if self.selected_file else "",
+            "station": self.station_var.get(), "unit": self.unit_var.get(),
+            "units": self.unit_combo.attributes.get("values", []),
             "modeDisabled": any(button.attributes.get("state") == "disabled" for button in self.mode_buttons),
             "tariffsDisabled": any(entry.attributes.get("state") == "disabled" for entry in self.tariff_entries),
             "running": self.calculation_running, "exporting": self.export_running,
@@ -457,6 +459,7 @@ class DesktopController(QObject):
         elif name == "value" and not (self.calculation_running or self.export_running):
             key, value = payload.get("key"), payload.get("value", "")
             fields = {"station": (self.station_var, self._on_station_changed),
+                      "unit": (self.unit_var, self._on_unit_changed),
                       "mode": (self.calculation_mode, self._on_mode_changed),
                       "sheet": (self.selected_raw_sheet, self._on_raw_sheet_changed),
                       "gas": (self.gas_tariff_var, None), "electricity": (self.electricity_tariff_var, None),

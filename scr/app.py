@@ -353,6 +353,7 @@ class CalculationApp(tk.Tk):
             station.name: station for station in self.station_repository.list_stations()
         }
         self.station_var = tk.StringVar(value="")
+        self.unit_var = tk.StringVar(value="")
         self.station_manually_selected = False
         self.gas_tariff_var = tk.StringVar(value="0")
         self.electricity_tariff_var = tk.StringVar(value="0")
@@ -382,26 +383,28 @@ class CalculationApp(tk.Tk):
         has_book = self.selected_file is not None
         has_raw = self.selected_raw_file is not None
         has_station = self.station_var.get() in self.stations_by_name
+        has_unit = self._selected_turbine() is not None
         self.station_combo.configure(state="readonly" if idle else "disabled")
+        self.unit_combo.configure(state="readonly" if idle and has_station else "disabled")
         self.events_button.configure(
             state="normal" if idle and has_book else "disabled",
             text=f"События графика ({len(self.chart_events)})",
         )
         self.choose_button.configure(state="normal" if idle else "disabled")
         if hasattr(self, "gas_passport_button"):
-            self.gas_passport_button.configure(state="normal" if idle and has_book and has_station else "disabled")
+            self.gas_passport_button.configure(state="normal" if idle and has_book and has_unit else "disabled")
         if hasattr(self, "corrections_button"):
-            self.corrections_button.configure(state="normal" if idle and has_book and has_station else "disabled")
+            self.corrections_button.configure(state="normal" if idle and has_book and has_unit else "disabled")
         for button in self.mode_buttons:
             button.configure(state="normal" if idle else "disabled")
         for entry in self.tariff_entries:
             entry.configure(state="normal" if idle else "disabled")
         self.raw_button.configure(state="normal" if idle and importing and has_book else "disabled")
         raw_ready = idle and importing and has_book and has_raw
-        self.mapping_button.configure(state="normal" if raw_ready and has_station else "disabled")
+        self.mapping_button.configure(state="normal" if raw_ready and has_station and has_unit else "disabled")
         self.clear_raw_button.configure(state="normal" if raw_ready else "disabled")
         self.raw_sheet_combo.configure(state="readonly" if raw_ready else "disabled")
-        can_run = idle and has_book and has_station and (
+        can_run = idle and has_book and has_station and has_unit and (
             not importing or (has_raw and bool(self.selected_raw_sheet.get()))
         )
         self.run_button.configure(
@@ -425,11 +428,11 @@ class CalculationApp(tk.Tk):
         if station is not None:
             tariffs = self.station_repository.get_tariffs(station.id)
             for variable, value in (
-                (self.gas_tariff_var, tariffs.gas_rub_per_nm3),
-                (self.electricity_tariff_var, tariffs.electricity_rub_per_mwh),
-                (self.electricity_cost_var, tariffs.electricity_cost_rub_per_mwh),
+                (self.gas_tariff_var, tariffs.gas_rub_per_nm3 if tariffs else None),
+                (self.electricity_tariff_var, tariffs.electricity_rub_per_mwh if tariffs else None),
+                (self.electricity_cost_var, tariffs.electricity_cost_rub_per_mwh if tariffs else None),
             ):
-                variable.set(f"{value:g}".replace(".", ","))
+                variable.set(f"{value:g}".replace(".", ",") if value is not None else "")
             self.station_hint.configure(text=(
                 "Определена по имени файла; можно изменить."
                 if automatic else "Выбрана вручную. Тарифы можно изменить."
@@ -439,6 +442,23 @@ class CalculationApp(tk.Tk):
                              self.electricity_cost_var):
                 variable.set("0")
             self.station_hint.configure(text="ТЭЦ не распознана. Выберите её из списка.")
+        choices = self.station_repository.list_turbines(station.id) if station else ()
+        self.unit_combo.configure(values=[item.name for item in choices])
+        detected = self.station_repository.detect_turbine(self.selected_file, station.id) if station and self.selected_file else None
+        self.unit_var.set(detected.name if detected else "")
+        self._on_unit_changed()
+
+    def _selected_turbine(self):
+        station = self.stations_by_name.get(self.station_var.get())
+        if station is None:
+            return None
+        return next((item for item in self.station_repository.list_turbines(station.id)
+                     if item.name == self.unit_var.get()), None)
+
+    def _on_unit_changed(self, _event=None):
+        turbine = self._selected_turbine()
+        self.unit_model_label.configure(text=f"Модель: {turbine.model}" if turbine else "Выберите ГТУ.")
+        self._clear_mapping()
         self._invalidate_results()
 
     def _on_station_changed(self, _event=None):
@@ -448,9 +468,13 @@ class CalculationApp(tk.Tk):
         if self.calculation_running or self.export_running or self.selected_file is None:
             return
         station = self.stations_by_name.get(self.station_var.get())
-        turbine = unit_number(self.selected_file)
-        if station is None or turbine is None:
-            messagebox.showerror("Поправки", "Выберите ТЭЦ; имя книги должно содержать номер ГТ.", parent=self)
+        selected = self._selected_turbine()
+        turbine = selected.number if selected else None
+        if station is None or selected is None:
+            messagebox.showerror("Поправки", "Выберите ТЭЦ и ГТУ.", parent=self)
+            return
+        if selected.calculation_method != "syz_tec_v1":
+            messagebox.showerror("Поправки", "Методика поправок для этой ГТУ ещё не подключена.", parent=self)
             return
         try:
             profile = resolve_profile(self.selected_file, station.id, turbine)
@@ -468,9 +492,10 @@ class CalculationApp(tk.Tk):
         if self.calculation_running or self.export_running or self.selected_file is None:
             return
         station = self.stations_by_name.get(self.station_var.get())
-        turbine = unit_number(self.selected_file)
+        selected = self._selected_turbine()
+        turbine = selected.number if selected else None
         if station is None or turbine is None:
-            messagebox.showerror("Паспорт газа", "Выберите ТЭЦ; имя книги должно содержать номер ГТ, например ГТ-11.", parent=self)
+            messagebox.showerror("Паспорт газа", "Выберите ТЭЦ и ГТУ.", parent=self)
             return
         try:
             passport = resolve_passport(self.selected_file, station.id, turbine)
@@ -581,10 +606,9 @@ class CalculationApp(tk.Tk):
                 self._apply_station(station, automatic=True)
         self._clear_mapping()
         self.raw_sheet_combo.configure(values=sheets, state="readonly")
-        name = self.selected_file.stem.lower() if self.selected_file else ""
-        expected = "gt10" if "10" in name else "gt11" if "11" in name else ""
+        turbine = self._selected_turbine()
         default = next(
-            (sheet for sheet in sheets if expected in sheet.lower()),
+            (sheet for sheet in sheets if turbine and unit_number(sheet) == turbine.number),
             sheets[0] if sheets else "",
         )
         self.selected_raw_sheet.set(default)
@@ -595,8 +619,9 @@ class CalculationApp(tk.Tk):
         if not self.selected_file or not self.selected_raw_file:
             return False
         station = self.stations_by_name.get(self.station_var.get())
-        if station is None:
-            messagebox.showerror("Не выбрана ТЭЦ", "Выберите ТЭЦ из списка.", parent=self)
+        turbine = self._selected_turbine()
+        if station is None or turbine is None:
+            messagebox.showerror("Не выбрана ГТУ", "Выберите ТЭЦ и ГТУ из списка.", parent=self)
             return False
         sheet = self.selected_raw_sheet.get().strip()
         if not sheet:
@@ -608,11 +633,11 @@ class CalculationApp(tk.Tk):
                 repository=self.station_repository,
             )
             suggestions = (
-                load_saved_mappings(self.selected_file, headers, station_id=station.id,
+                load_saved_mappings(self.selected_file, headers, station_id=station.id, unit=turbine.number,
                                     repository=self.station_repository)
                 or suggest_mappings(
                     headers, self.selected_file, verified_duplicates,
-                    station_id=station.id, repository=self.station_repository,
+                    station_id=station.id, unit=turbine.number, repository=self.station_repository,
                 )
             )
             targets = template_columns(self.selected_file)
@@ -629,7 +654,7 @@ class CalculationApp(tk.Tk):
         self.mapping_sheet = sheet
         self._invalidate_results()
         try:
-            save_mappings(self.selected_file, headers, dialog.result, station_id=station.id,
+            save_mappings(self.selected_file, headers, dialog.result, station_id=station.id, unit=turbine.number,
                           repository=self.station_repository)
         except (OSError, ValueError) as error:
             messagebox.showwarning(
@@ -645,6 +670,13 @@ class CalculationApp(tk.Tk):
         station = self.stations_by_name.get(self.station_var.get())
         if station is None:
             messagebox.showerror("Не выбрана ТЭЦ", "Выберите ТЭЦ перед запуском расчёта.", parent=self)
+            return
+        turbine = self._selected_turbine()
+        if turbine is None:
+            messagebox.showerror("Не выбрана ГТУ", "Выберите ГТУ перед запуском расчёта.", parent=self)
+            return
+        if turbine.calculation_method != "syz_tec_v1":
+            messagebox.showerror("Методика не подключена", "Для выбранной ГТУ расчётная методика ещё не подключена. Профиль другой турбины не используется.", parent=self)
             return
         importing = self.calculation_mode.get() == "import"
         raw_file_path = self.selected_raw_file if importing else None
@@ -691,6 +723,7 @@ class CalculationApp(tk.Tk):
                 electricity_cost,
                 self.chart_events,
                 station.id,
+                turbine.number,
             ),
             daemon=True,
         )
@@ -722,6 +755,7 @@ class CalculationApp(tk.Tk):
         electricity_cost: float,
         chart_events: tuple[ChartEvent, ...] = (),
         station_id: str | None = None,
+        turbine_number: str | None = None,
     ):
         writer = QueueWriter(self.output_queue)
         calculation_started = None
@@ -733,7 +767,14 @@ class CalculationApp(tk.Tk):
                 print(f"Выбран файл: {file_path}")
                 print("Лист: Данные")
 
-                turbine = unit_number(file_path)
+                selected_turbine = (self.station_repository.get_turbine(station.id, turbine_number)
+                    if turbine_number else self.station_repository.detect_turbine(file_path, station.id))
+                if selected_turbine is None:
+                    raise ValueError("Выберите ГТУ: имя файла не позволяет однозначно определить агрегат.")
+                if selected_turbine.calculation_method != "syz_tec_v1":
+                    raise ValueError("Методика выбранной ГТУ ещё не подключена.")
+                turbine = selected_turbine.number
+                print(f"ГТУ: {selected_turbine.name}; модель: {selected_turbine.model}")
                 correction_profile = require_profile(file_path, station.id, turbine)
                 print(f"Именованные поправки: ГТ-{turbine}, метод {correction_profile.method}, "
                       f"версия {correction_profile.revision}; 63 коэффициента.")
@@ -742,7 +783,8 @@ class CalculationApp(tk.Tk):
                 profile = None
                 if passport is not None:
                     profile = read_calculation_profile(file_path, gas_passport=passport,
-                        correction_profile=correction_profile, station_id=station.id)
+                        correction_profile=correction_profile, station_id=station.id,
+                        unit=turbine, repository=self.station_repository)
                     print(f"Паспорт газа: {station.name} ГТ-{turbine}; ρ = {passport.density_kg_per_nm3:g} кг/нм³; "
                           f"Qнр = {passport.q_lower_mj_per_nm3:g} МДж/нм³; C/H = {passport.carbon_hydrogen_ratio:g}.")
                     print(f"Qнр для массовой поправки: {passport.q_lower_mj_per_kg:g} МДж/кг.")
@@ -761,7 +803,7 @@ class CalculationApp(tk.Tk):
                     print(f"Исходная выгрузка: {raw_file_path.name}, лист: {raw_sheet}")
                     assembled = assemble_sensor_data(
                         file_path, raw_file_path, raw_sheet, mappings or [],
-                        station_id=station.id, repository=self.station_repository,
+                        station_id=station.id, unit=turbine, repository=self.station_repository,
                     )
                     print(
                         f"Получасовых строк: {assembled.imported_rows}; "
@@ -909,6 +951,8 @@ class CalculationApp(tk.Tk):
                     electricity_tariff=electricity_tariff,
                     electricity_cost=electricity_cost,
                     source_file=file_path,
+                    turbine={"name": selected_turbine.name, "number": turbine,
+                             "model": selected_turbine.model, "station_id": station.id},
                 )
                 suffix = "_обновлённые_данные_результаты" if raw_file_path is not None else "_результаты"
                 snapshot = CalculationSnapshot(

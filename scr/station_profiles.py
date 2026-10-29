@@ -16,6 +16,16 @@ class Station:
     id: str
     name: str
     filename_aliases: tuple[str, ...]
+    company_id: str = ""
+
+
+@dataclass(frozen=True)
+class Turbine:
+    station_id: str
+    number: str
+    name: str
+    model: str
+    calculation_method: str = ""
 
 
 @dataclass(frozen=True)
@@ -50,7 +60,10 @@ class StationRepository(Protocol):
     def list_stations(self) -> tuple[Station, ...]: ...
     def get_station(self, station_id: str) -> Station: ...
     def detect_station(self, filename: str | Path) -> Station | None: ...
-    def get_tariffs(self, station_id: str) -> StationTariffs: ...
+    def get_tariffs(self, station_id: str) -> StationTariffs | None: ...
+    def list_turbines(self, station_id: str) -> tuple[Turbine, ...]: ...
+    def get_turbine(self, station_id: str, number: str) -> Turbine: ...
+    def detect_turbine(self, filename: str | Path, station_id: str) -> Turbine | None: ...
     def get_channels(self, station_id: str) -> tuple[SensorChannel, ...]: ...
     def get_duplicates(self, station_id: str) -> tuple[DuplicateChannel, ...]: ...
 
@@ -60,8 +73,18 @@ def _normalized_name(text: str) -> str:
 
 
 def unit_number(filename: str | Path) -> str | None:
-    match = re.search(r"(?:ГТ|GT)[-\s_]*(\d+)(?=$|[^0-9])", Path(filename).stem, re.I)
-    return match.group(1) if match else None
+    numbers = _unit_numbers(filename)
+    return next(iter(numbers)) if len(numbers) == 1 else None
+
+
+def _unit_numbers(filename):
+    matches = re.findall(r"(?<![\w])(?:ГТУ?|GTU?)[-\s_]*(\d+[A-Za-zА-Яа-яЁё]?)(?![A-Za-zА-Яа-яЁё0-9])",
+                         Path(filename).stem.replace("_", " "), re.I)
+    return {match.upper() for match in matches}
+
+
+def valid_unit_number(value: str) -> bool:
+    return bool(re.fullmatch(r"\d+[A-ZА-ЯЁ]?", value))
 
 
 def catalog_path() -> Path:
@@ -86,9 +109,12 @@ class JsonStationRepository:
         if raw["schema_version"] != 1:
             raise ValueError("Неподдерживаемая версия справочника.")
         self._stations: dict[str, Station] = {}
+        self.companies = {row["id"]: row["name"] for row in raw.get("companies", [])}
         station_names: set[str] = set()
         for row in raw["stations"]:
-            station = Station(row["id"], row["name"], tuple(row["filename_aliases"]))
+            station = Station(row["id"], row["name"], tuple(row["filename_aliases"]), row.get("company_id", ""))
+            if station.company_id and station.company_id not in self.companies:
+                raise ValueError("Не найдена компания станции.")
             name_key = _normalized_name(station.name)
             if not station.id or not name_key or station.id in self._stations or name_key in station_names:
                 raise ValueError("Пустое или повторное название/ID ТЭЦ.")
@@ -109,8 +135,15 @@ class JsonStationRepository:
             if any(not math.isfinite(value) or value < 0 for value in values):
                 raise ValueError(f"Неверные тарифы для ТЭЦ {key}.")
             self._tariffs[key] = StationTariffs(*values)
-        if self._tariffs.keys() != self._stations.keys():
-            raise ValueError("Для каждой ТЭЦ нужен набор из трёх тарифов.")
+        self._turbines: dict[tuple[str, str], Turbine] = {}
+        for row in raw.get("turbines", []):
+            self.get_station(row["station_id"])
+            turbine = Turbine(row["station_id"], str(row["number"]), row["name"],
+                              row["model"], row.get("calculation_method", ""))
+            key = (turbine.station_id, turbine.number)
+            if key in self._turbines or not valid_unit_number(turbine.number) or not turbine.name or not turbine.model:
+                raise ValueError("Пустая или повторная запись ГТУ/модели.")
+            self._turbines[key] = turbine
 
         parameters = {}
         for row in raw["sensor_parameters"]:
@@ -159,15 +192,33 @@ class JsonStationRepository:
 
     def detect_station(self, filename: str | Path) -> Station | None:
         name = _normalized_name(Path(filename).stem)
-        matches = [station for station in self.list_stations() if any(
-            _normalized_name(alias) and _normalized_name(alias) in name
-            for alias in (station.name, *station.filename_aliases)
-        )]
-        return matches[0] if len(matches) == 1 else None
+        matches = [(max((len(_normalized_name(alias)) for alias in
+                    (station.name, *station.filename_aliases)
+                    if _normalized_name(alias) and _normalized_name(alias) in name), default=0), station)
+                   for station in self.list_stations()]
+        longest = max(score for score, _ in matches)
+        best = [station for score, station in matches if score == longest and score > 0]
+        return best[0] if len(best) == 1 else None
 
-    def get_tariffs(self, station_id: str) -> StationTariffs:
+    def get_tariffs(self, station_id: str) -> StationTariffs | None:
         self.get_station(station_id)
-        return self._tariffs[station_id]
+        return self._tariffs.get(station_id)
+
+    def list_turbines(self, station_id: str) -> tuple[Turbine, ...]:
+        self.get_station(station_id)
+        return tuple(row for row in self._turbines.values() if row.station_id == station_id)
+
+    def get_turbine(self, station_id: str, number: str) -> Turbine:
+        self.get_station(station_id)
+        try:
+            return self._turbines[station_id, str(number)]
+        except KeyError as error:
+            raise ValueError(f"ГТУ-{number} отсутствует в справочнике выбранной станции.") from error
+
+    def detect_turbine(self, filename: str | Path, station_id: str) -> Turbine | None:
+        candidates = _unit_numbers(filename)
+        matches = [row for row in self.list_turbines(station_id) if row.number in candidates]
+        return matches[0] if len(matches) == 1 else None
 
     def get_channels(self, station_id: str) -> tuple[SensorChannel, ...]:
         self.get_station(station_id)

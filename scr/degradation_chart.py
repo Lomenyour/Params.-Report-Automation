@@ -259,10 +259,10 @@ def _add_period_labels(chart, plot):
         first = period["points_start"]
         moment = first + (period["points_end"] - first) / 2
         texts = (
-            ("fuel_specific", _delta_label("Δbприв", period["delta_b"], "нм³/(МВт·ч)")),
+            ("fuel_specific", _delta_label("Δbприв", period["delta_b"], "нм³/МВт·ч")),
             ("vna", f"{period['vna_start']:.1f} % ≤ ВНА < {period['vna_end']:.1f} %".replace(".", ",")),
             ("power", _delta_label("ΔNприв", period["delta_n"], "МВт")),
-            ("eta_gtu", _delta_label("ΔηГТУ", period["delta_eta"], "п.п.")),
+            ("eta_gtu", _delta_label("ΔηГТУ", period["delta_eta"], "%")),
         )
         for key, text in texts:
             value = period["levels"][key]

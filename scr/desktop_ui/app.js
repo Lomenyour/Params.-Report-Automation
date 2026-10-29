@@ -105,8 +105,13 @@
   function emptyState() {
     const fragment = byId('empty-template').content.cloneNode(true);
     const running = model?.running;
+    const missing = model?.file && (!model.station ? 'ТЭЦ' : !model.unit ? 'ГТУ' : '');
     fragment.querySelector('#empty-title').textContent = running ? 'Расчёт выполняется' : model?.file ? 'Всё готово к расчету' : 'Начните с исходных данных';
     fragment.querySelector('#empty-description').textContent = running ? 'Подготавливаем графики и таблицы. Ход расчёта — в журнале ниже.' : model?.file ? 'Нажмите «Расчет» в панели подготовки. Перед вычислением можно проверить и изменить периоды.' : 'Выберите Excel-книгу и ТЭЦ в панели подготовки. Здесь появятся графики и таблицы расчёта.';
+    if (!running && missing) {
+      fragment.querySelector('#empty-title').textContent = `Выберите ${missing}`;
+      fragment.querySelector('#empty-description').textContent = 'Укажите станцию и ГТУ в панели подготовки. Название модели появится после выбора агрегата.';
+    }
     panel.replaceChildren(fragment);
     fillIcons(panel);
   }
@@ -183,6 +188,8 @@
     });
     const values = model.values;
     setOptions(byId('station'), model.stations, values.station_var, 'Выберите ТЭЦ');
+    setOptions(byId('unit'), model.units, values.unit_var, 'Выберите ГТУ');
+    byId('unit-model').textContent = model.controls.unit_model_label.text || 'Выберите ГТУ.';
     setOptions(byId('sheet'), model.controls.raw_sheet_combo.values || [], values.selected_raw_sheet);
     const inputFields = {gas:'gas_tariff_var', electricity:'electricity_tariff_var', cost:'electricity_cost_var'};
     Object.entries(inputFields).forEach(([id, key]) => { const input = byId(id); if (document.activeElement !== input) input.value = values[key]; input.disabled = model.tariffsDisabled; });
@@ -199,7 +206,7 @@
     byId('status-dot').className = `gtu-dot ${model.running || model.exporting ? 'busy' : model.hasResult ? '' : 'waiting'}`;
     byId('progress').hidden = !model.controls.progress.active;
     byId('journal-status').textContent = model.running ? 'Выполняется' : model.exporting ? 'Экспорт' : model.hasResult ? 'Завершён' : 'Ожидание данных';
-    byId('workspace-title').textContent = model.file && model.station ? `${model.station}${model.unit ? ` · ГТ-${model.unit}` : ''}` : 'Рабочее пространство';
+    byId('workspace-title').textContent = model.file && model.station ? `${model.station}${model.unit ? ` · ${model.unit}` : ''}` : 'Рабочее пространство';
     byId('workspace-subtitle').textContent = model.filename || 'Графики, таблицы и отчёты';
     if (selected !== model.tab) { rememberScroll(); selected = model.tab; renderView(false); }
     else if (!views[selected]) emptyState();

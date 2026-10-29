@@ -109,6 +109,8 @@ class DegradationSummaryChartTest(unittest.TestCase):
             chart_xml = ET.fromstring(archive.read("xl/charts/chart2.xml"))
             labels = chart_xml.findall(".//c:dLbl/c:tx/c:rich", ns)
             self.assertEqual(len(labels), 12)
+            texts = [''.join(label.itertext()) for label in labels]
+            self.assertFalse(any('п.п.' in text or 'нм³/(' in text for text in texts))
             for label in labels:
                 for style in label.findall("a:p/a:pPr/a:defRPr", ns):
                     self.assertEqual(style.get("sz"), "1600")

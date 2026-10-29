@@ -1395,7 +1395,7 @@ def select_rh_variants(results):
 def rh_equation(name, slope, intercept):
     k = f"{slope:.10f}".replace(".", ",")
     b = f"{abs(intercept):.10f}".replace(".", ",")
-    return f"{name} = {k} × Nприв {'+' if intercept >= 0 else '−'} {b}"
+    return f"{name} = {k} · Nприв {'+' if intercept >= 0 else '−'} {b}"
 
 
 def plot_selected_windows(df, results, show=True):

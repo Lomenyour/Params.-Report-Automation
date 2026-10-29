@@ -61,11 +61,27 @@ Thumbs.db
 /build_import/
 /dist_import/
 /build_test/
-/dist_test/
+# В тестовой сборке отслеживаем только редактируемые шаблоны/справочник.
+# Код приложения живёт в scr/, EXE и библиотеки остаются артефактами.
+/dist_test/*
+!/dist_test/GTU_Report_Desktop_Test/
+/dist_test/GTU_Report_Desktop_Test/*
+!/dist_test/GTU_Report_Desktop_Test/config/
+/dist_test/GTU_Report_Desktop_Test/config/*
+!/dist_test/GTU_Report_Desktop_Test/config/stations.json
+!/dist_test/GTU_Report_Desktop_Test/word_auto/
+/dist_test/GTU_Report_Desktop_Test/word_auto/*
+!/dist_test/GTU_Report_Desktop_Test/word_auto/templates/
+/dist_test/GTU_Report_Desktop_Test/word_auto/templates/*
+!/dist_test/GTU_Report_Desktop_Test/word_auto/templates/*.docx
 /archive_builds/
 
 # Локальные шаблоны, отчёты и машинозависимые файлы сборки.
-/word_auto/templates/
+/word_auto/templates/*
+!/word_auto/templates/*.docx
 /word_auto/reports/
 /*.spec
 /.pip-temp/
+
+# Временные блокировки Word не являются шаблонами.
+~$*.docx

@@ -296,6 +296,23 @@ def _last_numeric(data: Any, column: str) -> float | None:
     return float(values.iloc[-1])
 
 
+def _source_date_range(source_data: pd.DataFrame | None) -> tuple[str, str, int]:
+    """Крайние даты всех строк с корректной датой, до фильтрации периодов."""
+
+    if source_data is None or "date" not in source_data.columns:
+        return "—", "—", 0
+    dates = pd.to_datetime(source_data["date"], errors="coerce")
+    invalid_rows = int(dates.isna().sum())
+    valid = dates.dropna()
+    if valid.empty:
+        return "—", "—", invalid_rows
+    return (
+        _date_value(valid.min(), short=True),
+        _date_value(valid.max(), short=True),
+        invalid_rows,
+    )
+
+
 def _economics_total(table: pd.DataFrame | None) -> Any:
     if table is None or table.empty:
         return None
@@ -361,6 +378,12 @@ def build_report_data(
             ),
         })
 
+    data_start_date, data_end_date, invalid_date_rows = _source_date_range(source_data)
+    if invalid_date_rows:
+        print(
+            f"WARNING: {invalid_date_rows} строк без корректной даты не вошли "
+            "в диапазон дат Word-отчёта."
+        )
     input_total = _last_numeric(source_data, "hours_input")
     if input_total is None:
         input_total = _last_numeric(rh_data, "hours_input")
@@ -381,6 +404,9 @@ def build_report_data(
         "source": {
             "file_name": Path(source_file).name if source_file else "",
             "generated_at": datetime.now().isoformat(timespec="seconds"),
+            "data_start_date": data_start_date,
+            "data_end_date": data_end_date,
+            "invalid_date_rows": invalid_date_rows,
         },
         "period_count": len(periods),
         "tariffs": {

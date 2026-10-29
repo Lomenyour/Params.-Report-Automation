@@ -115,7 +115,10 @@ py scr/raschet.py
 ## Word и сборка EXE
 
 Для Word положите свой шаблон в
-`word_auto/templates/template_mapped.docx`. Он остаётся локальным.
+`word_auto/templates/template_mapped.docx`. С 29.10.2026 он хранится в Git,
+как и редактируемая копия Desktop Test. Перед сборкой версии синхронизируются
+с резервированием; конфликтующие правки не перезаписываются молча.
+Подробности и исключённые папки — [GIT_TRACKING.md](GIT_TRACKING.md).
 Список полей и правила шаблона: [TEMPLATE_MAPPING.md](word_auto/TEMPLATE_MAPPING.md).
 Перед сборкой EXE папка с шаблоном также должна быть подготовлена.
 

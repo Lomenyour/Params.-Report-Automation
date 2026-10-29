@@ -8,6 +8,16 @@ if (Get-Process -Name $Name -ErrorAction SilentlyContinue) {
     throw "Close $Name.exe before rebuilding the test version."
 }
 
+# Preserve edits made in the external test template before PyInstaller replaces it.
+& (Join-Path $PSScriptRoot 'sync_report_templates.ps1') -TestName $Name
+$externalConfig = Join-Path $PSScriptRoot "dist_test\$Name\config\stations.json"
+$sourceConfig = Join-Path $PSScriptRoot 'config\stations.json'
+if ((Test-Path -LiteralPath $externalConfig) -and
+    [Convert]::ToBase64String([IO.File]::ReadAllBytes($externalConfig)) -cne
+    [Convert]::ToBase64String([IO.File]::ReadAllBytes($sourceConfig))) {
+    throw 'Source/test station catalogs differ. Reconcile both tracked copies before rebuilding.'
+}
+
 $templateSource = Join-Path $PSScriptRoot "word_auto\templates"
 $testRoot = Join-Path $PSScriptRoot "dist_test\$Name"
 

@@ -1,4 +1,5 @@
-param([string]$Name = "GTU_Report_Test")
+# Единая тестовая поставка: не обходить открытый EXE созданием новой версии.
+param([ValidateSet("GTU_Report_Rotor_Test")][string]$Name = "GTU_Report_Rotor_Test")
 
 $ErrorActionPreference = "Stop"
 

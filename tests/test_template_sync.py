@@ -14,7 +14,7 @@ class TemplateSyncTest(unittest.TestCase):
         script = Path(__file__).resolve().parents[1] / 'sync_report_templates.ps1'
         shutil.copy2(script,self.root/script.name)
         self.source = self.root/'word_auto/templates/template_mapped.docx'
-        self.target = self.root/'dist_test/GTU_Report_Desktop_Test/word_auto/templates/template_mapped.docx'
+        self.target = self.root/'dist_test/GTU_Report_Rotor_Test/word_auto/templates/template_mapped.docx'
         for path in (self.source,self.target):
             path.parent.mkdir(parents=True,exist_ok=True)
 

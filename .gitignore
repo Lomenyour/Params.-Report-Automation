@@ -64,16 +64,16 @@ Thumbs.db
 # В тестовой сборке отслеживаем только редактируемые шаблоны/справочник.
 # Код приложения живёт в scr/, EXE и библиотеки остаются артефактами.
 /dist_test/*
-!/dist_test/GTU_Report_Desktop_Test/
-/dist_test/GTU_Report_Desktop_Test/*
-!/dist_test/GTU_Report_Desktop_Test/config/
-/dist_test/GTU_Report_Desktop_Test/config/*
-!/dist_test/GTU_Report_Desktop_Test/config/stations.json
-!/dist_test/GTU_Report_Desktop_Test/word_auto/
-/dist_test/GTU_Report_Desktop_Test/word_auto/*
-!/dist_test/GTU_Report_Desktop_Test/word_auto/templates/
-/dist_test/GTU_Report_Desktop_Test/word_auto/templates/*
-!/dist_test/GTU_Report_Desktop_Test/word_auto/templates/*.docx
+!/dist_test/GTU_Report_Rotor_Test/
+/dist_test/GTU_Report_Rotor_Test/*
+!/dist_test/GTU_Report_Rotor_Test/config/
+/dist_test/GTU_Report_Rotor_Test/config/*
+!/dist_test/GTU_Report_Rotor_Test/config/stations.json
+!/dist_test/GTU_Report_Rotor_Test/word_auto/
+/dist_test/GTU_Report_Rotor_Test/word_auto/*
+!/dist_test/GTU_Report_Rotor_Test/word_auto/templates/
+/dist_test/GTU_Report_Rotor_Test/word_auto/templates/*
+!/dist_test/GTU_Report_Rotor_Test/word_auto/templates/*.docx
 /archive_builds/
 
 # Локальные шаблоны, отчёты и машинозависимые файлы сборки.

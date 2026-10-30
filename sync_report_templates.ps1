@@ -1,5 +1,5 @@
 param(
-    [string]$TestName = 'GTU_Report_Desktop_Test',
+    [string]$TestName = 'GTU_Report_Rotor_Test',
     [ValidateSet('Auto','Source','Test')][string]$Prefer = 'Auto'
 )
 $ErrorActionPreference = 'Stop'

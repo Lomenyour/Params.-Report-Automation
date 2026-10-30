@@ -1,4 +1,4 @@
-param([string]$TestName='GTU_Report_Desktop_Test')
+param([string]$TestName='GTU_Report_Rotor_Test')
 $ErrorActionPreference='Stop'
 $taskRoot=[IO.Path]::GetFullPath($PSScriptRoot)
 if ($TestName -notmatch '^[A-Za-z0-9_-]+$') { throw 'Invalid test build name.' }

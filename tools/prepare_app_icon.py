@@ -1,4 +1,4 @@
-"""Экспорт утверждённого белого знака в прозрачный Windows ICO.
+"""Экспорт крыльчатки утверждённого белого знака в прозрачный Windows ICO.
 
 PNG белого знака на чёрном остаётся неизменным. Для Windows цвет знака
 белый, а его яркость используется как покрытие прозрачной иконки, как
@@ -6,10 +6,12 @@ PNG белого знака на чёрном остаётся неизменн�
 """
 from pathlib import Path
 
-from PIL import Image
+from PIL import Image, ImageChops, ImageDraw
 
 ICON_SIZES = (16, 20, 24, 32, 40, 48, 64, 96, 128, 256)
 ICON_PADDING = .02
+ROTOR_CENTER = .498
+ROTOR_RADIUS = .305
 
 
 def export_icon(source, destination):
@@ -17,6 +19,14 @@ def export_icon(source, destination):
         coverage = approved.convert("L")
         # Убираем только почти чёрный шум фона; сохраняем сглаживание контура.
         coverage = coverage.point(lambda value: round(max(0, min(255, (value - 8) * 255 / 239))))
+        # Круглый фрагмент из согласованного макета: крупная крыльчатка без обода.
+        # Граница проходит в пустом зазоре между ротором и неподвижным корпусом.
+        center_x, center_y = coverage.width * ROTOR_CENTER, coverage.height * ROTOR_CENTER
+        radius = min(coverage.size) * ROTOR_RADIUS
+        rotor = Image.new("L", coverage.size, 0)
+        ImageDraw.Draw(rotor).ellipse((center_x-radius, center_y-radius,
+                                      center_x+radius, center_y+radius), fill=255)
+        coverage = ImageChops.multiply(coverage, rotor)
         # Убираем пустые поля исходного холста, не меняя контуры знака.
         bounds = coverage.point(lambda value: 255 if value >= 64 else 0).getbbox()
         if bounds is None:

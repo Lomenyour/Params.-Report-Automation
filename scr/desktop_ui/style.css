@@ -207,8 +207,8 @@ html, body { margin: 0; height: 100%; background: #252525; overflow: hidden; }
   --gtu-soft-accent: #3b3b3b; --gtu-green: #a5c9b4; --gtu-grid: #3b3b3b;
 }
 #desktop .gtu-titlebar { background: var(--gtu-bg); height: 62px; border-bottom: 0; }
-#desktop .gtu-mark { width: 40px; height: 40px; background: transparent; color: var(--gtu-text); border: 0; border-radius: 10px; }
-#desktop .gtu-mark img { display: block; width: 40px; height: 40px; mix-blend-mode: screen; }
+#desktop .gtu-mark { width: 60px; height: 60px; background: transparent; color: var(--gtu-text); border: 0; border-radius: 10px; }
+#desktop .gtu-mark img { display: block; width: 60px; height: 60px; mix-blend-mode: screen; }
 #desktop .gtu-theme-strip { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 8px 22px 16px; background: var(--gtu-bg); border-bottom: 1px solid var(--gtu-line); }
 #desktop .gtu-theme-strip label { color: var(--gtu-sub); font-size: 12px; }
 #desktop .gtu-theme-strip select { font-family: inherit; font-size: 12px; padding: 7px 30px 7px 10px; background: var(--gtu-field); border: 1px solid var(--gtu-line); border-radius: 8px; color: var(--gtu-text); max-width: 100%; }
@@ -254,8 +254,8 @@ html, body { margin: 0; height: 100%; background: #252525; overflow: hidden; }
 
 /* Те же компоненты референса в реальном десктопном viewport. */
 #desktop .gtu-app { height: 100%; min-height: 0; border: 0; border-radius: 0; }
-#desktop .gtu-titlebar { height: 62px; padding: 0 24px; border-bottom: 1px solid var(--gtu-line); }
-#desktop .gtu-layout { height: calc(100% - 62px); min-height: 0; grid-template-columns: var(--gtu-sidebar-width, 324px) 8px minmax(0, 1fr); }
+#desktop .gtu-titlebar { height: 80px; padding: 0 24px; border-bottom: 1px solid var(--gtu-line); }
+#desktop .gtu-layout { height: calc(100% - 80px); min-height: 0; grid-template-columns: var(--gtu-sidebar-width, 324px) 8px minmax(0, 1fr); }
 #desktop .gtu-settings { padding: 0; display: flex; flex-direction: column; min-height: 0; border-right: 0; }
 #desktop .gtu-sidebar-resizer { position: relative; cursor: col-resize; touch-action: none; background: var(--gtu-bg); }
 #desktop .gtu-sidebar-resizer::before { content: ""; position: absolute; left: 3px; top: 0; bottom: 0; width: 1px; background: var(--gtu-line); }
@@ -351,21 +351,26 @@ body.gtu-resizing, body.gtu-resizing * { cursor: col-resize !important; user-sel
 #desktop .gtu-dialog.collapsed .gtu-dialog-body, #desktop .gtu-dialog.collapsed .gtu-dialog-actions { display: none; }
 #desktop .gtu-dialog.collapsed .gtu-dialog-head { margin: 0; }
 #desktop .gtu-empty > span[data-icon] > svg { width: 40px; height: 40px; color: var(--gtu-sub); }
+#desktop .gtu-calculation-turbine { position: relative; display: block; width: 88px; height: 88px; flex-shrink: 0; }
+#desktop .gtu-calculation-turbine img { position: absolute; inset: 0; width: 100%; height: 100%; mix-blend-mode: screen; transform-origin: 49.8% 49.8%; }
+#desktop .gtu-turbine-casing { mask-image: radial-gradient(circle closest-side at 49.8% 49.8%, transparent 61%, #000 61.1%); }
+#desktop .gtu-turbine-rotor { clip-path: circle(30.5% at 49.8% 49.8%); animation: gtu-turbine-turn 6s linear infinite; }
 #desktop * { scrollbar-width: thin; scrollbar-color: #535353 transparent; }
 #desktop ::-webkit-scrollbar { width: 8px; height: 8px; }
 #desktop ::-webkit-scrollbar-track { background: transparent; }
 #desktop ::-webkit-scrollbar-thumb { background: #535353; border: 2px solid transparent; border-radius: 8px; background-clip: padding-box; }
 #desktop ::-webkit-scrollbar-corner { background: transparent; }
 @keyframes gtu-progress { from { transform: translateX(-110%); } to { transform: translateX(360%); } }
+@keyframes gtu-turbine-turn { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { #desktop .gtu-progress::before { animation: none; width: 100%; opacity: .6; } }
+@media (prefers-reduced-motion: reduce) { #desktop .gtu-turbine-rotor { animation: none; } }
 @media (max-width: 1050px) {
   #desktop .gtu-work { padding: 22px 20px 14px; }
   #desktop .gtu-work-heading h2 { font-size: 23px; }
   #desktop .gtu-tab { padding: 8px 10px; }
 }
 @media (max-height: 690px) {
-  #desktop .gtu-titlebar { height: 52px; }
-  #desktop .gtu-layout { height: calc(100% - 52px); }
+  #desktop .gtu-calculation-turbine { width: 48px; height: 48px; }
   #desktop .gtu-work { padding-top: 20px; }
   #desktop .gtu-work-heading { margin-bottom: 16px; }
   #desktop .gtu-log { height: 68px; }

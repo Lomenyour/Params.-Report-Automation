@@ -103,17 +103,32 @@
     if (viewport) scrolls[selected] = [viewport.scrollLeft, viewport.scrollTop];
   }
   function emptyState() {
-    const fragment = byId('empty-template').content.cloneNode(true);
-    const running = model?.running;
-    const missing = model?.file && (!model.station ? 'ТЭЦ' : !model.unit ? 'ГТУ' : '');
-    fragment.querySelector('#empty-title').textContent = running ? 'Расчёт выполняется' : model?.file ? 'Всё готово к расчету' : 'Начните с исходных данных';
-    fragment.querySelector('#empty-description').textContent = running ? 'Подготавливаем графики и таблицы. Ход расчёта — в журнале ниже.' : model?.file ? 'Нажмите «Расчет» в панели подготовки. Перед вычислением можно проверить и изменить периоды.' : 'Выберите Excel-книгу и ТЭЦ в панели подготовки. Здесь появятся графики и таблицы расчёта.';
-    if (!running && missing) {
-      fragment.querySelector('#empty-title').textContent = `Выберите ${missing}`;
-      fragment.querySelector('#empty-description').textContent = 'Укажите станцию и ГТУ в панели подготовки. Название модели появится после выбора агрегата.';
+    // Сохраняем DOM между обновлениями состояния: вращение не начинается заново.
+    let empty = panel.querySelector('.gtu-empty');
+    if (!empty) {
+      panel.replaceChildren(byId('empty-template').content.cloneNode(true));
+      empty = panel.querySelector('.gtu-empty');
+      fillIcons(empty);
     }
-    panel.replaceChildren(fragment);
-    fillIcons(panel);
+    const running = Boolean(model?.running);
+    if (empty.classList.contains('gtu-calculating') !== running) {
+      empty.classList.toggle('gtu-calculating', running);
+      if (running) {
+        empty.firstElementChild.replaceWith(byId('calculation-turbine-template').content.cloneNode(true));
+      } else {
+        const icon = element('span');
+        icon.dataset.icon = 'chart'; icon.setAttribute('aria-hidden', 'true');
+        empty.firstElementChild.replaceWith(icon);
+        fillIcons(empty);
+      }
+    }
+    const missing = model?.file && (!model.station ? 'ТЭЦ' : !model.unit ? 'ГТУ' : '');
+    empty.querySelector('#empty-title').textContent = running ? 'Расчёт выполняется' : model?.file ? 'Всё готово к расчету' : 'Начните с исходных данных';
+    empty.querySelector('#empty-description').textContent = running ? 'Подготавливаем графики и таблицы. Ход расчёта — в журнале ниже.' : model?.file ? 'Нажмите «Расчет» в панели подготовки. Перед вычислением можно проверить и изменить периоды.' : 'Выберите Excel-книгу и ТЭЦ в панели подготовки. Здесь появятся графики и таблицы расчёта.';
+    if (!running && missing) {
+      empty.querySelector('#empty-title').textContent = `Выберите ${missing}`;
+      empty.querySelector('#empty-description').textContent = 'Укажите станцию и ГТУ в панели подготовки. Название модели появится после выбора агрегата.';
+    }
   }
   function makeTable(data) {
     if (!data.rows.length) return element('p', 'gtu-caption', 'Нет данных для отображения');

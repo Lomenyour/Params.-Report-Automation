@@ -5,7 +5,7 @@ Excel здесь является источником измерений и п�
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 import json
 import os
@@ -30,6 +30,11 @@ class SensorMapping:
     source: str
     target: str
     factor: float = 1.0
+    parameter: str = ""
+    source_unit: str = ""
+    target_unit: str = ""
+    status: str = "mapped"
+    target_header: str = ""
 
 
 @dataclass
@@ -41,6 +46,7 @@ class AssembledData:
     invalid_sensor_values: dict[str, int]
     verified_duplicate_columns: list[str]
     undated_rows: pd.DataFrame | None = None  # Сохраняются при экспорте, в расчёт не входят.
+    source_diagnostics: dict | None = None
 
     def as_headered_frame(self) -> pd.DataFrame:
         result = self.values.reset_index(drop=True).copy()
@@ -52,6 +58,8 @@ class AssembledData:
 
 
 def list_source_sheets(path: str | Path) -> list[str]:
+    if Path(path).suffix.casefold() == ".csv":
+        return ["CSV"]
     with pd.ExcelFile(path, engine="calamine") as workbook:
         return list(workbook.sheet_names)
 
@@ -66,20 +74,14 @@ def _header_row(workbook: pd.ExcelFile, sheet_name: str) -> int:
 
 
 def source_columns(path: str | Path, sheet_name: str) -> list[str]:
-    with pd.ExcelFile(path, engine="calamine") as workbook:
-        row = _header_row(workbook, sheet_name)
-        head = workbook.parse(sheet_name, header=None, nrows=row + 1).iloc[row]
-    return [
-        str(value).strip() for value in head
-        if pd.notna(value) and str(value).strip()
-    ]
+    return list(_read_sensor_sheet(path, sheet_name).columns)
 
 
 def template_columns(path: str | Path) -> dict[str, str | None]:
     with pd.ExcelFile(path, engine="calamine") as workbook:
         if not workbook.sheet_names or workbook.sheet_names[0] != "Данные":
             raise ValueError("Первый лист расчётной книги должен называться «Данные».")
-        raw = workbook.parse("Данные", header=None)
+        raw = workbook.parse("Данные", header=None, nrows=1)
         row = raw.iloc[0]
     headed = [index for index, value in enumerate(row) if pd.notna(value)]
     if not headed:
@@ -92,7 +94,7 @@ def template_columns(path: str | Path) -> dict[str, str | None]:
 
 def _mapping_profile_path() -> Path:
     base = Path(os.environ.get("LOCALAPPDATA") or Path.home() / ".config")
-    return base / "GTU_Report" / "sensor_mappings.json"
+    return base / "GTU_Report" / "sensor_mapping_profiles.json"
 
 
 def _profile_key(book_path: str | Path) -> str:
@@ -114,27 +116,44 @@ def load_saved_mappings(
     *, station_id: str | None = None,
     unit: str | None = None,
     repository: StationRepository | None = None,
+    target_headers: dict | None = None,
 ) -> list[SensorMapping] | None:
     station = resolve_station(book_path, station_id, repository)
     if station is None:
         return None
     path = _mapping_profile_path()
-    if not path.exists():
-        return None
-    try:
-        saved = json.loads(path.read_text(encoding="utf-8"))
+    from sensor_mapping_store import load_mapping, load_store
+    from parameter_mapping import parameter_targets
+    saved = load_store(path)
+    entries = load_mapping(path, station.id, unit or unit_number(book_path) or "", sheet_headers, store=saved)
+    if entries is None:
+        legacy = saved.get("legacy", {})
         turbine = unit or unit_number(book_path)
         key = f"{station.id}|{turbine or ''}|{'|'.join(sheet_headers)}"
-        entries = saved.get(key)
+        entries = legacy.get(key)
         # Старые назначения переносим только при совпадении станции по имени.
         detected = resolve_station(book_path, repository=repository)
         if entries is None and detected is not None and detected.id == station.id and turbine == unit_number(book_path):
-            entries = saved.get(f"{_profile_key(book_path)}|{'|'.join(sheet_headers)}")
+            entries = legacy.get(f"{_profile_key(book_path)}|{'|'.join(sheet_headers)}")
         if entries is None:
             return None
-        return [SensorMapping(**entry) for entry in entries]
-    except (OSError, ValueError, TypeError, KeyError):
-        return None
+    try:
+        known = {entry["source"].casefold(): SensorMapping(**entry) for entry in entries}
+    except (ValueError, KeyError, TypeError) as error:
+        raise ValueError("Повреждена запись маппинга; JSON оставлен без изменений.") from error
+    targets = parameter_targets(target_headers or {}, station.id)
+    result = []
+    for header in sheet_headers:
+        if header.casefold() in SERVICE_FIELDS:
+            continue
+        item = known.get(header.casefold(), SensorMapping(header, ""))
+        item = replace(item, source=header)
+        if target_headers and item.parameter and item.status != "deferred":
+            item = replace(item, target=targets.get(item.parameter, ""))
+        elif target_headers and item.target_header and target_headers.get(item.target) != item.target_header:
+            item = replace(item, target="")
+        result.append(item)
+    return result
 
 
 def save_mappings(
@@ -143,24 +162,15 @@ def save_mappings(
     *, station_id: str | None = None,
     unit: str | None = None,
     repository: StationRepository | None = None,
+    target_headers: dict | None = None,
 ) -> None:
     station = resolve_station(book_path, station_id, repository)
     if station is None:
         raise ValueError("Выберите ТЭЦ перед сохранением соответствий датчиков.")
     path = _mapping_profile_path()
-    try:
-        saved = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
-        if not isinstance(saved, dict):
-            saved = {}
-    except (OSError, ValueError):
-        saved = {}
-    key = f"{station.id}|{unit or unit_number(book_path) or ''}|{'|'.join(sheet_headers)}"
-    saved[key] = [
-        {"source": item.source, "target": item.target, "factor": item.factor}
-        for item in mappings
-    ]
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(saved, ensure_ascii=False, indent=2), encoding="utf-8")
+    from sensor_mapping_store import save_mapping
+    entries = [asdict(replace(item, target_header=(target_headers or {}).get(item.target, item.target_header) or "")) for item in mappings]
+    save_mapping(path, station.id, unit or unit_number(book_path) or "", sheet_headers, entries)
 
 
 def suggest_mappings(
@@ -169,6 +179,7 @@ def suggest_mappings(
     *, station_id: str | None = None,
     unit: str | None = None,
     repository: StationRepository | None = None,
+    target_headers: dict | None = None,
 ) -> list[SensorMapping]:
     """Предлагает только каналы выбранной ТЭЦ и ГТ; неизвестные — вручную."""
     repository = repository or get_station_repository()
@@ -177,13 +188,30 @@ def suggest_mappings(
     channels = repository.get_channels(station.id) if station else ()
     by_code = {channel.code.casefold(): channel for channel in channels
                if channel.unit_number == gt_number}
+    from parameter_mapping import parameter_targets
+    from source_variants import match_variant, deferred_channels
+    targets = parameter_targets(target_headers or {}, station.id if station else None)
+    variant = match_variant(source_headers, station.company_id) if station and not by_code else None
+    variant_codes = {entry["tag"].casefold(): entry for entry in variant["assignments"]} if variant else {}
+    deferred = deferred_channels(station.id, gt_number) if station else set()
     suggestions: list[SensorMapping] = []
     for header in source_headers:
         if header.lower() in SERVICE_FIELDS or header in (verified_duplicates or set()):
             continue
         channel = by_code.get(header.casefold())
-        suggestions.append(SensorMapping(header, channel.target_column, channel.factor)
-                           if channel else SensorMapping(header, "", 1.0))
+        if header.casefold() in deferred:
+            suggestions.append(SensorMapping(header, "", status="deferred"))
+        elif channel:
+            # Подтверждённые станционные назначения имеют приоритет над
+            # неоднозначными названиями старой книги. Перестановка по похожему
+            # заголовку меняла уже проверенную подстановку СызТЭЦ.
+            suggestions.append(SensorMapping(header, channel.target_column, channel.factor,
+                                             parameter=channel.parameter_id))
+        elif header.casefold() in variant_codes:
+            entry = variant_codes[header.casefold()]
+            suggestions.append(SensorMapping(header, targets.get(entry["parameter"], ""), parameter=entry["parameter"], source_unit=entry.get("unit", "")))
+        else:
+            suggestions.append(SensorMapping(header, ""))
     return suggestions
 
 
@@ -202,10 +230,18 @@ def validate_mappings(
             raise ValueError(f"В выгрузке нет канала {mapping.source!r}.")
         if mapping.source in seen_sources:
             raise ValueError(f"Канал {mapping.source!r} назначен дважды.")
+        if mapping.status == "deferred":
+            seen_sources.add(mapping.source)
+            continue
+        if mapping.status != "mapped":
+            raise ValueError(f"Неизвестный статус канала {mapping.source}.")
         if not mapping.target or not re.fullmatch(r"[A-Z]{1,3}", mapping.target):
             raise ValueError(f"Для канала {mapping.source!r} не выбрана колонка листа.")
         if mapping.target in {"A", "B", "AD"}:
             raise ValueError(f"Колонка {mapping.target} зарезервирована.")
+        if target_headers is not None:
+            from parameter_mapping import parameter_targets
+            allowed_targets = allowed_targets | set(parameter_targets(target_headers).values())
         if target_headers is not None and mapping.target not in allowed_targets:
             last = max(column_index_from_string(col) for col in target_headers)
             if column_index_from_string(mapping.target) <= last:
@@ -215,6 +251,12 @@ def validate_mappings(
                 )
         if mapping.target in seen_targets:
             raise ValueError(f"На колонку {mapping.target} назначено два канала.")
+        if target_headers:
+            from parameter_mapping import header_unit, unit_factor, PRESSURE_UNITS
+            book_unit = header_unit(target_headers.get(mapping.target))
+            if book_unit.casefold() in PRESSURE_UNITS and mapping.target_unit.casefold() in PRESSURE_UNITS:
+                if unit_factor(book_unit, mapping.target_unit) != 1:
+                    raise ValueError(f"Колонка {mapping.target} хранит {book_unit}. Единицы назначения должны соответствовать книге.")
         if not np.isfinite(mapping.factor) or mapping.factor == 0:
             raise ValueError(f"Неверный коэффициент для {mapping.source!r}.")
         seen_sources.add(mapping.source)
@@ -249,24 +291,18 @@ def _verified_duplicates(raw: pd.DataFrame, station_id: str,
 
 
 def _read_sensor_sheet(path: str | Path, sheet_name: str) -> pd.DataFrame:
-    with pd.ExcelFile(path, engine="calamine") as workbook:
-        row = _header_row(workbook, sheet_name)
-        raw = workbook.parse(sheet_name, header=row)
-    raw = raw.loc[:, ~raw.columns.astype(str).str.startswith("Unnamed:")].copy()
-    raw.columns = [str(column).strip() for column in raw.columns]
-    date = pd.to_datetime(raw["date"], errors="coerce")
-    time = pd.to_timedelta(raw["time"].astype(str), errors="coerce")
-    timestamp = date + time
-    valid = timestamp.notna() & (timestamp.dt.minute % 30 == 0) & (
-        timestamp.dt.second == 0
-    )
-    selected = raw.loc[valid].copy()
-    selected.index = pd.DatetimeIndex(timestamp.loc[valid], name="timestamp")
-    if selected.index.has_duplicates:
-        raise ValueError("В выбранном листе повторяются даты и время замеров.")
-    if selected.empty:
-        raise ValueError("На выбранном листе нет получасовых замеров.")
-    return selected.sort_index()
+    from source_readers import read_sensor_sheet
+    return read_sensor_sheet(path, sheet_name)
+
+
+def source_channel_info(path, sheet_name):
+    return _read_sensor_sheet(path, sheet_name).attrs.get("channel_info", {})
+
+
+def source_selection_info(path, sheet_name):
+    frame = _read_sensor_sheet(path, sheet_name)
+    return {"format": frame.attrs.get("source_format", ""), "rows": len(frame),
+            "skipped_rows": frame.attrs.get("skipped_rows", 0), "invalid_dates": frame.attrs.get("invalid_dates", 0)}
 
 
 def source_mapping_info(
@@ -314,7 +350,8 @@ def _read_template(path: str | Path) -> tuple[pd.DataFrame, dict[str, str | None
 
 
 def _convert_sensor(series: pd.Series, factor: float) -> tuple[pd.Series, int]:
-    values = pd.to_numeric(series, errors="coerce")
+    decimal = series.map(lambda value: value.strip().replace(" ", "").replace(",", ".") if isinstance(value, str) else value)
+    values = pd.to_numeric(decimal, errors="coerce")
     invalid = int((series.notna() & values.isna()).sum())
     converted = pd.Series(values * factor, index=series.index, dtype=object)
     converted.loc[series.notna() & values.isna()] = series.loc[
@@ -366,9 +403,16 @@ def assemble_sensor_data(
         ].to_numpy()
     invalid_values: dict[str, int] = {}
     for mapping in mappings:
+        if mapping.status == "deferred":
+            existing = next((column for column, label in headers.items() if label == f"До уточнения: {mapping.source}"), None)
+            column = existing or get_column_letter(max(column_index_from_string(key) for key in result.columns) + 1)
+            result[column] = result[column].astype(object) if column in result else pd.Series(index=result.index, dtype=object)
+            result.loc[raw.index, column] = raw[mapping.source].to_numpy()
+            headers[column] = f"До уточнения: {mapping.source}"
+            continue
         converted, invalid = _convert_sensor(raw[mapping.source], mapping.factor)
         if mapping.target not in result:
-            result[mapping.target] = np.nan
+            result[mapping.target] = pd.Series(index=result.index, dtype=object)
             headers[mapping.target] = mapping.source
         result.loc[raw.index, mapping.target] = converted.to_numpy()
         if invalid:
@@ -384,6 +428,7 @@ def assemble_sensor_data(
         invalid_sensor_values=invalid_values,
         verified_duplicate_columns=sorted(duplicates),
         undated_rows=undated_rows,
+        source_diagnostics=source_selection_info(source_path, source_sheet),
     )
 
 
@@ -405,10 +450,12 @@ def read_calculation_profile(book_path: str | Path, *, gas_passport=None,
         raise ValueError("Заполните паспорт газа для выбранных ТЭЦ и ГТ.")
     if passport.station_id != station.id or passport.unit != turbine:
         raise ValueError("Паспорт газа относится к другой ТЭЦ или ГТУ.")
-    return {**corrections.values, "gas_c_h": passport.carbon_hydrogen_ratio,
-            "gas_density": passport.density_kg_per_nm3,
-            "qnr_denominator": passport.density_kg_per_nm3,
-            "gas_q_lower": passport.q_lower_mj_per_nm3}
+    from gas_passport import passport_entries
+    first = passport_entries(passport)[0]
+    return {**corrections.values, "gas_c_h": first.carbon_hydrogen_ratio,
+            "gas_density": first.density_kg_per_nm3,
+            "qnr_denominator": first.density_kg_per_nm3,
+            "gas_q_lower": first.q_lower_mj_per_nm3, "gas_history": passport.to_dict()}
 
 
 def _number(frame: pd.DataFrame, column: str) -> np.ndarray:
@@ -477,6 +524,16 @@ def _coolprop_columns(frame: pd.DataFrame) -> None:
 def calculate_data_columns(data: AssembledData,
                            profile: dict[str, float], *, thermodynamics=True) -> AssembledData:
     """Пересчитывает производные колонки без ссылок на другие листы."""
+    if data.headers:
+        from parameter_mapping import parameter_targets
+        actual = parameter_targets(data.headers, "syz_tec")
+        expected = {"atmospheric_pressure":"C", "ambient_temperature":"F", "relative_humidity":"G",
+                    "inlet_temperature":"P", "outlet_temperature":"W", "outlet_pressure":"X",
+                    "vna":"V", "rpm":"AM", "power":"AO", "fuel_flow":"AS"}
+        mismatched = [f"{key}: {actual[key]} вместо {column}" for key,column in expected.items()
+                      if key in actual and actual[key] != column]
+        if mismatched:
+            raise ValueError("Структура книги не соответствует методике СызТЭЦ: " + "; ".join(mismatched) + ". Чужая методика не применяется.")
     frame = data.values
     q = lambda cell: profile[cell]
     c, f, g, l, m, p, x = (
@@ -519,8 +576,16 @@ def calculate_data_columns(data: AssembledData,
 def recalculate_gas_columns(frame: pd.DataFrame, profile: dict[str, float]) -> None:
     """Меняет только газозависимую часть, остальные поправки остаются прежними."""
     q = lambda cell: profile[cell]
-    frame["AJ"] = profile["gas_c_h"]
-    frame["AK"] = profile["gas_q_lower"] / profile["qnr_denominator"]
+    density = profile["gas_density"]
+    if "gas_history" in profile:
+        from gas_passport import GasPassport, gas_values
+        gas = gas_values(GasPassport.from_dict(profile["gas_history"]), frame["B"])
+        density = gas["density_kg_per_nm3"]
+        frame["AJ"] = gas["carbon_hydrogen_ratio"]
+        frame["AK"] = gas["q_lower_mj_per_nm3"] / density
+    else:
+        frame["AJ"] = profile["gas_c_h"]
+        frame["AK"] = profile["gas_q_lower"] / profile["qnr_denominator"]
     aj, ak = (_number(frame, col) for col in ("AJ", "AK"))
     frame["AL"] = (
         _polynomial(profile, "fuel_properties", ("q2", "q1", "q0"), aj) * ak
@@ -533,7 +598,6 @@ def recalculate_gas_columns(frame: pd.DataFrame, profile: dict[str, float]) -> N
         power = _number(frame, "AO") / denominator
     power[~np.isfinite(power)] = np.nan
     frame["AQ"] = power
-    density = profile["gas_density"]
     frame["AT"] = _number(frame, "AS") * 3600.0 / density
     frame["AV"] = (power * q("fuel_reference.n1") + q("fuel_reference.n0")) * 3600.0 / density
     with np.errstate(divide="ignore", invalid="ignore"):

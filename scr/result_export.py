@@ -42,7 +42,8 @@ class DataSheetValues:
                 selected["AC"] = selected["AC"].astype(object)
                 selected.loc[shifted,"AC"] = selected.loc[shifted,"AD"]
                 print(f"Для поправки давления ух.газов использована AD вместо пустой AC: {int(shifted.sum())} строк; исходные колонки сохранены.")
-        data = AssembledData(selected, {}, 0, 0, {}, [])
+        headers = {get_column_letter(i+1): value for i,value in enumerate(self.values.iloc[self.header_row]) if pd.notna(value)}
+        data = AssembledData(selected, headers, 0, 0, {}, [])
         calculate_data_columns(data, profile, thermodynamics=False)
         outputs = ("D","H","N","O","S","T","U","Y","AE","AI","AN",
                    "AJ","AK","AL","AQ","AT","AV","AX","AR","AU","AW")

@@ -90,8 +90,12 @@ def read_correction_sheet(path):
             starts.append(start)
             data = json.loads(sheet.cell(start, 2).value)
             end = start + base + len(data.get(key, {})) - 1
+            columns = 3
+            if marker == MARKER and "entries" in data:
+                end = start + 4 + sum(1 + len(entry.get("components", {})) for entry in data["entries"]) - 1
+                columns = 5
             sheet.row_dimensions[start].hidden = False
-            for row in sheet.iter_rows(min_row=start, max_row=end, max_col=3):
+            for row in sheet.iter_rows(min_row=start, max_row=end, max_col=columns):
                 for cell in row:
                     cell.value = None
                     cell.font, cell.fill = Font(), PatternFill()

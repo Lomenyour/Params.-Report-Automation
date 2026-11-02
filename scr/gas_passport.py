@@ -36,6 +36,8 @@ class GasPassport:
     carbon_hydrogen_ratio: float
     components: tuple[tuple[str, float], ...] = ()
     updated_at: str = ""
+    valid_from: str = ""
+    valid_until: str = ""
 
     @property
     def q_lower_mj_per_kg(self):
@@ -54,6 +56,8 @@ class GasPassport:
 
     @classmethod
     def from_dict(cls, data, station_id=None, unit=None):
+        if "entries" in data:
+            return GasPassportHistory.from_dict(data, station_id, unit)
         station, turbine = str(data.get("station_id", "")), str(data.get("unit", ""))
         from station_profiles import valid_unit_number
         if not station or not valid_unit_number(turbine):
@@ -76,21 +80,108 @@ class GasPassport:
             if not 0 <= value <= 1:
                 raise ValueError(f"Доля {name} должна быть от 0 до 1.")
             components.append((name, value))
-        return cls(station, turbine, *values, tuple(components), str(data.get("updated_at", "")))
+        start, end = (str(data.get(key) or "").strip() for key in ("valid_from", "valid_until"))
+        if bool(start) != bool(end):
+            raise ValueError("Укажите обе границы действия паспорта либо оставьте обе пустыми для всего диапазона.")
+        if start:
+            start, end = _gas_date(start), _gas_date(end)
+            if start >= end:
+                raise ValueError("Начало действия паспорта должно быть раньше окончания.")
+            start, end = start.isoformat(), end.isoformat()
+        return cls(station, turbine, *values, tuple(components), str(data.get("updated_at", "")), start, end)
+
+
+def _gas_date(value):
+    try:
+        result = pd.to_datetime(value, format="ISO8601") if isinstance(value, str) else pd.Timestamp(value)
+        if pd.isna(result) or result.tzinfo is not None:
+            raise ValueError()
+        return result
+    except (ValueError, TypeError, OverflowError) as error:
+        raise ValueError(f"Неверная дата паспорта газа: {value}. Используйте ГГГГ-ММ-ДД ЧЧ:ММ в местном времени измерений.") from error
+
+
+def passport_entries(passport):
+    return passport.entries if isinstance(passport, GasPassportHistory) else (passport,)
+
+
+@dataclass(frozen=True)
+class GasPassportHistory:
+    station_id: str
+    unit: str
+    entries: tuple[GasPassport, ...]
+    updated_at: str = ""
+
+    def to_dict(self):
+        return {"station_id": self.station_id, "unit": self.unit,
+                "entries": [entry.to_dict() for entry in self.entries], "updated_at": self.updated_at}
+
+    @property
+    def composition_warning(self):
+        return "\n".join(f"Паспорт {i}: {entry.composition_warning}" for i, entry in enumerate(self.entries, 1) if entry.composition_warning)
+
+    @classmethod
+    def from_dict(cls, data, station_id=None, unit=None):
+        station, turbine = str(data.get("station_id", "")), str(data.get("unit", ""))
+        if station_id is not None and station != station_id or unit is not None and turbine != str(unit):
+            raise ValueError("История паспортов относится к другой ТЭЦ или ГТ.")
+        raw_entries = data.get("entries", [])
+        if not isinstance(raw_entries, list) or not raw_entries:
+            raise ValueError("Добавьте хотя бы один паспорт газа.")
+        entries = tuple(GasPassport.from_dict(entry, station, turbine) for entry in raw_entries)
+        if any(not isinstance(entry, GasPassport) for entry in entries):
+            raise ValueError("Вложенные истории паспортов недопустимы.")
+        if len(entries) > 1 and any(not entry.valid_from for entry in entries):
+            raise ValueError("Для нескольких паспортов укажите срок действия каждого.")
+        entries = tuple(sorted(entries, key=lambda entry: entry.valid_from))
+        for previous, current in zip(entries, entries[1:]):
+            if _gas_date(previous.valid_until) > _gas_date(current.valid_from):
+                raise ValueError("Сроки действия паспортов газа пересекаются.")
+        return cls(station, turbine, entries, str(data.get("updated_at", "")))
+
+
+def gas_values(passport, dates):
+    """Select one passport per dated measurement; undated rows remain unavailable."""
+    import numpy as np
+    dates = pd.Series(pd.to_datetime(dates, errors="coerce")).reset_index(drop=True)
+    if getattr(dates.dt, "tz", None) is not None:
+        raise ValueError("Часовой пояс паспортов и измерений должен быть согласован явно.")
+    result = {key: np.full(len(dates), np.nan) for key in
+              ("density_kg_per_nm3", "q_lower_mj_per_nm3", "carbon_hydrogen_ratio")}
+    covered = np.zeros(len(dates), dtype=bool)
+    for entry in passport_entries(passport):
+        mask = dates.notna()
+        if entry.valid_from:
+            mask &= (dates >= _gas_date(entry.valid_from)) & (dates < _gas_date(entry.valid_until))
+        mask = mask.to_numpy()
+        if (covered & mask).any():
+            raise ValueError("Для одной даты выбрано несколько паспортов газа.")
+        covered |= mask
+        for key in result:
+            result[key][mask] = getattr(entry, key)
+    missing = dates.notna().to_numpy() & ~covered
+    if missing.any():
+        examples = dates.loc[missing].head(3).dt.strftime("%d.%m.%Y %H:%M").tolist()
+        raise ValueError(f"Нет паспорта газа для {int(missing.sum())} строк: {', '.join(examples)}. Дополните сроки действия.")
+    return result
 
 
 def passport_path():
     base = Path(os.environ.get("LOCALAPPDATA") or Path.home() / ".config")
-    return base / "GTU_Report" / "gas_passports.json"
+    return base / "GTU_Report" / "gas_passport_history.json"
 
 
 def _read_store():
     path = passport_path()
     if not path.exists():
-        return {"schema_version": 1, "passports": {}}
+        legacy = path.with_name("gas_passports.json")
+        if legacy.exists():
+            path = legacy
+        else:
+            return {"schema_version": 1, "passports": {}}
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-        if data["schema_version"] != 1 or not isinstance(data["passports"], dict):
+        if data["schema_version"] not in (1, 2) or not isinstance(data["passports"], dict):
             raise ValueError()
         return data
     except (OSError, ValueError, KeyError, TypeError) as error:
@@ -105,22 +196,12 @@ def load_passport(station_id, unit):
 def save_passport(passport):
     passport = GasPassport.from_dict({**passport.to_dict(),
         "updated_at": datetime.now(timezone.utc).isoformat(timespec="seconds")})
-    data = _read_store()
-    data["passports"][f"{passport.station_id}|{passport.unit}"] = passport.to_dict()
-    path = passport_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = None
-    try:
-        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", suffix=".json",
-                                         dir=path.parent, delete=False) as handle:
-            temporary = Path(handle.name)
-            json.dump(data, handle, ensure_ascii=False, indent=2, allow_nan=False)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temporary, path)
-    finally:
-        if temporary is not None:
-            temporary.unlink(missing_ok=True)
+    from json_store import transaction, write_json
+    with transaction():
+        data = _read_store()
+        data["schema_version"] = 2
+        data["passports"][f"{passport.station_id}|{passport.unit}"] = passport.to_dict()
+        write_json(passport_path(), data)
     return passport
 
 
@@ -189,6 +270,17 @@ def resolve_passport(path, station_id, unit):
 
 
 def write_passport(sheet, passport):
+    if isinstance(passport, GasPassportHistory):
+        sheet.append([MARKER, json.dumps(passport.to_dict(), ensure_ascii=False)])
+        sheet.append(["История паспортов газа, использованная в расчёте"])
+        sheet.append(["ТЭЦ", passport.station_id, "ГТ", passport.unit])
+        sheet.append(["Действует с", "До (не включая)", "Плотность, кг/нм³", "Qнр, МДж/нм³", "C/H"])
+        for entry in passport.entries:
+            sheet.append([entry.valid_from or "Весь диапазон", entry.valid_until,
+                          entry.density_kg_per_nm3, entry.q_lower_mj_per_nm3, entry.carbon_hydrogen_ratio])
+            for component, value in entry.components:
+                sheet.append([component, value])
+        return
     from openpyxl.cell import WriteOnlyCell
     from openpyxl.styles import Font, PatternFill
     rows = [

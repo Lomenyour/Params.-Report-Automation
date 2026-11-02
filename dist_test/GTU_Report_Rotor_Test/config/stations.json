@@ -17,7 +17,7 @@
     {"id": "syz_tec", "name": "СызТЭЦ", "company_id": "t_plus", "filename_aliases": ["Сызранская ТЭЦ", "СызТЭЦ", "СызранскаяТЭЦ"]},
     {"id": "novokuybyshevskaya_tec", "name": "Новокуйбышевская ТЭЦ", "company_id": "t_plus", "filename_aliases": ["Новокуйбышевская ТЭЦ", "НКТЭЦ"]},
     {"id": "akademicheskaya_tec", "name": "Академическая ТЭЦ", "company_id": "t_plus", "filename_aliases": ["Академическая ТЭЦ"]},
-    {"id": "izhevsk_tec", "name": "Ижевская ТЭЦ", "company_id": "t_plus", "filename_aliases": ["Ижевская ТЭЦ"]},
+    {"id": "izhevsk_tec", "name": "Ижевская ТЭЦ", "company_id": "t_plus", "filename_aliases": ["Ижевская ТЭЦ", "Ижевская"]},
     {"id": "nizhneturinskaya_gres", "name": "Нижнетуринская ГРЭС", "company_id": "t_plus", "filename_aliases": ["Нижнетуринская ГРЭС"]},
     {"id": "perm_tec_13", "name": "Пермская ТЭЦ-13", "company_id": "t_plus", "filename_aliases": ["Пермская ТЭЦ-13"]},
     {"id": "aleksinskaya_tec", "name": "Алексинская ТЭЦ", "company_id": "quadra", "filename_aliases": ["Алексинская ТЭЦ"]},

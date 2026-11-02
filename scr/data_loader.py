@@ -190,10 +190,20 @@ def load_source_data(
         print(f"Нераспознанные столбцы: {', '.join(unknown)}")
 
     result = pd.DataFrame(index=raw.index)
+    pressure_targets = {"p_atm_pa": "Па", "p_nk_pa": "Па", "p_kk_mpa": "МПа", "gas_pressure": "МПа"}
+    from parameter_mapping import header_unit, unit_factor, PRESSURE_UNITS
     for short_name, canonical_names in SHORT_NAMES.items():
         for canonical_name in canonical_names:
             if canonical_name in raw.columns:
                 result[short_name] = raw[canonical_name]
+                if short_name in pressure_targets:
+                    source_header = raw_headers[list(raw.columns).index(canonical_name)]
+                    unit = header_unit(source_header)
+                    if unit and unit.casefold() in PRESSURE_UNITS:
+                        factor = unit_factor(unit, pressure_targets[short_name])
+                        if factor != 1:
+                            result[short_name] = pd.to_numeric(result[short_name], errors="coerce") * factor
+                            print(f"Единицы {source_header}: ×{factor:g} → {pressure_targets[short_name]}")
                 break
 
     missing = [name for name in REQUIRED_NAMES if name not in result.columns]

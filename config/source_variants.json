@@ -1,0 +1,1772 @@
+{
+  "schema_version": 1,
+  "deferred_channels": [{"station_id": "izhevsk_tec", "unit": "1", "tag": "10MKA01FE006"}],
+  "source": "for_info/docs/data_example.docx",
+  "source_sha256": "3e0cf04bc09073c6dae0a7d31a2a4ce27d9ebba36881719ac5c7a21d8f6a8b61",
+  "variants": [
+    {
+      "id": "reference_1",
+      "company_id": "t_plus",
+      "enabled": true,
+      "reference_variant": 1,
+      "note": "Exact tags only; source does not specify units. Manual confirmation is mandatory.",
+      "assignments": [
+        {
+          "tag": "10MBL10CT101||XQ01",
+          "parameter": "ambient_temperature",
+          "unit": ""
+        },
+        {
+          "tag": "10MBL10CM001||XQ01",
+          "parameter": "relative_humidity",
+          "unit": ""
+        },
+        {
+          "tag": "10MBL10CP003||XQ01",
+          "parameter": "fgo",
+          "unit": ""
+        },
+        {
+          "tag": "10MBL10CP005|108374|OUT",
+          "parameter": "fto",
+          "unit": ""
+        },
+        {
+          "tag": "10MBA11CP101||XQ01",
+          "parameter": "inlet_pressure",
+          "unit": ""
+        },
+        {
+          "tag": "10MBA11CT901||ZQ01",
+          "parameter": "inlet_temperature",
+          "unit": ""
+        },
+        {
+          "tag": "10MBA12FP100||ZQ03",
+          "parameter": "outlet_pressure",
+          "unit": ""
+        },
+        {
+          "tag": "10MBA12CT901||ZQ01",
+          "parameter": "outlet_temperature",
+          "unit": ""
+        },
+        {
+          "tag": "10MBY10DT040||XQ02",
+          "parameter": "vna",
+          "unit": ""
+        },
+        {
+          "tag": "10EKG10CF001",
+          "parameter": "fuel_flow",
+          "unit": ""
+        },
+        {
+          "tag": "10MBY10CE901||XQ01",
+          "parameter": "power",
+          "unit": ""
+        },
+        {
+          "tag": "10MBY10CS901||ZQ01",
+          "parameter": "rpm",
+          "unit": ""
+        },
+        {
+          "tag": "10MBP13CP101||XQ01",
+          "parameter": "fuel_pressure",
+          "unit": ""
+        },
+        {
+          "tag": "10MBA22FT901||ZQ01",
+          "parameter": "exhaust_temperature",
+          "unit": ""
+        },
+        {
+          "tag": "10HNA10CP001",
+          "parameter": "exhaust_pressure",
+          "unit": ""
+        }
+      ]
+    },
+    {
+      "id": "reference_2",
+      "company_id": "t_plus",
+      "enabled": true,
+      "reference_variant": 2,
+      "note": "Exact tags only; source does not specify units. Manual confirmation is mandatory.",
+      "assignments": [
+        {
+          "tag": "10MBL11CT010",
+          "parameter": "ambient_temperature",
+          "unit": ""
+        },
+        {
+          "tag": "10MBL11CM001",
+          "parameter": "relative_humidity",
+          "unit": ""
+        },
+        {
+          "tag": "10MBL10CP003",
+          "parameter": "vlo",
+          "unit": ""
+        },
+        {
+          "tag": "10MBL10CP004",
+          "parameter": "fgo",
+          "unit": ""
+        },
+        {
+          "tag": "10MBL10CP005",
+          "parameter": "fto",
+          "unit": ""
+        },
+        {
+          "tag": "10MBA11CP101",
+          "parameter": "inlet_pressure",
+          "unit": ""
+        },
+        {
+          "tag": "10MBA11CT901",
+          "parameter": "inlet_temperature",
+          "unit": ""
+        },
+        {
+          "tag": "10MBA12CP101",
+          "parameter": "outlet_pressure",
+          "unit": ""
+        },
+        {
+          "tag": "10MBA12CT901",
+          "parameter": "outlet_temperature",
+          "unit": ""
+        },
+        {
+          "tag": "10MBY10DT040",
+          "parameter": "vna",
+          "unit": ""
+        },
+        {
+          "tag": "EKG13FQ319",
+          "parameter": "fuel_flow",
+          "unit": ""
+        },
+        {
+          "tag": "10MKA10CE003XQ01",
+          "parameter": "power",
+          "unit": ""
+        },
+        {
+          "tag": "10MKA01FE006ZQ01",
+          "parameter": "power_factor",
+          "unit": ""
+        },
+        {
+          "tag": "10MBA10CS901ZQ02",
+          "parameter": "rpm",
+          "unit": ""
+        },
+        {
+          "tag": "10MBP13CP101",
+          "parameter": "fuel_pressure",
+          "unit": ""
+        },
+        {
+          "tag": "10MBA22FT901",
+          "parameter": "exhaust_temperature",
+          "unit": ""
+        },
+        {
+          "tag": "10HNA60CP001",
+          "parameter": "exhaust_pressure",
+          "unit": ""
+        }
+      ]
+    },
+    {
+      "id": "reference_3_11",
+      "company_id": "t_plus",
+      "enabled": false,
+      "reference_variant": 3,
+      "note": "Reference only: incomplete or ambiguous assignments.",
+      "assignments": [
+        {
+          "tag": "11MBL01CT001_XQ60",
+          "parameter": "ambient_temperature",
+          "unit": ""
+        },
+        {
+          "tag": "11MBL01CM001_XQ60",
+          "parameter": "relative_humidity",
+          "unit": ""
+        },
+        {
+          "tag": "11MBL01CP001_XQ60",
+          "parameter": "atmospheric_pressure",
+          "unit": ""
+        },
+        {
+          "tag": "11MBL30CP002_XQ60",
+          "parameter": "fgo",
+          "unit": ""
+        },
+        {
+          "tag": "11MBL30CP003_XQ60",
+          "parameter": "fto",
+          "unit": ""
+        },
+        {
+          "tag": "11MBL30CP001_XQ60",
+          "parameter": "inlet_pressure_drop",
+          "unit": ""
+        },
+        {
+          "tag": "11TAIM_T_AIR_INT_MEAN_AV",
+          "parameter": "inlet_temperature",
+          "unit": ""
+        },
+        {
+          "tag": "11PACM_P_AFT_CPRS_AV",
+          "parameter": "outlet_pressure",
+          "unit": ""
+        },
+        {
+          "tag": "11MBA80CT901_XJ60",
+          "parameter": "outlet_temperature",
+          "unit": ""
+        },
+        {
+          "tag": "11VGVC_VIGV_POS_RV",
+          "parameter": "vna",
+          "unit": ""
+        },
+        {
+          "tag": "11MBP05FF004_XJ60",
+          "parameter": "fuel_flow",
+          "unit": ""
+        },
+        {
+          "tag": "11PWRM_GEN_ACT_PWR_AV",
+          "parameter": "power",
+          "unit": ""
+        },
+        {
+          "tag": "11MKA10CE907_XJ60",
+          "parameter": "power_factor",
+          "unit": ""
+        },
+        {
+          "tag": "11SPDM_SPEED_AV",
+          "parameter": "rpm",
+          "unit": ""
+        },
+        {
+          "tag": "11MBP05CP011_XQ60",
+          "parameter": "fuel_pressure",
+          "unit": ""
+        },
+        {
+          "tag": "11TEGM_T_EXH_GAS_AV",
+          "parameter": "exhaust_temperature",
+          "unit": ""
+        },
+        {
+          "tag": "11MBP40CT007_XQ60",
+          "parameter": "fuel_temperature",
+          "unit": ""
+        },
+        {
+          "tag": "11PEDM_P_EXH_DIFF_AV",
+          "parameter": "exhaust_pressure",
+          "unit": ""
+        }
+      ]
+    },
+    {
+      "id": "reference_3_12",
+      "company_id": "t_plus",
+      "enabled": false,
+      "reference_variant": 3,
+      "note": "Reference only: incomplete or ambiguous assignments.",
+      "assignments": [
+        {
+          "tag": "12MBL01CT001_XQ60",
+          "parameter": "ambient_temperature",
+          "unit": ""
+        },
+        {
+          "tag": "12MBL01CM001_XQ60",
+          "parameter": "relative_humidity",
+          "unit": ""
+        },
+        {
+          "tag": "12MBL01CP001_XQ60",
+          "parameter": "atmospheric_pressure",
+          "unit": ""
+        },
+        {
+          "tag": "12MBL30CP002_XQ60",
+          "parameter": "fgo",
+          "unit": ""
+        },
+        {
+          "tag": "12MBL30CP003_XQ60",
+          "parameter": "fto",
+          "unit": ""
+        },
+        {
+          "tag": "12MBL30CP001_XQ60",
+          "parameter": "inlet_pressure_drop",
+          "unit": ""
+        },
+        {
+          "tag": "12TAIM_T_AIR_INT_MEAN_AV",
+          "parameter": "inlet_temperature",
+          "unit": ""
+        },
+        {
+          "tag": "12PACM_P_AFT_CPRS_AV",
+          "parameter": "outlet_pressure",
+          "unit": ""
+        },
+        {
+          "tag": "12MBA80CT901_XJ60",
+          "parameter": "outlet_temperature",
+          "unit": ""
+        },
+        {
+          "tag": "12VGVC_VIGV_POS_RV",
+          "parameter": "vna",
+          "unit": ""
+        },
+        {
+          "tag": "12MBP05FF004_XJ60",
+          "parameter": "fuel_flow",
+          "unit": ""
+        },
+        {
+          "tag": "12PWRM_GEN_ACT_PWR_AV",
+          "parameter": "power",
+          "unit": ""
+        },
+        {
+          "tag": "12MKA10CE907_XJ60",
+          "parameter": "power_factor",
+          "unit": ""
+        },
+        {
+          "tag": "12SPDM_SPEED_AV",
+          "parameter": "rpm",
+          "unit": ""
+        },
+        {
+          "tag": "12MBP05CP011_XQ60",
+          "parameter": "fuel_pressure",
+          "unit": ""
+        },
+        {
+          "tag": "12TEGM_T_EXH_GAS_AV",
+          "parameter": "exhaust_temperature",
+          "unit": ""
+        },
+        {
+          "tag": "12MBP40CT007_XQ60",
+          "parameter": "fuel_temperature",
+          "unit": ""
+        },
+        {
+          "tag": "12PEDM_P_EXH_DIFF_AV",
+          "parameter": "exhaust_pressure",
+          "unit": ""
+        }
+      ]
+    },
+    {
+      "id": "reference_4_11",
+      "company_id": "t_plus",
+      "enabled": true,
+      "reference_variant": 4,
+      "note": "Exact tags only; source does not specify units. Manual confirmation is mandatory.",
+      "assignments": [
+        {
+          "tag": "11MBL30CT005/XE01",
+          "parameter": "ambient_temperature",
+          "unit": ""
+        },
+        {
+          "tag": "11MBL30CM005/XE01",
+          "parameter": "relative_humidity",
+          "unit": ""
+        },
+        {
+          "tag": "11MBL10CP005/XE01",
+          "parameter": "fgo",
+          "unit": ""
+        },
+        {
+          "tag": "11MBL10CP010/XE01",
+          "parameter": "fto",
+          "unit": ""
+        },
+        {
+          "tag": "11MBA10CP075/XE01",
+          "parameter": "inlet_pressure_drop",
+          "unit": ""
+        },
+        {
+          "tag": "11MBA10CP010/XE01",
+          "parameter": "inlet_pressure",
+          "unit": ""
+        },
+        {
+          "tag": "11MBA10CT025/XE01",
+          "parameter": "inlet_temperature",
+          "unit": ""
+        },
+        {
+          "tag": "11MBA10CP015/XE01",
+          "parameter": "outlet_pressure",
+          "unit": ""
+        },
+        {
+          "tag": "11MBA10CT030/XE01",
+          "parameter": "outlet_temperature",
+          "unit": ""
+        },
+        {
+          "tag": "11MBA10AE005/XG01",
+          "parameter": "vna",
+          "unit": ""
+        },
+        {
+          "tag": "11MBA10CF900/XE01",
+          "parameter": "fuel_flow",
+          "unit": ""
+        },
+        {
+          "tag": "11CFA10CE001/XE01",
+          "parameter": "power",
+          "unit": ""
+        },
+        {
+          "tag": "11MKY10CE033/XE01",
+          "parameter": "power_factor",
+          "unit": ""
+        },
+        {
+          "tag": "11MBA10CS005/XE01",
+          "parameter": "rpm",
+          "unit": ""
+        },
+        {
+          "tag": "11MBP40CP005/XE01",
+          "parameter": "fuel_pressure",
+          "unit": ""
+        },
+        {
+          "tag": "11MBA10FT910/ZE01",
+          "parameter": "exhaust_temperature",
+          "unit": ""
+        },
+        {
+          "tag": "11MBP10CT800/XE01",
+          "parameter": "fuel_temperature",
+          "unit": ""
+        },
+        {
+          "tag": "11MBA10CP045/XE01",
+          "parameter": "exhaust_pressure",
+          "unit": ""
+        }
+      ]
+    },
+    {
+      "id": "reference_4_12",
+      "company_id": "t_plus",
+      "enabled": true,
+      "reference_variant": 4,
+      "note": "Exact tags only; source does not specify units. Manual confirmation is mandatory.",
+      "assignments": [
+        {
+          "tag": "12MBL30CT005/XE01",
+          "parameter": "ambient_temperature",
+          "unit": ""
+        },
+        {
+          "tag": "12MBL30CM005/XE01",
+          "parameter": "relative_humidity",
+          "unit": ""
+        },
+        {
+          "tag": "12MBL10CP005/XE01",
+          "parameter": "fgo",
+          "unit": ""
+        },
+        {
+          "tag": "12MBL10CP010/XE01",
+          "parameter": "fto",
+          "unit": ""
+        },
+        {
+          "tag": "12MBA10CP075/XE01",
+          "parameter": "inlet_pressure_drop",
+          "unit": ""
+        },
+        {
+          "tag": "12MBA10CP010/XE01",
+          "parameter": "inlet_pressure",
+          "unit": ""
+        },
+        {
+          "tag": "12MBA10CT025/XE01",
+          "parameter": "inlet_temperature",
+          "unit": ""
+        },
+        {
+          "tag": "12MBA10CP015/XE01",
+          "parameter": "outlet_pressure",
+          "unit": ""
+        },
+        {
+          "tag": "12MBA10CT030/XE01",
+          "parameter": "outlet_temperature",
+          "unit": ""
+        },
+        {
+          "tag": "12MBA10AE005/XG01",
+          "parameter": "vna",
+          "unit": ""
+        },
+        {
+          "tag": "12MBA10CF900/XE01",
+          "parameter": "fuel_flow",
+          "unit": ""
+        },
+        {
+          "tag": "12CFA10CE001/XE01",
+          "parameter": "power",
+          "unit": ""
+        },
+        {
+          "tag": "12MKY10CE033/XE01",
+          "parameter": "power_factor",
+          "unit": ""
+        },
+        {
+          "tag": "12MBA10CS005/XE01",
+          "parameter": "rpm",
+          "unit": ""
+        },
+        {
+          "tag": "12MBP40CP005/XE01",
+          "parameter": "fuel_pressure",
+          "unit": ""
+        },
+        {
+          "tag": "12MBA10FT910/ZE01",
+          "parameter": "exhaust_temperature",
+          "unit": ""
+        },
+        {
+          "tag": "12MBP10CT800/XE01",
+          "parameter": "fuel_temperature",
+          "unit": ""
+        },
+        {
+          "tag": "12MBA10CP045/XE01",
+          "parameter": "exhaust_pressure",
+          "unit": ""
+        }
+      ]
+    },
+    {
+      "id": "reference_5",
+      "company_id": "t_plus",
+      "enabled": true,
+      "reference_variant": 5,
+      "note": "Exact tags only; source does not specify units. Manual confirmation is mandatory.",
+      "assignments": [
+        {
+          "tag": "40MBL11CT010XQ01",
+          "parameter": "ambient_temperature",
+          "unit": ""
+        },
+        {
+          "tag": "40MBL11CM001XQ01",
+          "parameter": "relative_humidity",
+          "unit": ""
+        },
+        {
+          "tag": "40MBL10CP003XQ01",
+          "parameter": "vlo",
+          "unit": ""
+        },
+        {
+          "tag": "40MBL10CP004XQ01",
+          "parameter": "fgo",
+          "unit": ""
+        },
+        {
+          "tag": "40MBL10CP005XQ01",
+          "parameter": "fto",
+          "unit": ""
+        },
+        {
+          "tag": "40MBA11CP101XQ01",
+          "parameter": "inlet_pressure",
+          "unit": ""
+        },
+        {
+          "tag": "40MBA11CT901ZQ01",
+          "parameter": "inlet_temperature",
+          "unit": ""
+        },
+        {
+          "tag": "40MBA12FP100ZQ03",
+          "parameter": "outlet_pressure",
+          "unit": ""
+        },
+        {
+          "tag": "40MBA12CT901ZQ01",
+          "parameter": "outlet_temperature",
+          "unit": ""
+        },
+        {
+          "tag": "40MBY10DT040XQ02",
+          "parameter": "vna",
+          "unit": ""
+        },
+        {
+          "tag": "MBP10CF001_REAL",
+          "parameter": "fuel_flow",
+          "unit": ""
+        },
+        {
+          "tag": "40MBY10CE901XQ01",
+          "parameter": "power",
+          "unit": ""
+        },
+        {
+          "tag": "40MKA01FE006XQ01",
+          "parameter": "power_factor",
+          "unit": ""
+        },
+        {
+          "tag": "40MBY10CS901ZQ01",
+          "parameter": "rpm",
+          "unit": ""
+        },
+        {
+          "tag": "40MBP13CP101XQ01",
+          "parameter": "fuel_pressure",
+          "unit": ""
+        },
+        {
+          "tag": "40MBA22FT901ZQ01",
+          "parameter": "exhaust_temperature",
+          "unit": ""
+        },
+        {
+          "tag": "40MBP10CT001",
+          "parameter": "fuel_temperature",
+          "unit": ""
+        },
+        {
+          "tag": "40HNA60CP001",
+          "parameter": "exhaust_pressure",
+          "unit": ""
+        }
+      ]
+    },
+    {
+      "id": "reference_6",
+      "company_id": "t_plus",
+      "enabled": false,
+      "reference_variant": 6,
+      "note": "Reference only: incomplete or ambiguous assignments.",
+      "assignments": []
+    },
+    {
+      "id": "reference_7_11",
+      "company_id": "t_plus",
+      "enabled": false,
+      "reference_variant": 7,
+      "note": "Reference only: incomplete or ambiguous assignments.",
+      "assignments": [
+        {
+          "tag": "11MBL01CT001_XQ60",
+          "parameter": "ambient_temperature",
+          "unit": ""
+        },
+        {
+          "tag": "11MBL01CM001_XQ60",
+          "parameter": "relative_humidity",
+          "unit": ""
+        },
+        {
+          "tag": "11MBL01CP001_XQ60",
+          "parameter": "atmospheric_pressure",
+          "unit": ""
+        },
+        {
+          "tag": "11MBL30CP019_XQ60",
+          "parameter": "fgo",
+          "unit": ""
+        },
+        {
+          "tag": "11MBL30CP003_XQ60",
+          "parameter": "fto",
+          "unit": ""
+        },
+        {
+          "tag": "11MBL30CP023_XQ60",
+          "parameter": "fto",
+          "unit": ""
+        },
+        {
+          "tag": "11MBL30CP001_XQ60",
+          "parameter": "inlet_pressure_drop",
+          "unit": ""
+        },
+        {
+          "tag": "11MBL30CT011_XQ60",
+          "parameter": "inlet_temperature",
+          "unit": ""
+        },
+        {
+          "tag": "11MBA80CP011_XQ60",
+          "parameter": "outlet_pressure",
+          "unit": ""
+        },
+        {
+          "tag": "11MBA80CT001_XQ60",
+          "parameter": "outlet_temperature",
+          "unit": ""
+        },
+        {
+          "tag": "11MBA82CG001AXQ60",
+          "parameter": "vna",
+          "unit": ""
+        },
+        {
+          "tag": "11MBP05FF004_XJ60",
+          "parameter": "fuel_flow",
+          "unit": ""
+        },
+        {
+          "tag": "11MKA10CE601_XQ60",
+          "parameter": "power",
+          "unit": ""
+        },
+        {
+          "tag": "11MKA10CE907_XJ60",
+          "parameter": "power_factor",
+          "unit": ""
+        },
+        {
+          "tag": "11MBA30CS004_XQ60",
+          "parameter": "rpm",
+          "unit": ""
+        },
+        {
+          "tag": "11MBP05CP011_XQ60",
+          "parameter": "fuel_pressure",
+          "unit": ""
+        },
+        {
+          "tag": "11MBA30CT021_XQ60",
+          "parameter": "exhaust_temperature",
+          "unit": ""
+        },
+        {
+          "tag": "11MBP05CT010_XQ60",
+          "parameter": "fuel_temperature",
+          "unit": ""
+        },
+        {
+          "tag": "11MBA30CP011_XQ60",
+          "parameter": "exhaust_pressure",
+          "unit": ""
+        }
+      ]
+    },
+    {
+      "id": "reference_8",
+      "company_id": "t_plus",
+      "enabled": true,
+      "reference_variant": 8,
+      "note": "Exact tags only; source does not specify units. Manual confirmation is mandatory.",
+      "assignments": [
+        {
+          "tag": "11MBL01CT001_XQ60",
+          "parameter": "ambient_temperature",
+          "unit": ""
+        },
+        {
+          "tag": "11MBL01CM001_XQ60",
+          "parameter": "relative_humidity",
+          "unit": ""
+        },
+        {
+          "tag": "11MBL01CP001_XQ60",
+          "parameter": "atmospheric_pressure",
+          "unit": ""
+        },
+        {
+          "tag": "11MBL30CP005",
+          "parameter": "vlo",
+          "unit": ""
+        },
+        {
+          "tag": "11MBL30CP002",
+          "parameter": "fgo",
+          "unit": ""
+        },
+        {
+          "tag": "11MBL30CP003",
+          "parameter": "fto",
+          "unit": ""
+        },
+        {
+          "tag": "11MBL30CP001_XJ60",
+          "parameter": "inlet_pressure",
+          "unit": ""
+        },
+        {
+          "tag": "11MBL30CT911_XJ60",
+          "parameter": "inlet_temperature",
+          "unit": ""
+        },
+        {
+          "tag": "11MBA80CP901_XQ60",
+          "parameter": "outlet_pressure",
+          "unit": ""
+        },
+        {
+          "tag": "11MBA80CT901_XJ60",
+          "parameter": "outlet_temperature",
+          "unit": ""
+        },
+        {
+          "tag": "11MBA82CG901_XJ60",
+          "parameter": "vna",
+          "unit": ""
+        },
+        {
+          "tag": "11MBP05FF004_M3",
+          "parameter": "fuel_flow",
+          "unit": ""
+        },
+        {
+          "tag": "11MKA10CE901_XJ60",
+          "parameter": "power",
+          "unit": ""
+        },
+        {
+          "tag": "11MKA10CE907_XJ60",
+          "parameter": "power_factor",
+          "unit": ""
+        },
+        {
+          "tag": "11MBA30CS901_XJ60",
+          "parameter": "rpm",
+          "unit": ""
+        },
+        {
+          "tag": "11MBP41CP006_XQ60",
+          "parameter": "fuel_pressure",
+          "unit": ""
+        },
+        {
+          "tag": "11MBA30CT911_XJ60",
+          "parameter": "exhaust_temperature",
+          "unit": ""
+        },
+        {
+          "tag": "11MBP40CT007_XQ60",
+          "parameter": "fuel_temperature",
+          "unit": ""
+        },
+        {
+          "tag": "11MBP40CP001_XQ60",
+          "parameter": "exhaust_pressure",
+          "unit": ""
+        }
+      ]
+    },
+    {
+      "id": "reference_9",
+      "company_id": "t_plus",
+      "enabled": false,
+      "reference_variant": 9,
+      "note": "Reference only: incomplete or ambiguous assignments.",
+      "assignments": []
+    },
+    {
+      "id": "reference_10",
+      "company_id": "t_plus",
+      "enabled": false,
+      "reference_variant": 10,
+      "note": "Reference only: incomplete or ambiguous assignments.",
+      "assignments": []
+    },
+    {
+      "id": "reference_11",
+      "company_id": "t_plus",
+      "enabled": false,
+      "reference_variant": 11,
+      "note": "Reference only: incomplete or ambiguous assignments.",
+      "assignments": []
+    },
+    {
+      "id": "reference_12_01",
+      "company_id": "mosenergo",
+      "enabled": false,
+      "reference_variant": 12,
+      "note": "Reference only: incomplete or ambiguous assignments.",
+      "assignments": [
+        {
+          "tag": "01MBL10CT001||XQ01",
+          "parameter": "ambient_temperature",
+          "unit": ""
+        },
+        {
+          "tag": "01MBL10CM001||XQ01",
+          "parameter": "relative_humidity",
+          "unit": ""
+        },
+        {
+          "tag": "01MBL10CP001||XQ01",
+          "parameter": "atmospheric_pressure",
+          "unit": ""
+        },
+        {
+          "tag": "01MBL01CP901||XQ01",
+          "parameter": "fgo",
+          "unit": ""
+        },
+        {
+          "tag": "01MBL01CP005||XQ01",
+          "parameter": "fgo",
+          "unit": ""
+        },
+        {
+          "tag": "01MBL01CP903||XQ01",
+          "parameter": "fgo",
+          "unit": ""
+        },
+        {
+          "tag": "01MBL02CP901||XQ01",
+          "parameter": "fto",
+          "unit": ""
+        },
+        {
+          "tag": "01MBL02CP902||XQ01",
+          "parameter": "fto",
+          "unit": ""
+        },
+        {
+          "tag": "01MBL02CP903||XQ01",
+          "parameter": "fto",
+          "unit": ""
+        },
+        {
+          "tag": "01MBL10CP019||XQ01",
+          "parameter": "inlet_pressure",
+          "unit": ""
+        },
+        {
+          "tag": "01MBL10CT002||XQ01",
+          "parameter": "inlet_temperature",
+          "unit": ""
+        },
+        {
+          "tag": "01MBA12CP101||XQ01",
+          "parameter": "outlet_pressure",
+          "unit": ""
+        },
+        {
+          "tag": "01MBA12CT901||ZQ01",
+          "parameter": "outlet_temperature",
+          "unit": ""
+        },
+        {
+          "tag": "01MBY10DT040||XQ02",
+          "parameter": "vna",
+          "unit": ""
+        },
+        {
+          "tag": "01EKG15CF001||XQ01",
+          "parameter": "fuel_flow",
+          "unit": ""
+        },
+        {
+          "tag": "01MBY10CE901||XQ01",
+          "parameter": "power",
+          "unit": ""
+        },
+        {
+          "tag": "01MKA01CE005||XQ01",
+          "parameter": "power_factor",
+          "unit": ""
+        },
+        {
+          "tag": "01HNA20CP901||XQ01",
+          "parameter": "fuel_pressure",
+          "unit": ""
+        },
+        {
+          "tag": "01MBA26CT900||ZQ01",
+          "parameter": "exhaust_temperature",
+          "unit": ""
+        },
+        {
+          "tag": "01MBP13FT901||ZQ01",
+          "parameter": "fuel_temperature",
+          "unit": ""
+        }
+      ]
+    },
+    {
+      "id": "reference_12_A1",
+      "company_id": "mosenergo",
+      "enabled": true,
+      "reference_variant": 12,
+      "note": "Exact tags only; source does not specify units. Manual confirmation is mandatory.",
+      "assignments": [
+        {
+          "tag": "A1MBA10CP045|XE01|OUT",
+          "parameter": "exhaust_pressure",
+          "unit": ""
+        }
+      ]
+    },
+    {
+      "id": "reference_12_A2",
+      "company_id": "mosenergo",
+      "enabled": true,
+      "reference_variant": 12,
+      "note": "Exact tags only; source does not specify units. Manual confirmation is mandatory.",
+      "assignments": [
+        {
+          "tag": "A2MBA10CP045|XE01|OUT",
+          "parameter": "exhaust_pressure",
+          "unit": ""
+        }
+      ]
+    },
+    {
+      "id": "reference_13",
+      "company_id": "mosenergo",
+      "enabled": false,
+      "reference_variant": 13,
+      "note": "Reference only: incomplete or ambiguous assignments.",
+      "assignments": []
+    },
+    {
+      "id": "reference_14",
+      "company_id": "mosenergo",
+      "enabled": true,
+      "reference_variant": 14,
+      "note": "Exact tags only; source does not specify units. Manual confirmation is mandatory.",
+      "assignments": [
+        {
+          "tag": "81MBL11CT902|ZQ01|OUT",
+          "parameter": "ambient_temperature",
+          "unit": ""
+        },
+        {
+          "tag": "81MBL11CM001||XQ01",
+          "parameter": "relative_humidity",
+          "unit": ""
+        },
+        {
+          "tag": "81MBL10CP003||XQ01",
+          "parameter": "vlo",
+          "unit": ""
+        },
+        {
+          "tag": "81MBL10CP004||XQ01",
+          "parameter": "fgo",
+          "unit": ""
+        },
+        {
+          "tag": "81MBL10CP005||XQ01",
+          "parameter": "fto",
+          "unit": ""
+        },
+        {
+          "tag": "81MBA11CP101||XQ01",
+          "parameter": "inlet_pressure",
+          "unit": ""
+        },
+        {
+          "tag": "81MBA11CT901||ZQ01",
+          "parameter": "inlet_temperature",
+          "unit": ""
+        },
+        {
+          "tag": "81MBA12CP901||ZQ03",
+          "parameter": "outlet_pressure",
+          "unit": ""
+        },
+        {
+          "tag": "81MBA12CT901||ZQ01",
+          "parameter": "outlet_temperature",
+          "unit": ""
+        },
+        {
+          "tag": "81MBA11DG002||XQ02",
+          "parameter": "vna",
+          "unit": ""
+        },
+        {
+          "tag": "81EKG70CF001||XQ01",
+          "parameter": "fuel_flow",
+          "unit": ""
+        },
+        {
+          "tag": "81MBY10CE901||XQ01",
+          "parameter": "power",
+          "unit": ""
+        },
+        {
+          "tag": "81MKC01DE503||ZQ01",
+          "parameter": "power_factor",
+          "unit": ""
+        },
+        {
+          "tag": "81MBY10CS901||ZQ10",
+          "parameter": "rpm",
+          "unit": ""
+        },
+        {
+          "tag": "81HNA10CP302||XQ01",
+          "parameter": "fuel_pressure",
+          "unit": ""
+        },
+        {
+          "tag": "81MBY10FT010||ZQ01",
+          "parameter": "exhaust_temperature",
+          "unit": ""
+        },
+        {
+          "tag": "81MBP13FT901||ZQ01",
+          "parameter": "fuel_temperature",
+          "unit": ""
+        },
+        {
+          "tag": "81EKG70CP001||XQ01",
+          "parameter": "exhaust_pressure",
+          "unit": ""
+        }
+      ]
+    },
+    {
+      "id": "reference_15",
+      "company_id": "mosenergo",
+      "enabled": false,
+      "reference_variant": 15,
+      "note": "Reference only: incomplete or ambiguous assignments.",
+      "assignments": [
+        {
+          "tag": "11MBL11CT010§§XQ01",
+          "parameter": "ambient_temperature",
+          "unit": ""
+        },
+        {
+          "tag": "11MBL11CM001§§XQ01",
+          "parameter": "relative_humidity",
+          "unit": ""
+        },
+        {
+          "tag": "11MBA11CP101§§XQ01",
+          "parameter": "atmospheric_pressure",
+          "unit": ""
+        },
+        {
+          "tag": "11MBL10CP003§§XQ01",
+          "parameter": "vlo",
+          "unit": ""
+        },
+        {
+          "tag": "11MBL10CP004§§XQ01",
+          "parameter": "fgo",
+          "unit": ""
+        },
+        {
+          "tag": "11MBL10CP005§§XQ01",
+          "parameter": "fto",
+          "unit": ""
+        },
+        {
+          "tag": "11MBA11CP101§§XQ01",
+          "parameter": "inlet_pressure",
+          "unit": ""
+        },
+        {
+          "tag": "11MBA12CT901§§ZQ01",
+          "parameter": "inlet_temperature",
+          "unit": ""
+        },
+        {
+          "tag": "11MBA12CP901§§ZQ03",
+          "parameter": "outlet_pressure",
+          "unit": ""
+        },
+        {
+          "tag": "11MBA12CT901§§ZQ01",
+          "parameter": "outlet_temperature",
+          "unit": ""
+        },
+        {
+          "tag": "11MBA11DG002§§XQ01",
+          "parameter": "vna",
+          "unit": ""
+        },
+        {
+          "tag": "11EKG60FF001SX§§XQ01",
+          "parameter": "fuel_flow",
+          "unit": ""
+        },
+        {
+          "tag": "11MBY10CE901§§XQ01",
+          "parameter": "power",
+          "unit": ""
+        },
+        {
+          "tag": "11MKC01DE503§§ZQ01",
+          "parameter": "power_factor",
+          "unit": ""
+        },
+        {
+          "tag": "11MBY10CS901§§ZQ11",
+          "parameter": "rpm",
+          "unit": ""
+        },
+        {
+          "tag": "11MBP32FP901§ZQ01§OUT",
+          "parameter": "fuel_pressure",
+          "unit": ""
+        },
+        {
+          "tag": "11MBA26CT900§§ZQ01",
+          "parameter": "exhaust_temperature",
+          "unit": ""
+        },
+        {
+          "tag": "11MBP13FT901§§ZQ01",
+          "parameter": "fuel_temperature",
+          "unit": ""
+        },
+        {
+          "tag": "L0HNA10CP001§§XQ01",
+          "parameter": "exhaust_pressure",
+          "unit": ""
+        }
+      ]
+    },
+    {
+      "id": "reference_16",
+      "company_id": "mosenergo",
+      "enabled": false,
+      "reference_variant": 16,
+      "note": "Reference only: incomplete or ambiguous assignments.",
+      "assignments": []
+    },
+    {
+      "id": "reference_17",
+      "company_id": "mosenergo",
+      "enabled": true,
+      "reference_variant": 17,
+      "note": "Exact tags only; source does not specify units. Manual confirmation is mandatory.",
+      "assignments": [
+        {
+          "tag": "81MBL10CT001_XQ60",
+          "parameter": "ambient_temperature",
+          "unit": ""
+        },
+        {
+          "tag": "81MBL10CM001_XQ60",
+          "parameter": "relative_humidity",
+          "unit": ""
+        },
+        {
+          "tag": "81MBL10CP001_XQ60",
+          "parameter": "atmospheric_pressure",
+          "unit": ""
+        },
+        {
+          "tag": "81MBL30CP019_XQ60",
+          "parameter": "vlo",
+          "unit": ""
+        },
+        {
+          "tag": "81MBL30CP002_XQ50",
+          "parameter": "fgo",
+          "unit": ""
+        },
+        {
+          "tag": "81MBL30CP003_XQ50",
+          "parameter": "fto",
+          "unit": ""
+        },
+        {
+          "tag": "81MBL30CT011_XQ60",
+          "parameter": "inlet_temperature",
+          "unit": ""
+        },
+        {
+          "tag": "81MBA80CP901_XT01",
+          "parameter": "outlet_pressure",
+          "unit": ""
+        },
+        {
+          "tag": "81MBA80CT901_XT01",
+          "parameter": "outlet_temperature",
+          "unit": ""
+        },
+        {
+          "tag": "81MBA82CG011_XQ60",
+          "parameter": "vna",
+          "unit": ""
+        },
+        {
+          "tag": "81MBP05EU001_XQ60",
+          "parameter": "fuel_flow",
+          "unit": ""
+        },
+        {
+          "tag": "81MKA10CE601_XQ60",
+          "parameter": "power",
+          "unit": ""
+        },
+        {
+          "tag": "81MKA10CE607_XQ60",
+          "parameter": "power_factor",
+          "unit": ""
+        },
+        {
+          "tag": "81MBA30CS901_XJ01",
+          "parameter": "rpm",
+          "unit": ""
+        },
+        {
+          "tag": "81MBP05CP011_XQ60",
+          "parameter": "fuel_pressure",
+          "unit": ""
+        },
+        {
+          "tag": "81HNA70CT001_XQ50",
+          "parameter": "exhaust_temperature",
+          "unit": ""
+        },
+        {
+          "tag": "81MBP05CT010_XQ60",
+          "parameter": "fuel_temperature",
+          "unit": ""
+        },
+        {
+          "tag": "81MBA30CP001_XQ60",
+          "parameter": "exhaust_pressure",
+          "unit": ""
+        }
+      ]
+    },
+    {
+      "id": "reference_18_31",
+      "company_id": "mosenergo",
+      "enabled": true,
+      "reference_variant": 18,
+      "note": "Exact tags only; source does not specify units. Manual confirmation is mandatory.",
+      "assignments": [
+        {
+          "tag": "31MBL11CT010,,XQ01",
+          "parameter": "ambient_temperature",
+          "unit": ""
+        },
+        {
+          "tag": "31MBL11CM001,,XQ01",
+          "parameter": "relative_humidity",
+          "unit": ""
+        },
+        {
+          "tag": "31MBL10CP001,,XQ01",
+          "parameter": "atmospheric_pressure",
+          "unit": ""
+        },
+        {
+          "tag": "31MBL10CP003,,XQ01",
+          "parameter": "vlo",
+          "unit": ""
+        },
+        {
+          "tag": "31MBL10CP004,,XQ01",
+          "parameter": "fgo",
+          "unit": ""
+        },
+        {
+          "tag": "31MBL10CP005,,XQ01",
+          "parameter": "fto",
+          "unit": ""
+        },
+        {
+          "tag": "31MBA11CP101,,XQ01",
+          "parameter": "inlet_pressure",
+          "unit": ""
+        },
+        {
+          "tag": "31MBA11CT901,,ZQ01",
+          "parameter": "inlet_temperature",
+          "unit": ""
+        },
+        {
+          "tag": "31MBA12FP100,,ZQ03",
+          "parameter": "outlet_pressure",
+          "unit": ""
+        },
+        {
+          "tag": "31MBA12CT101B,,XQ01",
+          "parameter": "outlet_temperature",
+          "unit": ""
+        },
+        {
+          "tag": "31MBY10DT040,,XQ02",
+          "parameter": "vna",
+          "unit": ""
+        },
+        {
+          "tag": "31MBP10CF001,,XQ01",
+          "parameter": "fuel_flow",
+          "unit": ""
+        },
+        {
+          "tag": "31MBY10CE901,,XQ01",
+          "parameter": "power",
+          "unit": ""
+        },
+        {
+          "tag": "31MBY10CS901,,ZQ10",
+          "parameter": "rpm",
+          "unit": ""
+        },
+        {
+          "tag": "31MBP13CP101,,XQ01",
+          "parameter": "fuel_pressure",
+          "unit": ""
+        },
+        {
+          "tag": "31MBA22FT901,,ZQ01",
+          "parameter": "exhaust_temperature",
+          "unit": ""
+        },
+        {
+          "tag": "31MBP10CT001,,XQ01",
+          "parameter": "fuel_temperature",
+          "unit": ""
+        },
+        {
+          "tag": "31HNA01CP001,,XQ01",
+          "parameter": "exhaust_pressure",
+          "unit": ""
+        }
+      ]
+    },
+    {
+      "id": "reference_18_32",
+      "company_id": "mosenergo",
+      "enabled": true,
+      "reference_variant": 18,
+      "note": "Exact tags only; source does not specify units. Manual confirmation is mandatory.",
+      "assignments": [
+        {
+          "tag": "32MBL11CT010,,XQ01",
+          "parameter": "ambient_temperature",
+          "unit": ""
+        },
+        {
+          "tag": "32MBL11CM001,,XQ01",
+          "parameter": "relative_humidity",
+          "unit": ""
+        },
+        {
+          "tag": "32MBL10CP001,,XQ01",
+          "parameter": "atmospheric_pressure",
+          "unit": ""
+        },
+        {
+          "tag": "32MBL10CP003,,XQ01",
+          "parameter": "vlo",
+          "unit": ""
+        },
+        {
+          "tag": "32MBL10CP004,,XQ01",
+          "parameter": "fgo",
+          "unit": ""
+        },
+        {
+          "tag": "32MBL10CP005,,XQ01",
+          "parameter": "fto",
+          "unit": ""
+        },
+        {
+          "tag": "32MBA11CP101,,XQ01",
+          "parameter": "inlet_pressure",
+          "unit": ""
+        },
+        {
+          "tag": "32MBA11CT901,,ZQ01",
+          "parameter": "inlet_temperature",
+          "unit": ""
+        },
+        {
+          "tag": "32MBA12FP100,,ZQ03",
+          "parameter": "outlet_pressure",
+          "unit": ""
+        },
+        {
+          "tag": "32MBA12CT101B,,XQ01",
+          "parameter": "outlet_temperature",
+          "unit": ""
+        },
+        {
+          "tag": "32MBY10DT040,,XQ02",
+          "parameter": "vna",
+          "unit": ""
+        },
+        {
+          "tag": "32MBP10CF001,,XQ01",
+          "parameter": "fuel_flow",
+          "unit": ""
+        },
+        {
+          "tag": "32MBY10CE901,,XQ01",
+          "parameter": "power",
+          "unit": ""
+        },
+        {
+          "tag": "32MBY10CS901,,ZQ10",
+          "parameter": "rpm",
+          "unit": ""
+        },
+        {
+          "tag": "32MBP13CP101,,XQ01",
+          "parameter": "fuel_pressure",
+          "unit": ""
+        },
+        {
+          "tag": "32MBA22FT901,,ZQ01",
+          "parameter": "exhaust_temperature",
+          "unit": ""
+        },
+        {
+          "tag": "32MBP10CT001,,XQ01",
+          "parameter": "fuel_temperature",
+          "unit": ""
+        },
+        {
+          "tag": "32HNA01CP001,,XQ01",
+          "parameter": "exhaust_pressure",
+          "unit": ""
+        }
+      ]
+    },
+    {
+      "id": "reference_18_41",
+      "company_id": "mosenergo",
+      "enabled": true,
+      "reference_variant": 18,
+      "note": "Exact tags only; source does not specify units. Manual confirmation is mandatory.",
+      "assignments": [
+        {
+          "tag": "41MBL11CT010,,XQ01",
+          "parameter": "ambient_temperature",
+          "unit": ""
+        },
+        {
+          "tag": "41MBL11CM001,,XQ01",
+          "parameter": "relative_humidity",
+          "unit": ""
+        },
+        {
+          "tag": "41MBL10CP001,,XQ01",
+          "parameter": "atmospheric_pressure",
+          "unit": ""
+        },
+        {
+          "tag": "41MBL10CP003,,XQ01",
+          "parameter": "vlo",
+          "unit": ""
+        },
+        {
+          "tag": "41MBL10CP004,,XQ01",
+          "parameter": "fgo",
+          "unit": ""
+        },
+        {
+          "tag": "41MBL10CP005,,XQ01",
+          "parameter": "fto",
+          "unit": ""
+        },
+        {
+          "tag": "41MBA11CP101,,XQ01",
+          "parameter": "inlet_pressure",
+          "unit": ""
+        },
+        {
+          "tag": "41MBA11CT901,,ZQ01",
+          "parameter": "inlet_temperature",
+          "unit": ""
+        },
+        {
+          "tag": "41MBA12FP100,,ZQ03",
+          "parameter": "outlet_pressure",
+          "unit": ""
+        },
+        {
+          "tag": "41MBA12CT101B,,XQ01",
+          "parameter": "outlet_temperature",
+          "unit": ""
+        },
+        {
+          "tag": "41MBY10DT040,,XQ02",
+          "parameter": "vna",
+          "unit": ""
+        },
+        {
+          "tag": "41MBP10CF001,,XQ01",
+          "parameter": "fuel_flow",
+          "unit": ""
+        },
+        {
+          "tag": "41MBY10CE901,,XQ01",
+          "parameter": "power",
+          "unit": ""
+        },
+        {
+          "tag": "41MBY10CS901,,ZQ10",
+          "parameter": "rpm",
+          "unit": ""
+        },
+        {
+          "tag": "41MBP13CP101,,XQ01",
+          "parameter": "fuel_pressure",
+          "unit": ""
+        },
+        {
+          "tag": "41MBA22FT901,,ZQ01",
+          "parameter": "exhaust_temperature",
+          "unit": ""
+        },
+        {
+          "tag": "41MBP10CT001,,XQ01",
+          "parameter": "fuel_temperature",
+          "unit": ""
+        },
+        {
+          "tag": "41HNA01CP001,,XQ01",
+          "parameter": "exhaust_pressure",
+          "unit": ""
+        }
+      ]
+    },
+    {
+      "id": "reference_18_42",
+      "company_id": "mosenergo",
+      "enabled": true,
+      "reference_variant": 18,
+      "note": "Exact tags only; source does not specify units. Manual confirmation is mandatory.",
+      "assignments": [
+        {
+          "tag": "42MBL11CT010,,XQ01",
+          "parameter": "ambient_temperature",
+          "unit": ""
+        },
+        {
+          "tag": "42MBL11CM001,,XQ01",
+          "parameter": "relative_humidity",
+          "unit": ""
+        },
+        {
+          "tag": "42MBL10CP001,,XQ01",
+          "parameter": "atmospheric_pressure",
+          "unit": ""
+        },
+        {
+          "tag": "42MBL10CP003,,XQ01",
+          "parameter": "vlo",
+          "unit": ""
+        },
+        {
+          "tag": "42MBL10CP004,,XQ01",
+          "parameter": "fgo",
+          "unit": ""
+        },
+        {
+          "tag": "42MBL10CP005,,XQ01",
+          "parameter": "fto",
+          "unit": ""
+        },
+        {
+          "tag": "42MBA11CP101,,XQ01",
+          "parameter": "inlet_pressure",
+          "unit": ""
+        },
+        {
+          "tag": "42MBA11CT901,,ZQ01",
+          "parameter": "inlet_temperature",
+          "unit": ""
+        },
+        {
+          "tag": "42MBA12FP100,,ZQ03",
+          "parameter": "outlet_pressure",
+          "unit": ""
+        },
+        {
+          "tag": "42MBA12CT101B,,XQ01",
+          "parameter": "outlet_temperature",
+          "unit": ""
+        },
+        {
+          "tag": "42MBY10DT040,,XQ02",
+          "parameter": "vna",
+          "unit": ""
+        },
+        {
+          "tag": "42MBP10CF001,,XQ01",
+          "parameter": "fuel_flow",
+          "unit": ""
+        },
+        {
+          "tag": "42MBY10CE901,,XQ01",
+          "parameter": "power",
+          "unit": ""
+        },
+        {
+          "tag": "42MBY10CS901,,ZQ10",
+          "parameter": "rpm",
+          "unit": ""
+        },
+        {
+          "tag": "42MBP13CP101,,XQ01",
+          "parameter": "fuel_pressure",
+          "unit": ""
+        },
+        {
+          "tag": "42MBA22FT901,,ZQ01",
+          "parameter": "exhaust_temperature",
+          "unit": ""
+        },
+        {
+          "tag": "42MBP10CT001,,XQ01",
+          "parameter": "fuel_temperature",
+          "unit": ""
+        },
+        {
+          "tag": "42HNA01CP001,,XQ01",
+          "parameter": "exhaust_pressure",
+          "unit": ""
+        }
+      ]
+    }
+  ]
+}

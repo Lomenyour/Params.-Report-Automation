@@ -24,6 +24,26 @@ _application = None
 
 
 class DesktopBridgeTest(unittest.TestCase):
+    def test_mapping_cancel_does_not_save_and_confirmation_does(self):
+        c=self.controller
+        self.choose_book()
+        c.selected_raw_file=Path(__file__)
+        c.selected_raw_sheet.set('Sheet1')
+        mappings=[SensorMapping('CH','P')]
+        dependencies=dict(source_mapping_info=Mock(return_value=(['CH'],set())),
+                          template_columns=Mock(return_value={'P':'Тнк, °С'}),
+                          source_channel_info=Mock(return_value={}),
+                          source_selection_info=Mock(return_value={'format':'test','rows':1,'skipped_rows':0,'invalid_dates':0}),
+                          load_saved_mappings=Mock(return_value=mappings),
+                          save_mappings=Mock(),MappingDialog=Mock(return_value=Mock(result=None)))
+        with patch.dict(c.review_mapping.__func__.__globals__,dependencies),patch.object(c,'wait_window'):
+            self.assertFalse(c.review_mapping())
+            dependencies['save_mappings'].assert_not_called()
+            dependencies['MappingDialog'].return_value.result=mappings
+            self.assertTrue(c.review_mapping())
+            dependencies['save_mappings'].assert_called_once()
+            self.assertEqual(c.sensor_mappings,mappings)
+
     def test_manual_turbine_overrides_filename_and_invalidates_results(self):
         self.choose_book()
         c = self.controller
@@ -192,7 +212,7 @@ class DesktopBridgeTest(unittest.TestCase):
         dialog = MappingDialog(c, [SensorMapping("CH", "P", 1.)],
                                {"P": "Тнк, °С"}, ["CH"], set(), "syz_tec")
         dialog.accept({"rows": [{"target": "P — Тнк, °С", "factor": "2,5"}]})
-        self.assertEqual(dialog.result, [SensorMapping("CH", "P", 2.5)])
+        self.assertEqual(dialog.result, [SensorMapping("CH", "P", 2.5, parameter="inlet_temperature", target_header="Тнк, °С")])
         self.assertIs(dialog._accept.__func__.__code__, workflow.MappingDialog._accept.__code__)
         events = EventsDialog(c, (), "пример.xlsx")
         events.accept({"text": "01.05.2026; Замена ВЛО"})

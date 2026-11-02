@@ -83,8 +83,10 @@ class StationProfilesTest(unittest.TestCase):
                     save_mappings("ГТ-11.xlsx", headers, mappings,
                                   station_id=station_id, repository=repository)
                 for station_id, expected in (("syz_tec", first), ("other", second)):
-                    self.assertEqual(load_saved_mappings("ГТ-11.xlsx", headers,
-                                     station_id=station_id, repository=repository), expected)
+                    loaded = load_saved_mappings("ГТ-11.xlsx", headers, station_id=station_id, repository=repository)
+                    self.assertEqual(loaded[0], expected[0])
+                    self.assertEqual(loaded[1].source, "LOCAL.VNA")
+                    self.assertEqual(loaded[1].target, "")
             invalid = copy.deepcopy(raw)
             invalid["sensor_channels"][0]["station_id"] = "missing"
             path.write_text(json.dumps(invalid), encoding="utf-8")

@@ -416,7 +416,7 @@ def plot_pressure_drops(df, periods_df, show=True):
     series = [
         (key, OPTIONAL_TITLES[key])
         for key in PRESSURE_SERIES
-        if key in df.columns
+        if key in df.columns and np.isfinite(pd.to_numeric(df[key], errors="coerce")).any()
     ]
 
     has_power_n = "power_n" in df.columns

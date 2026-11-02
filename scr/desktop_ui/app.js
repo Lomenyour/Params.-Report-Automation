@@ -263,43 +263,65 @@
     const description = element('p');
     description.textContent = periods ? 'Проверьте автоматическую разбивку. Одна строка — один период: дата начала; дата конца. График остаётся доступен.' : payload.kind === 'events' ? 'Каждая строка: дата; подпись события. Например: 01.05.2026; Замена ВЛО. Можно указать время.' : payload.kind === 'gasPassport' ? 'Значения относятся к указанным ТЭЦ и ГТ. Допустимы точка и запятая. Состав — молярные доли 0..1; пустые компоненты не сохраняются.' : 'Проверьте каналы, колонки листа «Данные» и коэффициенты перевода единиц. Колонку можно ввести вручную по букве.';
     body.append(description);
+    if (payload.note) body.append(element('p','gtu-caption',payload.note));
     if (payload.kind === 'corrections') {
       description.textContent = `63 коэффициента выбранной ГТ. Точка, запятая и запись 1,23E-5 допустимы. Можно вставить диапазон значений из Excel начиная с выбранного поля. Версия: ${payload.revision}. Источник: ${payload.source}`;
     }
     let editor = null;
     const mappingInputs = [];
     const gasInputs = [];
+    const gasEntries = [];
     const coefficientInputs = [];
     if (payload.kind === 'mapping') {
       const choices = element('datalist'); choices.id = 'target-options';
       payload.choices.forEach(value => choices.append(new Option(value, value)));
       const table = element('table', 'gtu-mapping-table');
       const row = table.createTHead().insertRow();
-      ['Канал выгрузки', 'Колонка «Данные»', 'Коэффициент'].forEach(title => row.append(element('th', '', title)));
+      ['Датчик и описание', 'Колонка «Данные»', 'Из единиц', 'В единицы', 'Коэффициент'].forEach(title => row.append(element('th', '', title)));
       const tbody = table.createTBody();
       payload.rows.forEach((data, index) => {
-        const row = tbody.insertRow(); row.insertCell().textContent = data.source;
+        const row = tbody.insertRow(); const sourceCell = row.insertCell(); sourceCell.append(element('div','',data.source));
+        if (data.description) sourceCell.append(element('small','gtu-caption',data.description));
+        if (data.declared_unit) sourceCell.append(element('small','gtu-caption',`Единицы выгрузки: ${data.declared_unit}`));
         const target = element('input', 'gtu-field'); target.value = data.target; target.setAttribute('list', 'target-options'); target.setAttribute('aria-label', `Колонка для ${data.source}`);
         const factor = element('input', 'gtu-field'); factor.value = data.factor; factor.inputMode = 'decimal'; factor.setAttribute('aria-label', `Коэффициент для ${data.source}`);
-        row.insertCell().append(target); row.insertCell().append(factor);
-        mappingInputs.push({target, factor});
+        const sourceUnit = element('input','gtu-field'); sourceUnit.value = data.source_unit || ''; sourceUnit.setAttribute('aria-label',`Исходные единицы ${data.source}`);
+        const targetUnit = element('input','gtu-field'); targetUnit.value = data.target_unit || ''; targetUnit.setAttribute('aria-label',`Единицы назначения ${data.source}`);
+        const convert = () => { const units = payload.pressure_units || {}; const a = units[sourceUnit.value.trim().toLowerCase()], b = units[targetUnit.value.trim().toLowerCase()]; if (a && b) factor.value = String(a/b); };
+        sourceUnit.onchange = targetUnit.onchange = convert;
+        convert();
+        target.onchange = () => { const text = target.value.split('—').slice(1).join('—').trim(); const comma = text.indexOf(','); if (comma >= 0) targetUnit.value = text.slice(comma+1).trim(); convert(); };
+        row.insertCell().append(target); row.insertCell().append(sourceUnit); row.insertCell().append(targetUnit); row.insertCell().append(factor);
+        mappingInputs.push({target, factor, sourceUnit, targetUnit});
       });
       body.append(choices, table);
     } else if (payload.kind === 'gasPassport') {
       if (payload.warning) body.append(element('p', 'gtu-caption', payload.warning));
-      const table = element('table', 'gtu-mapping-table');
-      const head = table.createTHead().insertRow();
-      ['Параметр', 'Значение', 'Единицы'].forEach(title => head.append(element('th', '', title)));
-      const rows = table.createTBody();
-      payload.fields.forEach(field => {
-        const row = rows.insertRow(); row.insertCell().textContent = field.label;
-        const input = element('input', 'gtu-field'); input.value = field.value;
-        input.inputMode = 'decimal'; input.setAttribute('aria-label', field.label);
-        input.dataset.gasKey = field.key;
-        row.insertCell().append(input); row.insertCell().textContent = field.unit;
-        gasInputs.push({key:field.key, input});
-      });
-      body.append(table);
+      body.append(element('p','gtu-caption','Один паспорт без дат действует на весь диапазон. Для нескольких укажите сроки. Время окончания не включается.'));
+      const container = element('div'); body.append(container);
+      const addEntry = data => {
+        const section = element('details','gtu-coefficient-group'); section.open = gasEntries.length === 0;
+        const title = element('summary'); section.append(title);
+        const dates = element('div','gtu-passport-dates');
+        const from = element('input','gtu-field'), until = element('input','gtu-field');
+        from.type = until.type = 'datetime-local'; from.step = until.step = 'any';
+        [[from,data.valid_from],[until,data.valid_until]].forEach(([input,value])=>{input.value=value||'';if(value&&!input.value){input.type='text';input.value=value;}});
+        [['Действует с',from],['До (не включая)',until]].forEach(([text,input]) => { const label=element('label','',text); label.append(input); dates.append(label); });
+        section.append(dates);
+        const table=element('table','gtu-mapping-table'), head=table.createTHead().insertRow();
+        ['Параметр','Значение','Единицы'].forEach(text=>head.append(element('th','',text)));
+        const rows=table.createTBody(), fields=[];
+        data.fields.forEach(field=>{ const row=rows.insertRow(); row.insertCell().textContent=field.label;
+          const input=element('input','gtu-field'); input.value=field.value; input.inputMode='decimal'; input.dataset.gasKey=field.key; input.setAttribute('aria-label',field.label);
+          row.insertCell().append(input); row.insertCell().textContent=field.unit; fields.push({key:field.key,input}); });
+        section.append(table);
+        const record={section,title,from,until,fields}; gasEntries.push(record);
+        const updateTitles=()=>gasEntries.forEach((item,index)=>{item.title.textContent=`Паспорт ${index+1}`;}); updateTitles();
+        const remove=element('button','gtu-action','Удалить паспорт'); remove.type='button'; remove.onclick=()=>{if(gasEntries.length>1){gasEntries.splice(gasEntries.indexOf(record),1);section.remove();updateTitles();}};
+        section.append(remove); container.append(section);
+      };
+      payload.entries.forEach(addEntry);
+      const add=element('button','gtu-action','+ Добавить паспорт'); add.type='button'; add.onclick=()=>addEntry({fields:payload.empty_fields,valid_from:'',valid_until:''}); body.insertBefore(add,container);
     } else if (payload.kind === 'corrections') {
       const pasteStatus = element('p', 'gtu-caption'); pasteStatus.setAttribute('aria-live','polite');
       body.append(pasteStatus);
@@ -340,8 +362,9 @@
     }
     const cancel = element('button', 'gtu-action', periods ? 'Автоматические периоды' : 'Отмена'); cancel.type = 'button';
     cancel.onclick = () => send('dialog', {action: periods ? 'auto' : 'cancel'});
-    const accept = element('button', 'gtu-action gtu-primary', periods ? 'Применить периоды' : ['gasPassport','corrections'].includes(payload.kind) ? 'Сохранить' : 'Применить'); accept.type = 'button';
-    accept.onclick = () => send('dialog', {action: periods ? 'manual' : 'accept', text: editor?.value || '', rows: mappingInputs.map(({target, factor}) => ({target:target.value, factor:factor.value})), values:Object.fromEntries([...gasInputs,...coefficientInputs].map(({key, input}) => [key, input.value]))});
+    const accept = element('button', 'gtu-action gtu-primary', periods ? 'Применить периоды' : payload.kind === 'mapping' ? 'Подтвердить маппинг' : ['gasPassport','corrections'].includes(payload.kind) ? 'Сохранить' : 'Применить'); accept.type = 'button';
+    accept.onclick = () => { const result={action: periods ? 'manual' : 'accept', text: editor?.value || '', rows: mappingInputs.map(({target, factor, sourceUnit, targetUnit}) => ({target:target.value, factor:factor.value,source_unit:sourceUnit.value,target_unit:targetUnit.value})), values:Object.fromEntries([...gasInputs,...coefficientInputs].map(({key, input}) => [key, input.value]))};
+      if(payload.kind==='gasPassport') result.entries=gasEntries.map(item=>({valid_from:item.from.value,valid_until:item.until.value,values:Object.fromEntries(item.fields.map(({key,input})=>[key,input.value]))})); send('dialog',result); };
     actions.append(cancel, accept); dialog.append(header, body, actions); layer.replaceChildren(dialog); layer.hidden = false;
     requestAnimationFrame(() => (editor || dialog.querySelector('input') || accept).focus());
     dialog.onkeydown = event => {

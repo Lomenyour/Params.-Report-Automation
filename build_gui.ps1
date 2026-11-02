@@ -66,5 +66,6 @@ Copy-Item -Path (Join-Path $templateSource "*") -Destination $templateTarget -Re
 $configTarget = Join-Path $testRoot "config"
 New-Item -ItemType Directory -Force -Path $configTarget | Out-Null
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot "config\stations.json") -Destination $configTarget -Force
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot "config\source_variants.json") -Destination $configTarget -Force
 
 Write-Host "Test EXE: $testRoot\$Name.exe"

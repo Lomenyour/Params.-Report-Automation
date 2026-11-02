@@ -42,7 +42,10 @@ class EquipmentCatalogTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder, patch('data_assembly._mapping_profile_path',return_value=Path(folder)/'map.json'):
             first=[SensorMapping('G1.CSGV','V')]
             save_mappings('без номера.xlsx',headers,first,station_id='syz_tec',unit='10')
-            self.assertEqual(load_saved_mappings('СызТЭЦ ГТ-11.xlsx',headers,station_id='syz_tec',unit='10'), first)
+            restored=load_saved_mappings('СызТЭЦ ГТ-11.xlsx',headers,station_id='syz_tec',unit='10')
+            self.assertEqual(restored[0],first[0])
+            self.assertEqual(restored[1].source,'G2.CSGV')
+            self.assertEqual(restored[1].target,'')
             self.assertIsNone(load_saved_mappings('без номера.xlsx',headers,station_id='syz_tec',unit='11'))
 
     def test_manual_profile_identity_overrides_filename_and_checks_gas(self):

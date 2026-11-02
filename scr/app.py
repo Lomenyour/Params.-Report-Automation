@@ -8,6 +8,7 @@ import re
 import threading
 import time
 import traceback
+from dataclasses import replace
 from pathlib import Path
 
 import matplotlib
@@ -43,12 +44,15 @@ from data_assembly import (
     read_calculation_profile,
     save_mappings,
     source_mapping_info,
+    source_channel_info,
+    source_selection_info,
     suggest_mappings,
     template_columns,
     validate_mappings,
 )
 from station_profiles import get_station_repository, sensor_target_columns, unit_number
-from gas_passport import resolve_passport, save_passport
+from gas_passport import resolve_passport, save_passport, passport_entries, gas_values
+from parameter_mapping import parameter_targets, parameter_for_header, header_unit, unit_factor, PRESSURE_UNITS
 from gas_passport_ui import GasPassportDialog
 from correction_sheet import read_correction_sheet
 from correction_profiles import resolve_profile, require_profile, save_profile
@@ -238,10 +242,13 @@ class MappingDialog(tk.Toplevel):
         self.transient(parent)
         self.result: list[SensorMapping] | None = None
         self._rows = []
+        self._suggestions = {item.source: item for item in suggestions}
+        self._station_id = station_id
         self._target_headers = target_headers
         self._source_headers = source_headers
         self._verified_duplicates = verified_duplicates
-        self._allowed_targets = sensor_target_columns(station_id, parent.station_repository)
+        self._allowed_targets = sensor_target_columns(station_id, parent.station_repository) | set(parameter_targets(target_headers, station_id).values())
+        self._unit_rows = {}
 
         ttk.Label(
             self,
@@ -271,14 +278,17 @@ class MappingDialog(tk.Toplevel):
         ttk.Label(table, text="Канал выгрузки").grid(row=0, column=0, sticky="w")
         ttk.Label(table, text="Колонка «Данные»").grid(row=0, column=1, sticky="w")
         ttk.Label(table, text="Коэффициент").grid(row=0, column=2, sticky="w")
+        ttk.Label(table, text="Из единиц").grid(row=0, column=3, sticky="w")
+        ttk.Label(table, text="В единицы").grid(row=0, column=4, sticky="w")
         choices = [
             f"{column} — {header}" for column, header in target_headers.items()
             if header and column in self._allowed_targets
         ]
+        choices.append("До уточнения")
         for index, suggestion in enumerate(suggestions, start=1):
             target = suggestion.target
             header = target_headers.get(target)
-            initial = f"{target} — {header}" if target and header else target
+            initial = "До уточнения" if suggestion.status == "deferred" else f"{target} — {header}" if target and header else target
             target_var = tk.StringVar(value=initial)
             factor_var = tk.StringVar(value=f"{suggestion.factor:.10g}")
             ttk.Label(table, text=suggestion.source).grid(
@@ -291,6 +301,10 @@ class MappingDialog(tk.Toplevel):
                 row=index, column=2, sticky="ew", pady=3
             )
             self._rows.append((suggestion.source, target_var, factor_var))
+            source_unit, target_unit = tk.StringVar(value=suggestion.source_unit), tk.StringVar(value=suggestion.target_unit)
+            self._unit_rows[suggestion.source] = (source_unit, target_unit)
+            ttk.Entry(table, textvariable=source_unit, width=10).grid(row=index, column=3, padx=3)
+            ttk.Entry(table, textvariable=target_unit, width=10).grid(row=index, column=4, padx=3)
         table.columnconfigure(0, weight=2, minsize=180)
         table.columnconfigure(1, weight=4, minsize=300)
         table.columnconfigure(2, weight=1, minsize=130)
@@ -311,8 +325,19 @@ class MappingDialog(tk.Toplevel):
                 text = target_var.get().strip().upper()
                 match = re.match(r"^([A-Z]{1,3})(?:\s|$)", text)
                 target = match.group(1) if match else ""
+                old = self._suggestions[source]
+                if text == "ДО УТОЧНЕНИЯ":
+                    mappings.append(replace(old, target="", status="deferred", factor=1.))
+                    continue
                 factor = float(factor_var.get().strip().replace(",", "."))
-                mappings.append(SensorMapping(source, target, factor))
+                units = getattr(self, "_unit_rows", {}).get(source)
+                source_unit, target_unit = (value.get().strip() for value in units) if units else (old.source_unit, old.target_unit)
+                if source_unit.casefold() in PRESSURE_UNITS and target_unit.casefold() in PRESSURE_UNITS:
+                    factor = unit_factor(source_unit, target_unit)
+                mappings.append(replace(old, source=source, target=target, factor=factor, status="mapped",
+                                        parameter=parameter_for_header(self._target_headers.get(target), self._station_id),
+                                        target_header=self._target_headers.get(target) or "",
+                                        source_unit=source_unit, target_unit=target_unit))
             validate_mappings(
                 mappings, self._source_headers,
                 verified_duplicates=self._verified_duplicates,
@@ -588,7 +613,7 @@ class CalculationApp(tk.Tk):
                 if (DATA_DIR / "initial_data").exists() else DATA_DIR
             ),
             filetypes=[
-                ("Excel-файлы", "*.xlsx *.xlsm *.xls *.xlsb"),
+                ("Excel и CSV", "*.xlsx *.xlsm *.xls *.xlsb *.csv"),
                 ("Все файлы", "*.*"),
             ],
         )
@@ -632,15 +657,26 @@ class CalculationApp(tk.Tk):
                 self.selected_raw_file, sheet, station_id=station.id,
                 repository=self.station_repository,
             )
+            targets = template_columns(self.selected_file)
             suggestions = (
                 load_saved_mappings(self.selected_file, headers, station_id=station.id, unit=turbine.number,
-                                    repository=self.station_repository)
+                                    repository=self.station_repository, target_headers=targets)
                 or suggest_mappings(
                     headers, self.selected_file, verified_duplicates,
-                    station_id=station.id, unit=turbine.number, repository=self.station_repository,
+                    station_id=station.id, unit=turbine.number, repository=self.station_repository, target_headers=targets,
                 )
             )
-            targets = template_columns(self.selected_file)
+            info = source_channel_info(self.selected_raw_file, sheet)
+            suggestions = [item for item in suggestions if item.source not in verified_duplicates]
+            suggestions = [replace(item, source_unit=info.get(item.source, {}).get("unit", "") or item.source_unit,
+                                   target_unit=header_unit(targets.get(item.target)) or item.target_unit) for item in suggestions]
+            suggestions = [replace(item, factor=unit_factor(item.source_unit, item.target_unit))
+                           if item.source_unit.casefold() in PRESSURE_UNITS and item.target_unit.casefold() in PRESSURE_UNITS
+                           else item for item in suggestions]
+            self.mapping_channel_info = info
+            selection = source_selection_info(self.selected_raw_file, sheet)
+            self.mapping_source_note = (f"Формат: {selection['format']}. Получасовых строк: {selection['rows']}. "
+                                        f"Не отобрано строк: {selection['skipped_rows']}, из них с неверной датой: {selection['invalid_dates']}.")
         except Exception as error:
             messagebox.showerror("Ошибка сопоставления", str(error), parent=self)
             return False
@@ -652,10 +688,14 @@ class CalculationApp(tk.Tk):
             return False
         self.sensor_mappings = dialog.result
         self.mapping_sheet = sheet
+        stat = self.selected_raw_file.stat()
+        self.mapping_source_stamp = (stat.st_mtime_ns, stat.st_size)
+        book_stat = self.selected_file.stat() if self.selected_file.exists() else None
+        self.mapping_book_stamp = (book_stat.st_mtime_ns, book_stat.st_size) if book_stat else None
         self._invalidate_results()
         try:
             save_mappings(self.selected_file, headers, dialog.result, station_id=station.id, unit=turbine.number,
-                          repository=self.station_repository)
+                          repository=self.station_repository, target_headers=targets)
         except (OSError, ValueError) as error:
             messagebox.showwarning(
                 "Профиль не сохранён",
@@ -686,7 +726,13 @@ class CalculationApp(tk.Tk):
                     "Выберите выгрузку", "Укажите файл датчиков и лист нужной ГТ.", parent=self
                 )
                 return
-            if self.sensor_mappings is None or self.mapping_sheet != self.selected_raw_sheet.get():
+            stat = raw_file_path.stat() if raw_file_path.exists() else None
+            stamp = (stat.st_mtime_ns, stat.st_size) if stat else None
+            book_stat = self.selected_file.stat() if self.selected_file.exists() else None
+            book_stamp = (book_stat.st_mtime_ns, book_stat.st_size) if book_stat else None
+            if (self.sensor_mappings is None or self.mapping_sheet != self.selected_raw_sheet.get()
+                    or stamp != getattr(self, "mapping_source_stamp", None)
+                    or book_stamp != getattr(self, "mapping_book_stamp", None)):
                 if not self.review_mapping():
                     return
 
@@ -785,9 +831,9 @@ class CalculationApp(tk.Tk):
                     profile = read_calculation_profile(file_path, gas_passport=passport,
                         correction_profile=correction_profile, station_id=station.id,
                         unit=turbine, repository=self.station_repository)
-                    print(f"Паспорт газа: {station.name} ГТ-{turbine}; ρ = {passport.density_kg_per_nm3:g} кг/нм³; "
-                          f"Qнр = {passport.q_lower_mj_per_nm3:g} МДж/нм³; C/H = {passport.carbon_hydrogen_ratio:g}.")
-                    print(f"Qнр для массовой поправки: {passport.q_lower_mj_per_kg:g} МДж/кг.")
+                    for entry in passport_entries(passport):
+                        print(f"Паспорт газа: {entry.valid_from or 'весь диапазон'} — {entry.valid_until or 'весь диапазон'}; "
+                              f"ρ = {entry.density_kg_per_nm3:g} кг/нм³; Qнр = {entry.q_lower_mj_per_nm3:g} МДж/нм³.")
                     if passport.composition_warning:
                         print("WARNING: " + passport.composition_warning)
                 elif raw_file_path is not None:
@@ -809,6 +855,8 @@ class CalculationApp(tk.Tk):
                         f"Получасовых строк: {assembled.imported_rows}; "
                         f"совпадений по дате: {assembled.overlap_rows}."
                     )
+                    if assembled.source_diagnostics:
+                        print(f"Отбор выгрузки: {assembled.source_diagnostics}")
                     if assembled.invalid_sensor_values:
                         print(
                             "Нечисловые показания сохранены без подмены: "
@@ -846,7 +894,7 @@ class CalculationApp(tk.Tk):
                 if passport is not None:
                     # AK хранит массовое Qнр для полинома поправки (МДж/кг),
                     # а расчёт КПД ГТУ принимает объёмное Qнр (МДж/нм³).
-                    source["q_lower"] = passport.q_lower_mj_per_nm3
+                    source["q_lower"] = gas_values(passport, source["date"])["q_lower_mj_per_nm3"]
                 rh_data = prepare_rh_data(source)
                 vna_data = prepare_vna_data(source)
 
@@ -955,6 +1003,7 @@ class CalculationApp(tk.Tk):
                              "model": selected_turbine.model, "station_id": station.id},
                 )
                 suffix = "_обновлённые_данные_результаты" if raw_file_path is not None else "_результаты"
+                report_data["gas_passports"] = [entry.to_dict() for entry in passport_entries(passport)] if passport else []
                 snapshot = CalculationSnapshot(
                     data=data_for_export, sections=sections,
                     pressure_chart=PressureChartData(

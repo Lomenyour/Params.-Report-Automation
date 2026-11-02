@@ -1,5 +1,6 @@
 """Explicit parameter names and pressure units; no tag-name similarity matching."""
 import re
+from unit_conversions import PRESSURE_UNITS, unit_factor, unit_info, canonical_unit, UNIT_CATALOG
 
 PARAMETERS = {
     "ambient_temperature": ("Температура наружного воздуха", ("токр", "tокр", "токр.воздуха")),
@@ -20,11 +21,6 @@ PARAMETERS = {
     "power_factor": ("Коэффициент мощности", ("cosφ", "cos(φ)")),
     "exhaust_pressure": ("Давление уходящих газов", ("давление ух.газов", "давлениеух.газов")),
 }
-PRESSURE_UNITS = {"па": 1., "pa": 1., "кпа": 1000., "kpa": 1000., "мпа": 1e6,
-                  "mpa": 1e6, "бар": 1e5, "bar": 1e5, "barabs": 1e5,
-                  "мбар": 100., "mbar": 100., "hpa": 100., "гпа": 100.,
-                  "мм рт. ст.": 133.322368, "ммрт.ст.": 133.322368,
-                  "мм вод. ст.": 9.80665, "ммвод.ст.": 9.80665}
 
 
 def header_unit(header):
@@ -32,25 +28,15 @@ def header_unit(header):
     return parts[1].strip() if len(parts) > 1 else ""
 
 
-def unit_factor(source, target):
-    def clean(unit): return re.sub(r"\s+", " ", unit.strip().casefold())
-    source, target = clean(source), clean(target)
-    if not source or not target or source == target:
-        return 1.
-    if source in PRESSURE_UNITS and target in PRESSURE_UNITS:
-        return PRESSURE_UNITS[source] / PRESSURE_UNITS[target]
-    raise ValueError(f"Неизвестное преобразование единиц: {source} → {target}. Укажите коэффициент явно.")
-
-
 def parameter_for_header(header, station_id=None):
     text = re.sub(r"\s+", "", str(header or "").split(",", 1)[0].casefold())
     if text in {"pнк", "рнк"} and station_id == "syz_tec":
         return "inlet_pressure_drop"
     if text == "n":
-        unit = header_unit(header).casefold()
-        if unit in {"мвт", "mw", "квт", "kw"}:
+        unit = unit_info(header_unit(header))
+        if unit and unit['dimension'] == 'power':
             return "power"
-        if unit in {"об/мин", "об./мин", "rpm", "мин-1", "мин⁻¹", "гц", "hz", "с-1", "с⁻¹"}:
+        if unit and unit['dimension'] == 'rotation':
             return "rpm"
         return ""  # N без единиц неоднозначно: мощность или частота вращения.
     for key, (_, aliases) in PARAMETERS.items():

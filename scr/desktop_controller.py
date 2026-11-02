@@ -19,7 +19,7 @@ from chart_events import format_chart_events
 from station_profiles import sensor_target_columns, unit_number
 from ui_theme import RESULT_TABS
 from gas_passport_ui import passport_fields, passport_from_fields, history_rows, history_from_rows
-from parameter_mapping import parameter_targets, PRESSURE_UNITS
+from parameter_mapping import parameter_targets, PRESSURE_UNITS, UNIT_CATALOG, canonical_unit
 from correction_profiles_ui import correction_groups, profile_from_fields
 
 
@@ -158,17 +158,18 @@ class MappingDialog(Dialog):
         self._allowed_targets |= set(parameter_targets(target_headers, station_id).values())
         self._suggestions = {item.source: item for item in suggestions}
         self._station_id = station_id
-        self._unit_rows = {item.source: (Value(item.source_unit), Value(item.target_unit)) for item in suggestions}
+        self._unit_rows = {item.source: (Value(canonical_unit(item.source_unit)), Value(canonical_unit(item.target_unit))) for item in suggestions}
         self._rows = []
         for suggestion in suggestions:
             header = target_headers.get(suggestion.target)
-            text = "До уточнения" if suggestion.status == "deferred" else f"{suggestion.target} — {header}" if suggestion.target and header else suggestion.target
+            text = "" if suggestion.status == "deferred" else f"{suggestion.target} — {header}" if suggestion.target and header else suggestion.target
             self._rows.append((suggestion.source, Value(text), Value(f"{suggestion.factor:.10g}")))
         self.payload.update(
             note=getattr(parent, "mapping_source_note", ""),
             choices=[f"{column} — {header}" for column, header in target_headers.items()
-                     if header and column in self._allowed_targets] + ["До уточнения"],
+                     if header and column in self._allowed_targets],
             pressure_units=PRESSURE_UNITS,
+            unit_catalog=UNIT_CATALOG,
             rows=[{"source": source, "target": target.get(), "factor": factor.get(),
                    "description": getattr(parent, "mapping_channel_info", {}).get(source, {}).get("description", ""),
                    "declared_unit": getattr(parent, "mapping_channel_info", {}).get(source, {}).get("unit", ""),

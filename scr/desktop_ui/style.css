@@ -378,3 +378,11 @@ body.gtu-resizing, body.gtu-resizing * { cursor: col-resize !important; user-sel
 .gtu-passport-dates{display:flex;gap:16px;flex-wrap:wrap;padding:12px 0}.gtu-passport-dates label{display:grid;gap:6px;min-width:210px}.gtu-mapping-table small{display:block;white-space:normal;overflow-wrap:anywhere}.gtu-dialog[data-kind="mapping"] .gtu-mapping-table{min-width:800px}
 #desktop .gtu-dialog[data-kind="mapping"] th:first-child{width:28%}#desktop .gtu-dialog[data-kind="mapping"] th:nth-child(2){width:32%}#desktop .gtu-dialog[data-kind="mapping"] th:nth-child(3),#desktop .gtu-dialog[data-kind="mapping"] th:nth-child(4){width:12%}#desktop .gtu-dialog[data-kind="mapping"] th:last-child{width:16%}
 #desktop .gtu-dialog[data-kind="gasPassport"]{width:min(760px,100%)}
+#desktop .gtu-choice { position:relative; min-width:0; }
+#desktop .gtu-choice .gtu-field { padding-right:27px; width:100%; }
+#desktop .gtu-choice-toggle { position:absolute; right:2px; top:2px; bottom:2px; width:25px; border:0; border-radius:6px; background:transparent; color:var(--gtu-sub); padding:0; }
+#desktop .gtu-choice-popup { position:fixed; z-index:1000; box-sizing:border-box; overflow:auto; overscroll-behavior:contain; background:var(--gtu-field); color:var(--gtu-text); border:1px solid var(--gtu-line); border-radius:8px; box-shadow:0 8px 24px #0008; padding:4px; font-size:13px; }
+#desktop .gtu-choice-option { padding:8px 10px; border-radius:4px; cursor:pointer; overflow-wrap:anywhere; min-height:18px; }
+#desktop .gtu-choice-option[aria-selected="true"] { background:var(--gtu-soft-accent); }
+#desktop .gtu-choice-empty { padding:8px 10px; color:var(--gtu-sub); }
+#desktop .gtu-mapping-table input:invalid { border-color:#d67d7d; }

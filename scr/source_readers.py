@@ -7,6 +7,7 @@ import math
 from pathlib import Path
 import re
 import pandas as pd
+from unit_conversions import extract_unit
 
 SERVICE_FIELDS = {"date", "time", "milliseconds"}
 _INDEX = re.compile(r"^\[(\d+)\]\s*_?(.*)$")
@@ -104,8 +105,7 @@ def _horizontal(table):
                 name = expected
             else:
                 description = ""
-            unit_match = re.search(r"(МПа|кПа|мбар|barabs|mbar|hPa|bar|Па|об/мин|м3/ч|м³/ч|МВт|%)$", description)
-            info[name] = {"code": name, "description": description, "unit": unit_match[1] if unit_match else "", "source_header": original}
+            info[name] = {"code": name, "description": description, "unit": extract_unit(description), "source_header": original}
         if name in names:
             raise ValueError(f"В выгрузке повторяется тег/поле {name}.")
         names.append(name)

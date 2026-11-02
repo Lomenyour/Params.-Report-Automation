@@ -24,6 +24,22 @@ _application = None
 
 
 class DesktopBridgeTest(unittest.TestCase):
+    def test_confirmed_units_take_priority_over_export_description(self):
+        c=self.controller
+        self.choose_book();c.selected_raw_file=Path(__file__);c.selected_raw_sheet.set('Sheet1')
+        dependencies=dict(source_mapping_info=Mock(return_value=(['CH'],set())),
+            template_columns=Mock(return_value={'AN':'n, Гц'}),
+            source_channel_info=Mock(return_value={'CH':{'unit':'тыс. об/мин'}}),
+            source_selection_info=Mock(return_value=dict(format='test',rows=1,skipped_rows=0,invalid_dates=0)),
+            load_saved_mappings=Mock(return_value=[SensorMapping('CH','AN',1/60,source_unit='об/мин',target_unit='Гц')]),
+            MappingDialog=Mock(return_value=Mock(result=None)))
+        with patch.dict(c.review_mapping.__func__.__globals__,dependencies),patch.object(c,'wait_window'):
+            self.assertFalse(c.review_mapping())
+        shown=dependencies['MappingDialog'].call_args.args[1][0]
+        self.assertEqual(shown.source_unit,'об/мин')
+        self.assertAlmostEqual(shown.factor,1/60)
+        self.assertEqual(c.mapping_channel_info['CH']['unit'],'тыс. об/мин')
+
     def test_mapping_cancel_does_not_save_and_confirmation_does(self):
         c=self.controller
         self.choose_book()

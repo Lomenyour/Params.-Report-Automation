@@ -189,19 +189,16 @@ def suggest_mappings(
     by_code = {channel.code.casefold(): channel for channel in channels
                if channel.unit_number == gt_number}
     from parameter_mapping import parameter_targets
-    from source_variants import match_variant, deferred_channels
+    from source_variants import match_variant
     targets = parameter_targets(target_headers or {}, station.id if station else None)
     variant = match_variant(source_headers, station.company_id) if station and not by_code else None
     variant_codes = {entry["tag"].casefold(): entry for entry in variant["assignments"]} if variant else {}
-    deferred = deferred_channels(station.id, gt_number) if station else set()
     suggestions: list[SensorMapping] = []
     for header in source_headers:
         if header.lower() in SERVICE_FIELDS or header in (verified_duplicates or set()):
             continue
         channel = by_code.get(header.casefold())
-        if header.casefold() in deferred:
-            suggestions.append(SensorMapping(header, "", status="deferred"))
-        elif channel:
+        if channel:
             # Подтверждённые станционные назначения имеют приоритет над
             # неоднозначными названиями старой книги. Перестановка по похожему
             # заголовку меняла уже проверенную подстановку СызТЭЦ.
@@ -252,11 +249,16 @@ def validate_mappings(
         if mapping.target in seen_targets:
             raise ValueError(f"На колонку {mapping.target} назначено два канала.")
         if target_headers:
-            from parameter_mapping import header_unit, unit_factor, PRESSURE_UNITS
+            from parameter_mapping import header_unit, unit_factor, unit_info
             book_unit = header_unit(target_headers.get(mapping.target))
-            if book_unit.casefold() in PRESSURE_UNITS and mapping.target_unit.casefold() in PRESSURE_UNITS:
+            if unit_info(book_unit) and unit_info(mapping.target_unit):
                 if unit_factor(book_unit, mapping.target_unit) != 1:
                     raise ValueError(f"Колонка {mapping.target} хранит {book_unit}. Единицы назначения должны соответствовать книге.")
+        if mapping.source_unit and mapping.target_unit:
+            from parameter_mapping import unit_factor
+            expected_factor = unit_factor(mapping.source_unit, mapping.target_unit)
+            if not np.isclose(mapping.factor, expected_factor, rtol=1e-9, atol=0):
+                raise ValueError(f"Коэффициент {mapping.source} не соответствует выбранным единицам.")
         if not np.isfinite(mapping.factor) or mapping.factor == 0:
             raise ValueError(f"Неверный коэффициент для {mapping.source!r}.")
         seen_sources.add(mapping.source)

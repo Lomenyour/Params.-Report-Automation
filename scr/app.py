@@ -52,7 +52,7 @@ from data_assembly import (
 )
 from station_profiles import get_station_repository, sensor_target_columns, unit_number
 from gas_passport import resolve_passport, save_passport, passport_entries, gas_values
-from parameter_mapping import parameter_targets, parameter_for_header, header_unit, unit_factor, PRESSURE_UNITS
+from parameter_mapping import parameter_targets, parameter_for_header, header_unit, unit_factor, PRESSURE_UNITS, unit_info, canonical_unit, UNIT_CATALOG
 from gas_passport_ui import GasPassportDialog
 from correction_sheet import read_correction_sheet
 from correction_profiles import resolve_profile, require_profile, save_profile
@@ -284,11 +284,10 @@ class MappingDialog(tk.Toplevel):
             f"{column} — {header}" for column, header in target_headers.items()
             if header and column in self._allowed_targets
         ]
-        choices.append("До уточнения")
         for index, suggestion in enumerate(suggestions, start=1):
             target = suggestion.target
             header = target_headers.get(target)
-            initial = "До уточнения" if suggestion.status == "deferred" else f"{target} — {header}" if target and header else target
+            initial = "" if suggestion.status == "deferred" else f"{target} — {header}" if target and header else target
             target_var = tk.StringVar(value=initial)
             factor_var = tk.StringVar(value=f"{suggestion.factor:.10g}")
             ttk.Label(table, text=suggestion.source).grid(
@@ -301,10 +300,19 @@ class MappingDialog(tk.Toplevel):
                 row=index, column=2, sticky="ew", pady=3
             )
             self._rows.append((suggestion.source, target_var, factor_var))
-            source_unit, target_unit = tk.StringVar(value=suggestion.source_unit), tk.StringVar(value=suggestion.target_unit)
+            source_unit, target_unit = tk.StringVar(value=canonical_unit(suggestion.source_unit)), tk.StringVar(value=canonical_unit(suggestion.target_unit))
             self._unit_rows[suggestion.source] = (source_unit, target_unit)
-            ttk.Entry(table, textvariable=source_unit, width=10).grid(row=index, column=3, padx=3)
-            ttk.Entry(table, textvariable=target_unit, width=10).grid(row=index, column=4, padx=3)
+            for unit_index, variable in enumerate((source_unit, target_unit), start=3):
+                known_units = list(dict.fromkeys(['', *(item['symbol'] for item in UNIT_CATALOG), variable.get()]))
+                ttk.Combobox(table, textvariable=variable, values=known_units, state='readonly', width=12).grid(row=index, column=unit_index, padx=3)
+            def update_factor(*_, source=source_unit, destination=target_unit, coefficient=factor_var):
+                if source.get() and destination.get():
+                    try:
+                        coefficient.set(f'{unit_factor(source.get(), destination.get()):.12g}')
+                    except ValueError:
+                        pass  # Общая проверка объяснит несовместимую пару при подтверждении.
+            source_unit.trace_add('write', update_factor)
+            target_unit.trace_add('write', update_factor)
         table.columnconfigure(0, weight=2, minsize=180)
         table.columnconfigure(1, weight=4, minsize=300)
         table.columnconfigure(2, weight=1, minsize=130)
@@ -332,7 +340,7 @@ class MappingDialog(tk.Toplevel):
                 factor = float(factor_var.get().strip().replace(",", "."))
                 units = getattr(self, "_unit_rows", {}).get(source)
                 source_unit, target_unit = (value.get().strip() for value in units) if units else (old.source_unit, old.target_unit)
-                if source_unit.casefold() in PRESSURE_UNITS and target_unit.casefold() in PRESSURE_UNITS:
+                if source_unit and target_unit:
                     factor = unit_factor(source_unit, target_unit)
                 mappings.append(replace(old, source=source, target=target, factor=factor, status="mapped",
                                         parameter=parameter_for_header(self._target_headers.get(target), self._station_id),
@@ -668,11 +676,17 @@ class CalculationApp(tk.Tk):
             )
             info = source_channel_info(self.selected_raw_file, sheet)
             suggestions = [item for item in suggestions if item.source not in verified_duplicates]
-            suggestions = [replace(item, source_unit=info.get(item.source, {}).get("unit", "") or item.source_unit,
+            suggestions = [replace(item, source_unit=item.source_unit or info.get(item.source, {}).get("unit", ""),
                                    target_unit=header_unit(targets.get(item.target)) or item.target_unit) for item in suggestions]
-            suggestions = [replace(item, factor=unit_factor(item.source_unit, item.target_unit))
-                           if item.source_unit.casefold() in PRESSURE_UNITS and item.target_unit.casefold() in PRESSURE_UNITS
-                           else item for item in suggestions]
+            converted = []
+            for item in suggestions:
+                try:
+                    if unit_info(item.source_unit) and unit_info(item.target_unit):
+                        item = replace(item, factor=unit_factor(item.source_unit, item.target_unit))
+                except ValueError:
+                    pass  # Показываем несовместимую пару в форме для ручной правки.
+                converted.append(item)
+            suggestions = converted
             self.mapping_channel_info = info
             selection = source_selection_info(self.selected_raw_file, sheet)
             self.mapping_source_note = (f"Формат: {selection['format']}. Получасовых строк: {selection['rows']}. "

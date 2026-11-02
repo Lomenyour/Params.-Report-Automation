@@ -1,6 +1,5 @@
 {
   "schema_version": 1,
-  "deferred_channels": [{"station_id": "izhevsk_tec", "unit": "1", "tag": "10MKA01FE006"}],
   "source": "for_info/docs/data_example.docx",
   "source_sha256": "3e0cf04bc09073c6dae0a7d31a2a4ce27d9ebba36881719ac5c7a21d8f6a8b61",
   "variants": [

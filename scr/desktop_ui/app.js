@@ -227,12 +227,14 @@
     else if (!views[selected]) emptyState();
   }
   function closeDialogLocally() {
+    GtuChoiceField.close();
     layer.hidden = true; layer.replaceChildren(); layer.classList.remove('periods');
     root.querySelector('.gtu-settings').inert = false;
     root.querySelector('main').inert = false;
     dialogPayload = null;
   }
   function showDialog(payload) {
+    GtuChoiceField.close();
     if (!payload) { closeDialogLocally(); return; }
     dialogPayload = payload;
     const periods = payload.kind === 'periods';
@@ -273,8 +275,16 @@
     const gasEntries = [];
     const coefficientInputs = [];
     if (payload.kind === 'mapping') {
-      const choices = element('datalist'); choices.id = 'target-options';
-      payload.choices.forEach(value => choices.append(new Option(value, value)));
+      const catalog = payload.unit_catalog || [];
+      const unitKey = value => value.trim().toLowerCase().replace(/\s+/g, '');
+      const unitInfo = value => catalog.find(unit => unit.aliases.includes(unitKey(value)));
+      const canonicalUnit = value => unitInfo(value)?.symbol || value;
+      const makeUnits = (value, label) => {
+        value = canonicalUnit(value);
+        const choices = [{value:'',label:'Не указаны'}, ...catalog.map(unit => ({value:unit.symbol,label:unit.symbol}))];
+        if (value && !unitInfo(value)) choices.push({value,label:`${value} (из файла)`});
+        return GtuChoiceField.create({root,choices,value,label});
+      };
       const table = element('table', 'gtu-mapping-table');
       const row = table.createTHead().insertRow();
       ['Датчик и описание', 'Колонка «Данные»', 'Из единиц', 'В единицы', 'Коэффициент'].forEach(title => row.append(element('th', '', title)));
@@ -283,18 +293,30 @@
         const row = tbody.insertRow(); const sourceCell = row.insertCell(); sourceCell.append(element('div','',data.source));
         if (data.description) sourceCell.append(element('small','gtu-caption',data.description));
         if (data.declared_unit) sourceCell.append(element('small','gtu-caption',`Единицы выгрузки: ${data.declared_unit}`));
-        const target = element('input', 'gtu-field'); target.value = data.target; target.setAttribute('list', 'target-options'); target.setAttribute('aria-label', `Колонка для ${data.source}`);
+        const targetField = GtuChoiceField.create({root,choices:payload.choices,value:data.target,label:`Колонка для ${data.source}`,editable:true});
+        const target = targetField.input;
         const factor = element('input', 'gtu-field'); factor.value = data.factor; factor.inputMode = 'decimal'; factor.setAttribute('aria-label', `Коэффициент для ${data.source}`);
-        const sourceUnit = element('input','gtu-field'); sourceUnit.value = data.source_unit || ''; sourceUnit.setAttribute('aria-label',`Исходные единицы ${data.source}`);
-        const targetUnit = element('input','gtu-field'); targetUnit.value = data.target_unit || ''; targetUnit.setAttribute('aria-label',`Единицы назначения ${data.source}`);
-        const convert = () => { const units = payload.pressure_units || {}; const a = units[sourceUnit.value.trim().toLowerCase()], b = units[targetUnit.value.trim().toLowerCase()]; if (a && b) factor.value = String(a/b); };
+        const sourceField = makeUnits(data.source_unit || '', `Исходные единицы ${data.source}`), sourceUnit = sourceField.input;
+        const targetUnitsField = makeUnits(data.target_unit || '', `Единицы назначения ${data.source}`), targetUnit = targetUnitsField.input;
+        const convert = () => {
+          const a=unitInfo(sourceUnit.value), b=unitInfo(targetUnit.value);
+          factor.setCustomValidity(''); factor.readOnly=Boolean(a && b && a.dimension===b.dimension);
+          if (a && b && a.dimension===b.dimension) { factor.value=String(Number((a.factor/b.factor).toPrecision(10))); factor.title=`${sourceUnit.value} → ${targetUnit.value}: ×${a.factor/b.factor}`; }
+          else if (sourceUnit.value && targetUnit.value) {
+            const temperature=a?.dimension.startsWith('temperature') && b?.dimension.startsWith('temperature');
+            factor.setCustomValidity(temperature ? 'Перевод температур требует смещения; одного коэффициента недостаточно.' : 'Несовместимые или неизвестные единицы. Проверьте назначение и единицы.');
+            factor.title=factor.validationMessage;
+          } else factor.title='При неизвестных единицах проверьте коэффициент вручную';
+        };
         sourceUnit.onchange = targetUnit.onchange = convert;
         convert();
-        target.onchange = () => { const text = target.value.split('—').slice(1).join('—').trim(); const comma = text.indexOf(','); if (comma >= 0) targetUnit.value = text.slice(comma+1).trim(); convert(); };
-        row.insertCell().append(target); row.insertCell().append(sourceUnit); row.insertCell().append(targetUnit); row.insertCell().append(factor);
+        target.onchange = () => { const choice=payload.choices.find(value=>value.split('—')[0].trim()===target.value.trim().toUpperCase()) || target.value;
+          const text=choice.split('—').slice(1).join('—').trim(), comma=text.indexOf(',');
+          targetUnit.value=canonicalUnit(comma>=0 ? text.slice(comma+1).trim() : ''); convert(); };
+        row.insertCell().append(targetField); row.insertCell().append(sourceField); row.insertCell().append(targetUnitsField); row.insertCell().append(factor);
         mappingInputs.push({target, factor, sourceUnit, targetUnit});
       });
-      body.append(choices, table);
+      body.append(table);
     } else if (payload.kind === 'gasPassport') {
       if (payload.warning) body.append(element('p', 'gtu-caption', payload.warning));
       body.append(element('p','gtu-caption','Один паспорт без дат действует на весь диапазон. Для нескольких укажите сроки. Время окончания не включается.'));
@@ -363,7 +385,8 @@
     const cancel = element('button', 'gtu-action', periods ? 'Автоматические периоды' : 'Отмена'); cancel.type = 'button';
     cancel.onclick = () => send('dialog', {action: periods ? 'auto' : 'cancel'});
     const accept = element('button', 'gtu-action gtu-primary', periods ? 'Применить периоды' : payload.kind === 'mapping' ? 'Подтвердить маппинг' : ['gasPassport','corrections'].includes(payload.kind) ? 'Сохранить' : 'Применить'); accept.type = 'button';
-    accept.onclick = () => { const result={action: periods ? 'manual' : 'accept', text: editor?.value || '', rows: mappingInputs.map(({target, factor, sourceUnit, targetUnit}) => ({target:target.value, factor:factor.value,source_unit:sourceUnit.value,target_unit:targetUnit.value})), values:Object.fromEntries([...gasInputs,...coefficientInputs].map(({key, input}) => [key, input.value]))};
+    accept.onclick = () => { if (mappingInputs.some(({factor}) => !factor.reportValidity())) return;
+      const result={action: periods ? 'manual' : 'accept', text: editor?.value || '', rows: mappingInputs.map(({target, factor, sourceUnit, targetUnit}) => ({target:target.value, factor:factor.value,source_unit:sourceUnit.value,target_unit:targetUnit.value})), values:Object.fromEntries([...gasInputs,...coefficientInputs].map(({key, input}) => [key, input.value]))};
       if(payload.kind==='gasPassport') result.entries=gasEntries.map(item=>({valid_from:item.from.value,valid_until:item.until.value,values:Object.fromEntries(item.fields.map(({key,input})=>[key,input.value]))})); send('dialog',result); };
     actions.append(cancel, accept); dialog.append(header, body, actions); layer.replaceChildren(dialog); layer.hidden = false;
     requestAnimationFrame(() => (editor || dialog.querySelector('input') || accept).focus());

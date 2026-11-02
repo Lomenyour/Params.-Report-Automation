@@ -19,6 +19,7 @@ from chart_events import format_chart_events
 from station_profiles import sensor_target_columns, unit_number
 from ui_theme import RESULT_TABS
 from gas_passport_ui import passport_fields, passport_from_fields, history_rows, history_from_rows
+from gas_composition import ch_model
 from parameter_mapping import parameter_targets, PRESSURE_UNITS, UNIT_CATALOG, canonical_unit
 from correction_profiles_ui import correction_groups, profile_from_fields
 
@@ -162,11 +163,11 @@ class MappingDialog(Dialog):
         self._rows = []
         for suggestion in suggestions:
             header = target_headers.get(suggestion.target)
-            text = "" if suggestion.status == "deferred" else f"{suggestion.target} — {header}" if suggestion.target and header else suggestion.target
+            text = 'Не учитывать' if suggestion.status == 'ignored' else "" if suggestion.status == "deferred" else f"{suggestion.target} — {header}" if suggestion.target and header else suggestion.target
             self._rows.append((suggestion.source, Value(text), Value(f"{suggestion.factor:.10g}")))
         self.payload.update(
-            note=getattr(parent, "mapping_source_note", ""),
-            choices=[f"{column} — {header}" for column, header in target_headers.items()
+            note=getattr(parent, "mapping_source_note", "") + ' Каналы «Не учитывать» не импортируются в расчётную таблицу.',
+            choices=['Не учитывать']+[f"{column} — {header}" for column, header in target_headers.items()
                      if header and column in self._allowed_targets],
             pressure_units=PRESSURE_UNITS,
             unit_catalog=UNIT_CATALOG,
@@ -210,6 +211,7 @@ class GasPassportDialog(Dialog):
     def __init__(self, parent, passport, station_id, unit, station_name):
         super().__init__(parent, {"kind": "gasPassport", "title": f"Паспорт газа — {station_name} ГТ-{unit}",
                                   "entries": history_rows(passport), "empty_fields": passport_fields(None),
+                                  'ch_model':ch_model(),
                                   "warning": passport.composition_warning if passport else ""})
         self.station_id, self.unit = station_id, unit
 

@@ -299,6 +299,10 @@
         const sourceField = makeUnits(data.source_unit || '', `Исходные единицы ${data.source}`), sourceUnit = sourceField.input;
         const targetUnitsField = makeUnits(data.target_unit || '', `Единицы назначения ${data.source}`), targetUnit = targetUnitsField.input;
         const convert = () => {
+          const ignored=target.value.trim().toLocaleUpperCase()==='НЕ УЧИТЫВАТЬ';
+          [sourceUnit,targetUnit].forEach(input=>{input.disabled=ignored;input.closest('.gtu-choice').querySelector('button').disabled=ignored;});
+          factor.disabled=ignored;
+          if(ignored){factor.value='1';factor.setCustomValidity('');factor.title='Канал не импортируется';return;}
           const a=unitInfo(sourceUnit.value), b=unitInfo(targetUnit.value);
           factor.setCustomValidity(''); factor.readOnly=Boolean(a && b && a.dimension===b.dimension);
           if (a && b && a.dimension===b.dimension) { factor.value=String(Number((a.factor/b.factor).toPrecision(10))); factor.title=`${sourceUnit.value} → ${targetUnit.value}: ×${a.factor/b.factor}`; }
@@ -320,6 +324,7 @@
     } else if (payload.kind === 'gasPassport') {
       if (payload.warning) body.append(element('p', 'gtu-caption', payload.warning));
       body.append(element('p','gtu-caption','Один паспорт без дат действует на весь диапазон. Для нескольких укажите сроки. Время окончания не включается.'));
+      body.append(element('p','gtu-caption','C/H рассчитывается по молярному составу горючей части, включая H₂. CO₂, N₂, O₂ и He в него не входят.'));
       const container = element('div'); body.append(container);
       const addEntry = data => {
         const section = element('details','gtu-coefficient-group'); section.open = gasEntries.length === 0;
@@ -335,9 +340,35 @@
         const rows=table.createTBody(), fields=[];
         data.fields.forEach(field=>{ const row=rows.insertRow(); row.insertCell().textContent=field.label;
           const input=element('input','gtu-field'); input.value=field.value; input.inputMode='decimal'; input.dataset.gasKey=field.key; input.setAttribute('aria-label',field.label);
+          input.readOnly=Boolean(field.computed);
           row.insertCell().append(input); row.insertCell().textContent=field.unit; fields.push({key:field.key,input}); });
         section.append(table);
-        const record={section,title,from,until,fields}; gasEntries.push(record);
+        const status=element('p','gtu-caption');status.setAttribute('aria-live','polite');section.insertBefore(status,table);
+        const record={section,title,from,until,fields,status,chError:''}; gasEntries.push(record);
+        const updateCh=()=>{
+          const output=fields.find(field=>field.key==='carbon_hydrogen_ratio').input;
+          try {
+            let carbon=0,hydrogen=0;const composition=payload.ch_model;
+            fields.filter(field=>field.key.startsWith('component:')).forEach(({key,input})=>{
+              if(!input.value.trim())return;
+              const value=Number(input.value.trim().replace(',','.')),name=key.slice('component:'.length);
+              if(!Number.isFinite(value)||value<0||value>1)throw new Error(`Доля ${name} должна быть от 0 до 1.`);
+              if(!value)return;
+              const species=composition.species[name.toLowerCase()];
+              if(!species)throw new Error(`Для компонента ${name} неизвестна химическая формула.`);
+              if(species.combustible){carbon+=value*species.carbon;hydrogen+=value*species.hydrogen;}
+            });
+            if(hydrogen<=0)throw new Error('Для C/H укажите молярные доли углеводородов или H₂.');
+            const ratio=composition.carbon_mass*carbon/(composition.hydrogen_mass*hydrogen);
+            output.value=String(Number(ratio.toPrecision(10)));output.placeholder='';record.chError='';
+            status.textContent=data.previous_ch!=null && data.previous_ch_method!==composition.method ?
+              `Ранее сохранено C/H = ${data.previous_ch}. При сохранении паспорта будет записан расчёт по составу: ${output.value}.` :
+              'C/H рассчитано по указанным долям без нормализации состава.';
+          } catch(error) {output.value='';output.placeholder='Нужен состав';record.chError=error.message;status.textContent=error.message;}
+          status.classList.toggle('gtu-validation-error',Boolean(record.chError));
+        };
+        fields.filter(field=>field.key.startsWith('component:')).forEach(({input})=>input.addEventListener('input',updateCh));
+        updateCh();
         const updateTitles=()=>gasEntries.forEach((item,index)=>{item.title.textContent=`Паспорт ${index+1}`;}); updateTitles();
         const remove=element('button','gtu-action','Удалить паспорт'); remove.type='button'; remove.onclick=()=>{if(gasEntries.length>1){gasEntries.splice(gasEntries.indexOf(record),1);section.remove();updateTitles();}};
         section.append(remove); container.append(section);
@@ -386,6 +417,10 @@
     cancel.onclick = () => send('dialog', {action: periods ? 'auto' : 'cancel'});
     const accept = element('button', 'gtu-action gtu-primary', periods ? 'Применить периоды' : payload.kind === 'mapping' ? 'Подтвердить маппинг' : ['gasPassport','corrections'].includes(payload.kind) ? 'Сохранить' : 'Применить'); accept.type = 'button';
     accept.onclick = () => { if (mappingInputs.some(({factor}) => !factor.reportValidity())) return;
+      if(payload.kind==='gasPassport') {
+        const invalid=gasEntries.find(entry=>entry.chError);
+        if(invalid){invalid.section.open=true;invalid.status.scrollIntoView({block:'center'});return;}
+      }
       const result={action: periods ? 'manual' : 'accept', text: editor?.value || '', rows: mappingInputs.map(({target, factor, sourceUnit, targetUnit}) => ({target:target.value, factor:factor.value,source_unit:sourceUnit.value,target_unit:targetUnit.value})), values:Object.fromEntries([...gasInputs,...coefficientInputs].map(({key, input}) => [key, input.value]))};
       if(payload.kind==='gasPassport') result.entries=gasEntries.map(item=>({valid_from:item.from.value,valid_until:item.until.value,values:Object.fromEntries(item.fields.map(({key,input})=>[key,input.value]))})); send('dialog',result); };
     actions.append(cancel, accept); dialog.append(header, body, actions); layer.replaceChildren(dialog); layer.hidden = false;

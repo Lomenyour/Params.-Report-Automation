@@ -284,10 +284,11 @@ class MappingDialog(tk.Toplevel):
             f"{column} — {header}" for column, header in target_headers.items()
             if header and column in self._allowed_targets
         ]
+        choices.insert(0, 'Не учитывать')
         for index, suggestion in enumerate(suggestions, start=1):
             target = suggestion.target
             header = target_headers.get(target)
-            initial = "" if suggestion.status == "deferred" else f"{target} — {header}" if target and header else target
+            initial = 'Не учитывать' if suggestion.status == 'ignored' else "" if suggestion.status == "deferred" else f"{target} — {header}" if target and header else target
             target_var = tk.StringVar(value=initial)
             factor_var = tk.StringVar(value=f"{suggestion.factor:.10g}")
             ttk.Label(table, text=suggestion.source).grid(
@@ -334,6 +335,9 @@ class MappingDialog(tk.Toplevel):
                 match = re.match(r"^([A-Z]{1,3})(?:\s|$)", text)
                 target = match.group(1) if match else ""
                 old = self._suggestions[source]
+                if text == 'НЕ УЧИТЫВАТЬ':
+                    mappings.append(replace(old, target='', parameter='', status='ignored', factor=1., source_unit='', target_unit='', target_header=''))
+                    continue
                 if text == "ДО УТОЧНЕНИЯ":
                     mappings.append(replace(old, target="", status="deferred", factor=1.))
                     continue
@@ -490,7 +494,8 @@ class CalculationApp(tk.Tk):
 
     def _on_unit_changed(self, _event=None):
         turbine = self._selected_turbine()
-        self.unit_model_label.configure(text=f"Модель: {turbine.model}" if turbine else "Выберите ГТУ.")
+        self.unit_model_label.configure(text=(f"Модель: {turbine.model}" +
+            (' · методика расчёта пока не подключена' if turbine.calculation_method!='syz_tec_v1' else '')) if turbine else "Выберите ГТУ.")
         self._clear_mapping()
         self._invalidate_results()
 
@@ -730,7 +735,10 @@ class CalculationApp(tk.Tk):
             messagebox.showerror("Не выбрана ГТУ", "Выберите ГТУ перед запуском расчёта.", parent=self)
             return
         if turbine.calculation_method != "syz_tec_v1":
-            messagebox.showerror("Методика не подключена", "Для выбранной ГТУ расчётная методика ещё не подключена. Профиль другой турбины не используется.", parent=self)
+            messagebox.showerror("Методика не подключена",
+                f'{station.name} · {turbine.name} · {turbine.model}\n\n'
+                'Для этого агрегата полный расчёт ещё не подключён. Сейчас он доступен для СызТЭЦ ГТУ-10 и ГТУ-11.\n\n'
+                'Маппинг и паспорт газа настраивают исходные данные. Для запуска нужна также методика расчёта и поправки выбранной ГТУ.', parent=self)
             return
         importing = self.calculation_mode.get() == "import"
         raw_file_path = self.selected_raw_file if importing else None
@@ -847,7 +855,9 @@ class CalculationApp(tk.Tk):
                         unit=turbine, repository=self.station_repository)
                     for entry in passport_entries(passport):
                         print(f"Паспорт газа: {entry.valid_from or 'весь диапазон'} — {entry.valid_until or 'весь диапазон'}; "
-                              f"ρ = {entry.density_kg_per_nm3:g} кг/нм³; Qнр = {entry.q_lower_mj_per_nm3:g} МДж/нм³.")
+                              f"ρ = {entry.density_kg_per_nm3:g} кг/нм³; Qнр = {entry.q_lower_mj_per_nm3:g} МДж/нм³; "
+                              f"C/H = {entry.carbon_hydrogen_ratio:.10g} кг C/кг H "
+                              f"({'по составу' if entry.carbon_hydrogen_ratio_method else 'сохранённое значение'}).")
                     if passport.composition_warning:
                         print("WARNING: " + passport.composition_warning)
                 elif raw_file_path is not None:

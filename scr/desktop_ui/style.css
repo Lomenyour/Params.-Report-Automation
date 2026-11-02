@@ -386,3 +386,4 @@ body.gtu-resizing, body.gtu-resizing * { cursor: col-resize !important; user-sel
 #desktop .gtu-choice-option[aria-selected="true"] { background:var(--gtu-soft-accent); }
 #desktop .gtu-choice-empty { padding:8px 10px; color:var(--gtu-sub); }
 #desktop .gtu-mapping-table input:invalid { border-color:#d67d7d; }
+#desktop .gtu-validation-error { color:#e6a3a3; }

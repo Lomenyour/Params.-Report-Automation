@@ -86,6 +86,7 @@ class GasHistoryTests(unittest.TestCase):
 
     def test_editor_dates_are_not_ignored(self):
         values={key:str(value) for key,value in gas().items()}
+        values['component:Methane']='1'
         result=history_from_rows([dict(values=values,valid_from='2026-01-01',valid_until='2026-02-01')],'syz_tec','10')
         with self.assertRaises(ValueError):gas_values(result,['2026-02-01'])
 

@@ -10,6 +10,7 @@ from pathlib import Path
 import tempfile
 
 import pandas as pd
+from gas_composition import CH_METHOD, calculate_ch
 
 COMPONENTS = ("Methane", "Ethane", "n-Propane", "IsoButane", "n-Butane",
               "n-Pentane", "Isopentane", "n-Hexane", "n-Heptane",
@@ -38,6 +39,7 @@ class GasPassport:
     updated_at: str = ""
     valid_from: str = ""
     valid_until: str = ""
+    carbon_hydrogen_ratio_method: str = ''
 
     @property
     def q_lower_mj_per_kg(self):
@@ -64,10 +66,10 @@ class GasPassport:
             raise ValueError("В паспорте газа не указаны ТЭЦ и номер ГТ.")
         if station_id is not None and station != station_id or unit is not None and turbine != str(unit):
             raise ValueError("Паспорт газа относится к другой ТЭЦ или ГТ.")
-        fields = ("density_kg_per_nm3", "q_lower_mj_per_nm3", "carbon_hydrogen_ratio")
+        fields = ("density_kg_per_nm3", "q_lower_mj_per_nm3")
         values = [number(data.get(key), key) for key in fields]
         if any(value <= 0 for value in values):
-            raise ValueError("Плотность, Qнр и C/H должны быть больше нуля.")
+            raise ValueError("Плотность и Qнр должны быть больше нуля.")
         components, seen = [], set()
         source = data.get("components", {})
         rows = source.items() if isinstance(source, dict) else source
@@ -80,6 +82,19 @@ class GasPassport:
             if not 0 <= value <= 1:
                 raise ValueError(f"Доля {name} должна быть от 0 до 1.")
             components.append((name, value))
+        method=str(data.get('carbon_hydrogen_ratio_method') or '')
+        if method not in ('',CH_METHOD):
+            raise ValueError('Неизвестный способ расчёта C/H.')
+        if method==CH_METHOD or data.get('carbon_hydrogen_ratio') is None:
+            ratio=calculate_ch(components)
+            if method==CH_METHOD and data.get('carbon_hydrogen_ratio') is not None:
+                stored=number(data['carbon_hydrogen_ratio'],'C/H')
+                if not math.isclose(stored,ratio,rel_tol=1e-10,abs_tol=1e-12):
+                    raise ValueError('Сохранённое автоматическое C/H не совпадает с составом газа.')
+            method=CH_METHOD
+        else:
+            ratio=number(data['carbon_hydrogen_ratio'],'C/H')
+            if ratio<=0:raise ValueError('C/H прежнего паспорта должно быть больше нуля.')
         start, end = (str(data.get(key) or "").strip() for key in ("valid_from", "valid_until"))
         if bool(start) != bool(end):
             raise ValueError("Укажите обе границы действия паспорта либо оставьте обе пустыми для всего диапазона.")
@@ -88,7 +103,7 @@ class GasPassport:
             if start >= end:
                 raise ValueError("Начало действия паспорта должно быть раньше окончания.")
             start, end = start.isoformat(), end.isoformat()
-        return cls(station, turbine, *values, tuple(components), str(data.get("updated_at", "")), start, end)
+        return cls(station, turbine, *values, ratio, tuple(components), str(data.get("updated_at", "")), start, end, method)
 
 
 def _gas_date(value):
@@ -274,7 +289,7 @@ def write_passport(sheet, passport):
         sheet.append([MARKER, json.dumps(passport.to_dict(), ensure_ascii=False)])
         sheet.append(["История паспортов газа, использованная в расчёте"])
         sheet.append(["ТЭЦ", passport.station_id, "ГТ", passport.unit])
-        sheet.append(["Действует с", "До (не включая)", "Плотность, кг/нм³", "Qнр, МДж/нм³", "C/H"])
+        sheet.append(["Действует с", "До (не включая)", "Плотность, кг/нм³", "Qнр, МДж/нм³", "C/H, кг C/кг H"])
         for entry in passport.entries:
             sheet.append([entry.valid_from or "Весь диапазон", entry.valid_until,
                           entry.density_kg_per_nm3, entry.q_lower_mj_per_nm3, entry.carbon_hydrogen_ratio])
@@ -291,7 +306,7 @@ def write_passport(sheet, passport):
         ["Плотность", passport.density_kg_per_nm3, "кг/нм³"],
         ["Qнр (паспорт)", passport.q_lower_mj_per_nm3, "МДж/нм³"],
         ["Qнр для массовой поправки", passport.q_lower_mj_per_kg, "МДж/кг"],
-        ["C/H", passport.carbon_hydrogen_ratio, "о.е."],
+        ["C/H", passport.carbon_hydrogen_ratio, "кг C/кг H"],
         ["Компонент", "Молярная доля", "0..1"],
         *[[name, value] for name, value in passport.components],
     ]

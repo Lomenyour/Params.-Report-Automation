@@ -148,7 +148,7 @@ def load_saved_mappings(
             continue
         item = known.get(header.casefold(), SensorMapping(header, ""))
         item = replace(item, source=header)
-        if target_headers and item.parameter and item.status != "deferred":
+        if target_headers and item.parameter and item.status not in {'deferred', 'ignored'}:
             item = replace(item, target=targets.get(item.parameter, ""))
         elif target_headers and item.target_header and target_headers.get(item.target) != item.target_header:
             item = replace(item, target="")
@@ -227,7 +227,7 @@ def validate_mappings(
             raise ValueError(f"В выгрузке нет канала {mapping.source!r}.")
         if mapping.source in seen_sources:
             raise ValueError(f"Канал {mapping.source!r} назначен дважды.")
-        if mapping.status == "deferred":
+        if mapping.status in {'deferred','ignored'}:
             seen_sources.add(mapping.source)
             continue
         if mapping.status != "mapped":
@@ -405,6 +405,8 @@ def assemble_sensor_data(
         ].to_numpy()
     invalid_values: dict[str, int] = {}
     for mapping in mappings:
+        if mapping.status == 'ignored':
+            continue
         if mapping.status == "deferred":
             existing = next((column for column, label in headers.items() if label == f"До уточнения: {mapping.source}"), None)
             column = existing or get_column_letter(max(column_index_from_string(key) for key in result.columns) + 1)
@@ -430,7 +432,8 @@ def assemble_sensor_data(
         invalid_sensor_values=invalid_values,
         verified_duplicate_columns=sorted(duplicates),
         undated_rows=undated_rows,
-        source_diagnostics=source_selection_info(source_path, source_sheet),
+        source_diagnostics={**source_selection_info(source_path, source_sheet),
+                            'ignored_channels':[item.source for item in mappings if item.status=='ignored']},
     )
 
 

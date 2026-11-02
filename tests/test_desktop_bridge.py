@@ -24,6 +24,16 @@ _application = None
 
 
 class DesktopBridgeTest(unittest.TestCase):
+    def test_unsupported_method_is_identified_before_start(self):
+        self.choose_book('Ижевская ГТ-1 2 квартал 2026.xlsx')
+        c=self.controller
+        self.assertIn('не подключена',c.unit_model_label['text'])
+        with patch.object(workflow.threading,'Thread') as thread:
+            c.start_calculation()
+        thread.assert_not_called()
+        message=c.messages.showerror.call_args.args[1]
+        self.assertIn('Ижев',message);self.assertIn('SGT5-2000E',message)
+
     def test_confirmed_units_take_priority_over_export_description(self):
         c=self.controller
         self.choose_book();c.selected_raw_file=Path(__file__);c.selected_raw_sheet.set('Sheet1')

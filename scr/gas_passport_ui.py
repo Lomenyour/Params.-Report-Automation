@@ -3,17 +3,19 @@ import tkinter as tk
 from tkinter import ttk, messagebox
 
 from gas_passport import COMPONENTS, GasPassport, GasPassportHistory, passport_entries
+from gas_composition import CH_METHOD, calculate_ch
 from ui_theme import ScrollableSettings
 
-FIELDS = (("density_kg_per_nm3", "Плотность", "кг/нм³"),
-          ("q_lower_mj_per_nm3", "Qнр (паспорт)", "МДж/нм³"),
-          ("carbon_hydrogen_ratio", "C/H", "о.е."))
+FIELDS = (("carbon_hydrogen_ratio", "C/H — автоматически", "кг C/кг H"),
+          ("density_kg_per_nm3", "Плотность", "кг/нм³"),
+          ("q_lower_mj_per_nm3", "Qнр (паспорт)", "МДж/нм³"))
 
 
 def passport_fields(passport):
     values = passport.to_dict() if passport is not None else {}
     fields = [{"key": key, "label": label, "unit": unit,
-               "value": str(values.get(key, "")).replace(".", ",")} for key, label, unit in FIELDS]
+               "value": str(values.get(key, "")).replace(".", ","),
+               "computed":key=='carbon_hydrogen_ratio'} for key, label, unit in FIELDS]
     composition = dict(passport.components) if passport is not None else {}
     for name in dict.fromkeys((*COMPONENTS, *composition)):
         fields.append({"key": f"component:{name}", "label": name,
@@ -26,13 +28,15 @@ def passport_from_fields(values, station_id, unit):
     composition = {key.split(":", 1)[1]: value for key, value in values.items()
                    if key.startswith("component:") and str(value).strip()}
     return GasPassport.from_dict({"station_id": station_id, "unit": unit,
-                                  **{key: values.get(key, "") for key, _, _ in FIELDS},
+                                  **{key: values.get(key, "") for key, _, _ in FIELDS if key!='carbon_hydrogen_ratio'},
+                                  'carbon_hydrogen_ratio_method':CH_METHOD,
                                   "components": composition})
 
 
 def history_rows(passport):
     return [{"fields": passport_fields(entry), "valid_from": entry.valid_from,
-             "valid_until": entry.valid_until} for entry in passport_entries(passport)] if passport else [
+             "valid_until": entry.valid_until,'previous_ch':entry.carbon_hydrogen_ratio,
+             'previous_ch_method':entry.carbon_hydrogen_ratio_method} for entry in passport_entries(passport)] if passport else [
                  {"fields": passport_fields(None), "valid_from": "", "valid_until": ""}]
 
 
@@ -95,7 +99,19 @@ class GasPassportDialog(tk.Toplevel):
         for index, field in enumerate(row["fields"], 2):
             ttk.Label(content.content, text=f"{field['label']}, {field['unit']}").grid(row=index, column=0, sticky="w", pady=3)
             values[field["key"]] = tk.StringVar(value=field["value"])
-            ttk.Entry(content.content, textvariable=values[field["key"]]).grid(row=index, column=1, sticky="ew", padx=10)
+            ttk.Entry(content.content, textvariable=values[field["key"]],state='readonly' if field.get('computed') else 'normal').grid(row=index, column=1, sticky="ew", padx=10)
+        notice=tk.StringVar()
+        ttk.Label(content.content,textvariable=notice,wraplength=450).grid(row=98,column=0,columnspan=2,sticky='w',pady=6)
+        def update_ch(*_):
+            try:
+                ratio=calculate_ch({key.split(':',1)[1]:value.get() for key,value in values.items() if key.startswith('component:') and value.get().strip()})
+                values['carbon_hydrogen_ratio'].set(f'{ratio:.10g}')
+                notice.set('Массовое C/H горючей части; CO₂, N₂, O₂ и He не входят.')
+            except ValueError as error:
+                values['carbon_hydrogen_ratio'].set('');notice.set(str(error))
+        for key,variable in values.items():
+            if key.startswith('component:'):variable.trace_add('write',update_ch)
+        update_ch()
         content.content.columnconfigure(1, weight=1)
         record = (content, values, start, end)
         self.entries.append(record)

@@ -84,6 +84,8 @@ html, body { margin: 0; height: 100%; background: #252525; overflow: hidden; }
 #desktop .gtu-work-heading p { font-size: 12px; color: var(--gtu-sub); margin: 0; }
 #desktop .gtu-export { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; padding-top: 3px; }
 #desktop .gtu-export .gtu-action { font-size: 12px; padding: 7px 10px; }
+#desktop .gtu-export [data-action="excel"] { color: var(--gtu-green); }
+#desktop .gtu-export [data-action="word"] { color: #9ecbff; }
 #desktop .gtu-results { border: 1px solid var(--gtu-line); border-radius: var(--gtu-radius); background: var(--gtu-panel); overflow: clip; }
 #desktop .gtu-tabs { display: flex; flex-wrap: wrap; gap: 1px; padding: 0 10px; border-bottom: 1px solid var(--gtu-line); }
 #desktop .gtu-tab { padding: 12px 9px 10px; border: 0; border-bottom: 2px solid transparent; background: transparent; color: var(--gtu-sub); font-size: 12px; white-space: nowrap; }
@@ -335,6 +337,9 @@ body.gtu-resizing, body.gtu-resizing * { cursor: col-resize !important; user-sel
 #desktop .gtu-dialog-body { flex: 1 1 auto; min-height: 0; overflow: auto; overscroll-behavior: contain; }
 #desktop .gtu-dialog-actions { flex-shrink: 0; display: flex; justify-content: flex-end; gap: 8px; flex-wrap: wrap; margin-top: 18px; }
 #desktop .gtu-dialog p { line-height: 1.6; }
+#desktop .gtu-passport-notes { margin: 0 0 12px; padding-left: 18px; list-style: disc; line-height: 1.5; }
+#desktop .gtu-passport-notes li { margin: 0; padding-left: 2px; }
+#desktop .gtu-passport-notes li::marker { font-weight: 700; }
 #desktop .gtu-dialog[data-kind="mapping"] { width: min(900px, 100%); }
 #desktop .gtu-dialog[data-kind="corrections"] { width: min(920px, 100%); }
 #desktop .gtu-coefficient-group { padding: 10px 0; border-bottom: 1px solid var(--gtu-border); }

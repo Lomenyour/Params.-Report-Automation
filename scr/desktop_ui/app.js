@@ -262,12 +262,15 @@
       };
     }
     const body = element('div', 'gtu-dialog-body');
-    const description = element('p');
+    const gasPassport = payload.kind === 'gasPassport';
+    const description = element(gasPassport ? 'li' : 'p');
     description.textContent = periods ? 'Проверьте автоматическую разбивку. Одна строка — один период: дата начала; дата конца. График остаётся доступен.' : payload.kind === 'events' ? 'Каждая строка: дата; подпись события. Например: 01.05.2026; Замена ВЛО. Можно указать время.' : payload.kind === 'gasPassport' ? 'Значения относятся к указанным ТЭЦ и ГТ. Допустимы точка и запятая. Состав — молярные доли 0..1; пустые компоненты не сохраняются.' : 'Проверьте каналы, колонки листа «Данные» и коэффициенты перевода единиц. Колонку можно ввести вручную по букве.';
-    body.append(description);
-    if (payload.note) body.append(element('p','gtu-caption',payload.note));
+    const introduction = gasPassport ? element('ul', 'gtu-passport-notes gtu-caption') : body;
+    introduction.append(description);
+    if (gasPassport) body.append(introduction);
+    if (payload.note) introduction.append(element(gasPassport ? 'li' : 'p','gtu-caption',payload.note));
     if (payload.kind === 'corrections') {
-      description.textContent = `63 коэффициента выбранной ГТ. Точка, запятая и запись 1,23E-5 допустимы. Можно вставить диапазон значений из Excel начиная с выбранного поля. Версия: ${payload.revision}. Источник: ${payload.source}`;
+      description.textContent = '63 коэффициента выбранной ГТ. Точка, запятая и запись 1,23E-5 допустимы. Можно вставить диапазон значений из Excel начиная с выбранного поля.';
     }
     let editor = null;
     const mappingInputs = [];
@@ -322,9 +325,9 @@
       });
       body.append(table);
     } else if (payload.kind === 'gasPassport') {
-      if (payload.warning) body.append(element('p', 'gtu-caption', payload.warning));
-      body.append(element('p','gtu-caption','Один паспорт без дат действует на весь диапазон. Для нескольких укажите сроки. Время окончания не включается.'));
-      body.append(element('p','gtu-caption','C/H рассчитывается по молярному составу горючей части, включая H₂. CO₂, N₂, O₂ и He в него не входят.'));
+      if (payload.warning) introduction.append(element('li', '', payload.warning));
+      introduction.append(element('li','','Один паспорт без дат действует на весь диапазон. Для нескольких укажите сроки. Время окончания не включается.'));
+      introduction.append(element('li','','C/H рассчитывается по молярному составу горючей части, включая H₂. CO₂, N₂, O₂ и He в него не входят.'));
       const container = element('div'); body.append(container);
       const addEntry = data => {
         const section = element('details','gtu-coefficient-group'); section.open = gasEntries.length === 0;

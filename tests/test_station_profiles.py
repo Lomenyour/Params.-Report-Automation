@@ -199,11 +199,12 @@ class StationGuiTest(unittest.TestCase):
         self.app.gas_tariff_var.set("9,5")
         self.app.electricity_tariff_var.set("2400.25")
         self.app.electricity_cost_var.set("1100")
-        with patch("app.threading.Thread") as worker:
+        with patch("app.threading.Thread") as worker,patch.object(self.app,'_ensure_book_mapping',return_value=True):
             self.app.start_calculation()
         args = worker.call_args.kwargs["args"]
         self.assertEqual(args[4:7], (9.5, 2400.25, 1100.))
-        self.assertEqual(args[-2:], ("syz_tec", "11"))
+        self.assertEqual(args[-3:-1], ("syz_tec", "11"))
+        self.assertIs(args[-1],self.app.book_setup)
 
 
 if __name__ == "__main__":

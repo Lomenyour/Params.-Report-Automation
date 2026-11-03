@@ -392,3 +392,11 @@ body.gtu-resizing, body.gtu-resizing * { cursor: col-resize !important; user-sel
 #desktop .gtu-choice-empty { padding:8px 10px; color:var(--gtu-sub); }
 #desktop .gtu-mapping-table input:invalid { border-color:#d67d7d; }
 #desktop .gtu-validation-error { color:#e6a3a3; }
+#desktop .gtu-dialog[data-kind="bookMapping"] { width:min(1320px,calc(100vw - 32px)); }
+#desktop .gtu-book-table { table-layout:fixed; width:100%; min-width:760px; }
+#desktop .gtu-book-table th:nth-child(1) { width:17%; }
+#desktop .gtu-book-table th:nth-child(2) { width:24%; }
+#desktop .gtu-book-table th:nth-child(3) { width:10%; }
+#desktop .gtu-book-table th:nth-child(4) { width:17%; }
+#desktop .gtu-book-table th:last-child { width:32%; }
+#desktop .gtu-formula-text { white-space:normal; overflow-wrap:anywhere; font-size:12px; line-height:1.45; color:var(--gtu-text); margin:5px 0; }

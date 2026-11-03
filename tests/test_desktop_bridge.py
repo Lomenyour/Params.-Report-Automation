@@ -7,6 +7,7 @@ import tempfile
 import threading
 import unittest
 from unittest.mock import Mock, patch
+from types import SimpleNamespace
 
 import numpy as np
 import pandas as pd
@@ -24,26 +25,42 @@ _application = None
 
 
 class DesktopBridgeTest(unittest.TestCase):
-    def test_unsupported_method_is_identified_before_start(self):
+    def test_new_station_requires_book_confirmation_instead_of_syz_method(self):
         self.choose_book('Ижевская ГТ-1 2 квартал 2026.xlsx')
         c=self.controller
-        self.assertIn('не подключена',c.unit_model_label['text'])
-        with patch.object(workflow.threading,'Thread') as thread:
+        self.assertIn('SGT5-2000E',c.unit_model_label['text'])
+        with patch.object(workflow.threading,'Thread') as thread,patch.object(c,'_ensure_book_mapping',return_value=False) as confirm:
             c.start_calculation()
         thread.assert_not_called()
-        message=c.messages.showerror.call_args.args[1]
-        self.assertIn('Ижев',message);self.assertIn('SGT5-2000E',message)
+        confirm.assert_called_once()
+
+    def test_workbook_reader_keeps_qt_responsive_and_blocks_input_changes(self):
+        from PySide6.QtCore import QTimer
+        import time
+        c=self.controller;self.choose_book();before=c.gas_tariff_var.get();observed=[]
+        value=object()
+        def read(_path):time.sleep(.08);return value
+        def attempt():
+            observed.append(c._preparing_book)
+            c.dispatch('value',json.dumps({'key':'gas','value':'999'}))
+        QTimer.singleShot(10,attempt)
+        with patch.object(workflow,'read_layout',side_effect=read):
+            self.assertIs(c._read_layout(Path('synthetic.xlsx')),value)
+        self.assertEqual(observed,[True]);self.assertEqual(c.gas_tariff_var.get(),before)
+        self.assertFalse(c._preparing_book)
 
     def test_confirmed_units_take_priority_over_export_description(self):
         c=self.controller
         self.choose_book();c.selected_raw_file=Path(__file__);c.selected_raw_sheet.set('Sheet1')
+        c.book_setup=SimpleNamespace(sensor_columns={'rpm':'AN'},import_headers=lambda headers:headers)
         dependencies=dict(source_mapping_info=Mock(return_value=(['CH'],set())),
             template_columns=Mock(return_value={'AN':'n, Гц'}),
             source_channel_info=Mock(return_value={'CH':{'unit':'тыс. об/мин'}}),
             source_selection_info=Mock(return_value=dict(format='test',rows=1,skipped_rows=0,invalid_dates=0)),
             load_saved_mappings=Mock(return_value=[SensorMapping('CH','AN',1/60,source_unit='об/мин',target_unit='Гц')]),
             MappingDialog=Mock(return_value=Mock(result=None)))
-        with patch.dict(c.review_mapping.__func__.__globals__,dependencies),patch.object(c,'wait_window'):
+        dependencies['read_layout']=Mock(return_value=SimpleNamespace(headers={'AN':'n, Гц'}))
+        with patch.dict(c.review_mapping.__func__.__globals__,dependencies),patch.object(c,'wait_window'),patch.object(c,'_ensure_book_mapping',return_value=True):
             self.assertFalse(c.review_mapping())
         shown=dependencies['MappingDialog'].call_args.args[1][0]
         self.assertEqual(shown.source_unit,'об/мин')
@@ -55,6 +72,7 @@ class DesktopBridgeTest(unittest.TestCase):
         self.choose_book()
         c.selected_raw_file=Path(__file__)
         c.selected_raw_sheet.set('Sheet1')
+        c.book_setup=SimpleNamespace(sensor_columns={'inlet_temperature':'P'},import_headers=lambda headers:headers)
         mappings=[SensorMapping('CH','P')]
         dependencies=dict(source_mapping_info=Mock(return_value=(['CH'],set())),
                           template_columns=Mock(return_value={'P':'Тнк, °С'}),
@@ -62,7 +80,8 @@ class DesktopBridgeTest(unittest.TestCase):
                           source_selection_info=Mock(return_value={'format':'test','rows':1,'skipped_rows':0,'invalid_dates':0}),
                           load_saved_mappings=Mock(return_value=mappings),
                           save_mappings=Mock(),MappingDialog=Mock(return_value=Mock(result=None)))
-        with patch.dict(c.review_mapping.__func__.__globals__,dependencies),patch.object(c,'wait_window'):
+        dependencies['read_layout']=Mock(return_value=SimpleNamespace(headers={'P':'Тнк, °С'}))
+        with patch.dict(c.review_mapping.__func__.__globals__,dependencies),patch.object(c,'wait_window'),patch.object(c,'_ensure_book_mapping',return_value=True):
             self.assertFalse(c.review_mapping())
             dependencies['save_mappings'].assert_not_called()
             dependencies['MappingDialog'].return_value.result=mappings
@@ -81,16 +100,16 @@ class DesktopBridgeTest(unittest.TestCase):
         c.dispatch('value', json.dumps({'key':'unit','value':'ГТУ-10'}))
         self.assertIsNone(c.last_result)
         self.assertIsNone(c.sensor_mappings)
-        with patch.object(workflow.threading, 'Thread') as thread:
+        with patch.object(workflow.threading, 'Thread') as thread,patch.object(c,'_ensure_book_mapping',return_value=True):
             c.start_calculation()
-        self.assertEqual(thread.call_args.kwargs['args'][-2:], ('syz_tec','10'))
+        self.assertEqual(thread.call_args.kwargs['args'][-3:-1], ('syz_tec','10'))
         c.calculation_running = False
         c.dispatch('value', json.dumps({'key':'station','value':'ТЭЦ-21'}))
         self.assertEqual(c.unit_var.get(), '')
         self.assertEqual(c.run_button['state'], 'disabled')
         self.assertEqual(c.gas_tariff_var.get(), '')
         c.dispatch('value', json.dumps({'key':'unit','value':'ГТУ-11Б'}))
-        with patch.object(workflow.threading, 'Thread') as thread:
+        with patch.object(workflow.threading, 'Thread') as thread,patch.object(c,'_ensure_book_mapping',return_value=True):
             c.start_calculation()
         thread.assert_not_called()
         c.messages.showerror.assert_called()
@@ -192,11 +211,12 @@ class DesktopBridgeTest(unittest.TestCase):
         c.gas_tariff_var.set("9,5")
         c.electricity_tariff_var.set("2400.25")
         c.electricity_cost_var.set("1100")
-        with patch.object(workflow.threading, "Thread") as thread:
+        with patch.object(workflow.threading, "Thread") as thread,patch.object(c,'_ensure_book_mapping',return_value=True):
             c.start_calculation()
         args = thread.call_args.kwargs["args"]
         self.assertEqual(args[4:7], (9.5, 2400.25, 1100.))
-        self.assertEqual(args[-2:], ("syz_tec", "11"))
+        self.assertEqual(args[-3:-1], ("syz_tec", "11"))
+        self.assertIs(args[-1],c.book_setup)
         self.assertIs(thread.call_args.kwargs["target"].__func__.__code__, workflow.CalculationApp._calculation_worker.__code__)
 
     def test_import_mode_keeps_sheet_choice_and_manual_tariffs(self):

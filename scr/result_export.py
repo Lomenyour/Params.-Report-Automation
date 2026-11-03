@@ -27,6 +27,38 @@ class DataSheetValues:
     values: pd.DataFrame
     header_row: int
 
+    def apply_headers(self,headers):
+        # Previously unnamed numeric columns need object dtype before adding
+        # a confirmed label; pandas 3 rejects implicit string upcasts.
+        self.values=self.values.astype(object)
+        for index in range(len(self.values.columns)):
+            column=get_column_letter(index+1)
+            if column in headers:self.values.iat[self.header_row,index]=headers[column]
+
+    def apply_economic_result(self,result,date_column):
+        """Write the app's losses, never cached legacy Excel loss formulas."""
+        from data_assembly import apply_economic_columns
+        from openpyxl.utils import column_index_from_string
+        frame=self.values.iloc[self.header_row+1:].copy().astype(object)
+        frame.columns=[get_column_letter(i+1) for i in range(len(frame.columns))]
+        dates=pd.to_datetime(frame[date_column],errors='coerce').dt.round('min')
+        selected=frame.loc[dates.notna()].copy();positions=selected.index
+        selected.index=pd.DatetimeIndex(dates.loc[dates.notna()])
+        headers={get_column_letter(i+1):None if pd.isna(value) else str(value)
+                 for i,value in enumerate(self.values.iloc[self.header_row])}
+        data=AssembledData(selected,headers,0,0,{},[])
+        apply_economic_columns(data,result)
+        for column,header in headers.items():
+            if not header or header.strip().lower() not in ('перерасход','перерасход газа','перерасход топлива','недовыработка'):
+                continue
+            for output in (column,get_column_letter(column_index_from_string(column)+1)):
+                if output not in data.values:continue
+                i=column_index_from_string(output)-1
+                if i>=len(self.values.columns):self.values[i]=None
+                destination=self.values.columns[i]
+                self.values[destination]=self.values[destination].astype(object)
+                self.values.loc[positions,destination]=data.values[output].to_numpy()
+
     def apply_correction_profile(self, profile):
         """Применяет все именованные коэффициенты; готовую термодинамику сохраняет."""
         from data_assembly import calculate_data_columns
@@ -255,7 +287,7 @@ def save_result_workbook(
     sections: list[tuple[str, pd.DataFrame | None]],
     output_path: str | Path,
     *, pressure_chart: PressureChartData | None = None,
-    correction_sheet=None, gas_passport=None, correction_profile=None,
+    correction_sheet=None, gas_passport=None, correction_profile=None, book_profile=None,
 ) -> Path:
     """Пишет новую книгу атомарно, сохраняя прежний файл при ошибке экспорта."""
     path = Path(output_path)
@@ -270,6 +302,14 @@ def save_result_workbook(
         write_pressure_sheet(book, *layout, pressure_chart)
         from correction_sheet import write_correction_sheet
         write_correction_sheet(book, correction_sheet, gas_passport, correction_profile)
+        if book_profile is not None:
+            import json
+            from workbook_profile import PROFILE_SHEET, MARKER
+            profile_sheet=book.create_sheet(PROFILE_SHEET)
+            encoded=json.dumps(book_profile,ensure_ascii=False,allow_nan=False)
+            for offset in range(0,len(encoded),30000):
+                profile_sheet.append([MARKER if offset==0 else None,encoded[offset:offset+30000]])
+            profile_sheet.sheet_state='hidden'
         with tempfile.NamedTemporaryFile(prefix=".gtu_result_", suffix=".xlsx", dir=path.parent, delete=False) as handle:
             temporary = Path(handle.name)
         book.save(temporary)

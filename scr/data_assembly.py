@@ -47,6 +47,7 @@ class AssembledData:
     verified_duplicate_columns: list[str]
     undated_rows: pd.DataFrame | None = None  # Сохраняются при экспорте, в расчёт не входят.
     source_diagnostics: dict | None = None
+    changed_dates: pd.DatetimeIndex | None = None
 
     def as_headered_frame(self) -> pd.DataFrame:
         result = self.values.reset_index(drop=True).copy()
@@ -117,6 +118,7 @@ def load_saved_mappings(
     unit: str | None = None,
     repository: StationRepository | None = None,
     target_headers: dict | None = None,
+    parameter_columns: dict | None = None,
 ) -> list[SensorMapping] | None:
     station = resolve_station(book_path, station_id, repository)
     if station is None:
@@ -141,7 +143,7 @@ def load_saved_mappings(
         known = {entry["source"].casefold(): SensorMapping(**entry) for entry in entries}
     except (ValueError, KeyError, TypeError) as error:
         raise ValueError("Повреждена запись маппинга; JSON оставлен без изменений.") from error
-    targets = parameter_targets(target_headers or {}, station.id)
+    targets = parameter_columns if parameter_columns is not None else parameter_targets(target_headers or {}, station.id)
     result = []
     for header in sheet_headers:
         if header.casefold() in SERVICE_FIELDS:
@@ -180,6 +182,7 @@ def suggest_mappings(
     unit: str | None = None,
     repository: StationRepository | None = None,
     target_headers: dict | None = None,
+    parameter_columns: dict | None = None,
 ) -> list[SensorMapping]:
     """Предлагает только каналы выбранной ТЭЦ и ГТ; неизвестные — вручную."""
     repository = repository or get_station_repository()
@@ -190,7 +193,7 @@ def suggest_mappings(
                if channel.unit_number == gt_number}
     from parameter_mapping import parameter_targets
     from source_variants import match_variant
-    targets = parameter_targets(target_headers or {}, station.id if station else None)
+    targets = parameter_columns if parameter_columns is not None else parameter_targets(target_headers or {}, station.id if station else None)
     variant = match_variant(source_headers, station.company_id) if station and not by_code else None
     variant_codes = {entry["tag"].casefold(): entry for entry in variant["assignments"]} if variant else {}
     suggestions: list[SensorMapping] = []
@@ -202,7 +205,7 @@ def suggest_mappings(
             # Подтверждённые станционные назначения имеют приоритет над
             # неоднозначными названиями старой книги. Перестановка по похожему
             # заголовку меняла уже проверенную подстановку СызТЭЦ.
-            suggestions.append(SensorMapping(header, channel.target_column, channel.factor,
+            suggestions.append(SensorMapping(header, targets.get(channel.parameter_id,'') if parameter_columns is not None else channel.target_column, channel.factor,
                                              parameter=channel.parameter_id))
         elif header.casefold() in variant_codes:
             entry = variant_codes[header.casefold()]
@@ -234,7 +237,7 @@ def validate_mappings(
             raise ValueError(f"Неизвестный статус канала {mapping.source}.")
         if not mapping.target or not re.fullmatch(r"[A-Z]{1,3}", mapping.target):
             raise ValueError(f"Для канала {mapping.source!r} не выбрана колонка листа.")
-        if mapping.target in {"A", "B", "AD"}:
+        if mapping.target in {"A", "B", "AD"} and mapping.target not in allowed_targets:
             raise ValueError(f"Колонка {mapping.target} зарезервирована.")
         if target_headers is not None:
             from parameter_mapping import parameter_targets
@@ -317,7 +320,23 @@ def source_mapping_info(
     return list(raw.columns), _verified_duplicates(raw, station_id, repository)
 
 
-def _read_template(path: str | Path) -> tuple[pd.DataFrame, dict[str, str | None], pd.DataFrame]:
+def _read_template(path: str | Path, book_setup=None) -> tuple[pd.DataFrame, dict[str, str | None], pd.DataFrame]:
+    if book_setup is not None:
+        from workbook_profile import read_layout
+        layout=read_layout(path)
+        data=layout.values.copy()
+        headers=book_setup.import_headers(layout.headers)
+        date_column=book_setup.bindings['date']['column']
+        dates=pd.to_datetime(data[date_column],errors='coerce')
+        undated=data.loc[dates.isna()].copy()
+        rounded=dates.dt.round('min')
+        if ((dates-rounded).abs()>pd.Timedelta(seconds=1)).any():
+            raise ValueError('В основной книге время смещено от целой минуты больше чем на секунду.')
+        data=data.loc[dates.notna()].copy()
+        data.index=pd.DatetimeIndex(rounded.loc[dates.notna()],name='timestamp')
+        if data.index.has_duplicates: raise ValueError('В основной книге повторяются даты.')
+        data[date_column]=data.index
+        return data.sort_index(),headers,undated
     with pd.ExcelFile(path, engine="calamine") as workbook:
         if not workbook.sheet_names or workbook.sheet_names[0] != "Данные":
             raise ValueError("Первый лист расчётной книги должен называться «Данные».")
@@ -370,16 +389,17 @@ def assemble_sensor_data(
     *, station_id: str | None = None,
     unit: str | None = None,
     repository: StationRepository | None = None,
+    book_setup=None,
 ) -> AssembledData:
     repository = repository or get_station_repository()
     station = resolve_station(book_path, station_id, repository)
     if station is None:
         raise ValueError("Выберите ТЭЦ перед обновлением данных датчиков.")
-    template, headers, undated_rows = _read_template(book_path)
+    template, headers, undated_rows = _read_template(book_path, book_setup)
     raw = _read_sensor_sheet(source_path, source_sheet)
     duplicates = _verified_duplicates(raw, station.id, repository)
     validate_mappings(mappings, list(raw.columns), duplicates, headers,
-                      allowed_targets=sensor_target_columns(station.id, repository))
+                      allowed_targets=set(book_setup.sensor_columns.values()) if book_setup else sensor_target_columns(station.id, repository))
     gt_number = unit or unit_number(book_path)
     if gt_number:
         channels = repository.get_channels(station.id)
@@ -398,7 +418,7 @@ def assemble_sensor_data(
     result = template.reindex(all_dates).copy()
     # В старой книге давление могло лежать в AD вместо AC. Заполняем
     # только пропуск AC, сохраняя обе исходные колонки без перезаписи.
-    if "AD" in result and "AC" in result and not headers.get("AD"):
+    if book_setup is None and "AD" in result and "AC" in result and not headers.get("AD"):
         shifted = template["AC"].isna() & template["AD"].notna()
         result.loc[template.index[shifted], "AC"] = template.loc[
             shifted, "AD"
@@ -422,8 +442,10 @@ def assemble_sensor_data(
         if invalid:
             invalid_values[mapping.source] = invalid
 
-    result["B"] = result.index
-    result["A"] = np.arange(len(result), dtype=float) * 0.5
+    date_column=book_setup.bindings['date']['column'] if book_setup else 'B'
+    result[date_column] = result.index
+    hours_column=book_setup.bindings.get('hours_input',{}).get('column') if book_setup else 'A'
+    if hours_column: result[hours_column] = np.arange(len(result), dtype=float) * 0.5
     return AssembledData(
         values=result,
         headers=headers,
@@ -434,6 +456,7 @@ def assemble_sensor_data(
         undated_rows=undated_rows,
         source_diagnostics={**source_selection_info(source_path, source_sheet),
                             'ignored_channels':[item.source for item in mappings if item.status=='ignored']},
+        changed_dates=raw.index.copy(),
     )
 
 
@@ -625,7 +648,7 @@ def apply_economic_columns(data: AssembledData, economics_result: dict) -> None:
     frame = data.values
     loss_columns = [
         column for column, header in data.headers.items()
-        if header and header.strip().lower() in {"перерасход", "недовыработка"}
+        if header and header.strip().lower() in {"перерасход", "перерасход газа", "перерасход топлива", "недовыработка"}
     ]
     for column in loss_columns:
         frame[column] = np.nan
@@ -643,6 +666,8 @@ def apply_economic_columns(data: AssembledData, economics_result: dict) -> None:
     losses = losses.set_index("date").sort_index()
     source_for_header = {
         "перерасход": "fuel_loss_rate",
+        "перерасход газа": "fuel_loss_rate",
+        "перерасход топлива": "fuel_loss_rate",
         "недовыработка": "power_loss_rate",
     }
     for column, header in list(data.headers.items()):

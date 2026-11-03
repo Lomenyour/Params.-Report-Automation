@@ -59,6 +59,8 @@ from correction_profiles import resolve_profile, require_profile, save_profile
 from correction_profiles_ui import CorrectionDialog
 from periods import parse_periods_arg
 from result_export import collect_result_tables, read_data_sheet, save_result_workbook
+from workbook_profile import read_layout, suggestions as suggest_book_columns, confirm as confirm_book, validate_recalculation
+from workbook_mapping_ui import BookMappingDialog
 from pressure_chart import PressureChartData
 from chart_events import ChartEvent, load_chart_events, save_chart_events
 from chart_events_ui import ChartEventsDialog
@@ -248,6 +250,8 @@ class MappingDialog(tk.Toplevel):
         self._source_headers = source_headers
         self._verified_duplicates = verified_duplicates
         self._allowed_targets = sensor_target_columns(station_id, parent.station_repository) | set(parameter_targets(target_headers, station_id).values())
+        self._parameter_columns = parent.book_setup.sensor_columns if getattr(parent,'book_setup',None) else {}
+        if self._parameter_columns: self._allowed_targets=set(self._parameter_columns.values())
         self._unit_rows = {}
 
         ttk.Label(
@@ -347,7 +351,8 @@ class MappingDialog(tk.Toplevel):
                 if source_unit and target_unit:
                     factor = unit_factor(source_unit, target_unit)
                 mappings.append(replace(old, source=source, target=target, factor=factor, status="mapped",
-                                        parameter=parameter_for_header(self._target_headers.get(target), self._station_id),
+                                        parameter=next((key for key,column in getattr(self,'_parameter_columns',{}).items() if column==target),
+                                                       parameter_for_header(self._target_headers.get(target), self._station_id)),
                                         target_header=self._target_headers.get(target) or "",
                                         source_unit=source_unit, target_unit=target_unit))
             validate_mappings(
@@ -383,6 +388,7 @@ class CalculationApp(tk.Tk):
         self.selected_raw_sheet = tk.StringVar(value="")
         self.sensor_mappings: list[SensorMapping] | None = None
         self.mapping_sheet: str | None = None
+        self.book_setup = None
         self.figure_views = []
         self.last_result: CalculationSnapshot | None = None
         self.station_repository = get_station_repository()
@@ -432,6 +438,8 @@ class CalculationApp(tk.Tk):
             self.gas_passport_button.configure(state="normal" if idle and has_book and has_unit else "disabled")
         if hasattr(self, "corrections_button"):
             self.corrections_button.configure(state="normal" if idle and has_book and has_unit else "disabled")
+        if hasattr(self, "book_mapping_button"):
+            self.book_mapping_button.configure(state="normal" if idle and has_book and has_unit else "disabled")
         for button in self.mode_buttons:
             button.configure(state="normal" if idle else "disabled")
         for entry in self.tariff_entries:
@@ -494,8 +502,8 @@ class CalculationApp(tk.Tk):
 
     def _on_unit_changed(self, _event=None):
         turbine = self._selected_turbine()
-        self.unit_model_label.configure(text=(f"Модель: {turbine.model}" +
-            (' · методика расчёта пока не подключена' if turbine.calculation_method!='syz_tec_v1' else '')) if turbine else "Выберите ГТУ.")
+        self.unit_model_label.configure(text=f"Модель: {turbine.model}" if turbine else "Выберите ГТУ.")
+        self.book_setup = None
         self._clear_mapping()
         self._invalidate_results()
 
@@ -503,6 +511,46 @@ class CalculationApp(tk.Tk):
         self._apply_station(self.stations_by_name.get(self.station_var.get()), automatic=False)
 
     def review_corrections(self):
+        return self.review_book_mapping()
+
+    def _ensure_book_mapping(self):
+        setup = getattr(self, 'book_setup', None)
+        turbine = self._selected_turbine()
+        station = self.stations_by_name.get(self.station_var.get())
+        if setup and self.selected_file and turbine and station:
+            stat = self.selected_file.stat()
+            if (setup.station, setup.unit, setup.stamp) == (station.id, turbine.number,
+                    (str(self.selected_file.resolve()), stat.st_mtime_ns, stat.st_size)):
+                return True
+        return self.review_book_mapping()
+
+    def review_book_mapping(self):
+        if self.calculation_running or self.export_running or not self.selected_file:
+            return False
+        station = self.stations_by_name.get(self.station_var.get())
+        turbine = self._selected_turbine()
+        if not station or not turbine:
+            messagebox.showerror('Основная книга', 'Выберите ТЭЦ и ГТУ.', parent=self)
+            return False
+        try:
+            self._append_log('Чтение параметров и формул основной книги…\n')
+            layout = read_layout(self.selected_file)
+            rows = suggest_book_columns(layout, station.id, turbine.number)
+            dialog = BookMappingDialog(self, layout, rows, station.id, turbine.number)
+            self.wait_window(dialog)
+            if dialog.result is None:
+                return False
+            self.book_setup = confirm_book(layout, station.id, turbine.number, dialog.result.columns)
+            self._clear_mapping()
+            self._invalidate_results()
+            self._append_log(f'Основная книга подтверждена: {len(self.book_setup.bindings)} параметров, '
+                             f'{len(self.book_setup.recipes)} расчётных выражений.\n')
+            return True
+        except (ValueError, OSError, KeyError) as error:
+            messagebox.showerror('Проверьте основную книгу', str(error), parent=self)
+            return False
+
+    def _legacy_review_corrections(self):
         if self.calculation_running or self.export_running or self.selected_file is None:
             return
         station = self.stations_by_name.get(self.station_var.get())
@@ -656,6 +704,8 @@ class CalculationApp(tk.Tk):
     def review_mapping(self) -> bool:
         if not self.selected_file or not self.selected_raw_file:
             return False
+        if not self._ensure_book_mapping():
+            return False
         station = self.stations_by_name.get(self.station_var.get())
         turbine = self._selected_turbine()
         if station is None or turbine is None:
@@ -670,13 +720,15 @@ class CalculationApp(tk.Tk):
                 self.selected_raw_file, sheet, station_id=station.id,
                 repository=self.station_repository,
             )
-            targets = template_columns(self.selected_file)
+            targets = self.book_setup.import_headers(read_layout(self.selected_file).headers)
             suggestions = (
                 load_saved_mappings(self.selected_file, headers, station_id=station.id, unit=turbine.number,
-                                    repository=self.station_repository, target_headers=targets)
+                                    repository=self.station_repository, target_headers=targets,
+                                    parameter_columns=self.book_setup.sensor_columns)
                 or suggest_mappings(
                     headers, self.selected_file, verified_duplicates,
                     station_id=station.id, unit=turbine.number, repository=self.station_repository, target_headers=targets,
+                    parameter_columns=self.book_setup.sensor_columns,
                 )
             )
             info = source_channel_info(self.selected_raw_file, sheet)
@@ -734,11 +786,7 @@ class CalculationApp(tk.Tk):
         if turbine is None:
             messagebox.showerror("Не выбрана ГТУ", "Выберите ГТУ перед запуском расчёта.", parent=self)
             return
-        if turbine.calculation_method != "syz_tec_v1":
-            messagebox.showerror("Методика не подключена",
-                f'{station.name} · {turbine.name} · {turbine.model}\n\n'
-                'Для этого агрегата полный расчёт ещё не подключён. Сейчас он доступен для СызТЭЦ ГТУ-10 и ГТУ-11.\n\n'
-                'Маппинг и паспорт газа настраивают исходные данные. Для запуска нужна также методика расчёта и поправки выбранной ГТУ.', parent=self)
+        if not self._ensure_book_mapping():
             return
         importing = self.calculation_mode.get() == "import"
         raw_file_path = self.selected_raw_file if importing else None
@@ -792,6 +840,7 @@ class CalculationApp(tk.Tk):
                 self.chart_events,
                 station.id,
                 turbine.number,
+                self.book_setup,
             ),
             daemon=True,
         )
@@ -824,6 +873,7 @@ class CalculationApp(tk.Tk):
         chart_events: tuple[ChartEvent, ...] = (),
         station_id: str | None = None,
         turbine_number: str | None = None,
+        book_setup=None,
     ):
         writer = QueueWriter(self.output_queue)
         calculation_started = None
@@ -839,20 +889,20 @@ class CalculationApp(tk.Tk):
                     if turbine_number else self.station_repository.detect_turbine(file_path, station.id))
                 if selected_turbine is None:
                     raise ValueError("Выберите ГТУ: имя файла не позволяет однозначно определить агрегат.")
-                if selected_turbine.calculation_method != "syz_tec_v1":
-                    raise ValueError("Методика выбранной ГТУ ещё не подключена.")
                 turbine = selected_turbine.number
                 print(f"ГТУ: {selected_turbine.name}; модель: {selected_turbine.model}")
-                correction_profile = require_profile(file_path, station.id, turbine)
-                print(f"Именованные поправки: ГТ-{turbine}, метод {correction_profile.method}, "
-                      f"версия {correction_profile.revision}; 63 коэффициента.")
+                if book_setup is None:
+                    raise ValueError('Подтвердите параметры основной книги перед расчётом.')
+                stat = file_path.stat()
+                if (book_setup.station, book_setup.unit, book_setup.stamp) != (station.id, turbine,
+                        (str(file_path.resolve()), stat.st_mtime_ns, stat.st_size)):
+                    raise ValueError('Основная книга или ГТУ изменились. Повторите проверку параметров.')
+                print(f'Подтверждено: {len(book_setup.bindings)} параметров; '
+                      f'{len(book_setup.recipes)} выражений из выбранной книги.')
+                correction_profile = None
                 passport = resolve_passport(file_path, station.id, turbine)
-                corrections = read_correction_sheet(file_path)
-                profile = None
+                corrections = None
                 if passport is not None:
-                    profile = read_calculation_profile(file_path, gas_passport=passport,
-                        correction_profile=correction_profile, station_id=station.id,
-                        unit=turbine, repository=self.station_repository)
                     for entry in passport_entries(passport):
                         print(f"Паспорт газа: {entry.valid_from or 'весь диапазон'} — {entry.valid_until or 'весь диапазон'}; "
                               f"ρ = {entry.density_kg_per_nm3:g} кг/нм³; Qнр = {entry.q_lower_mj_per_nm3:g} МДж/нм³; "
@@ -864,16 +914,17 @@ class CalculationApp(tk.Tk):
                     raise ValueError("Нет паспорта газа для выбранной ТЭЦ и ГТ. Заполните его кнопкой «Паспорт газа».")
                 else:
                     print("Паспорт газа отсутствует: готовые газозависимые колонки книги сохранены. Для их обновления заполните «Паспорт газа».")
-                if corrections is None:
-                    print("В экспорте будет создан именованный лист «Поправки» из используемого JSON-профиля.")
+                print('В экспорт войдёт использованный профиль формул и коэффициентов текущей книги.')
 
                 periods_mod.PERIOD_OVERRIDES = []
                 assembled = None
                 if raw_file_path is not None:
+                    validate_recalculation(book_setup)
                     print(f"Исходная выгрузка: {raw_file_path.name}, лист: {raw_sheet}")
                     assembled = assemble_sensor_data(
                         file_path, raw_file_path, raw_sheet, mappings or [],
                         station_id=station.id, unit=turbine, repository=self.station_repository,
+                        book_setup=book_setup,
                     )
                     print(
                         f"Получасовых строк: {assembled.imported_rows}; "
@@ -895,29 +946,33 @@ class CalculationApp(tk.Tk):
                             "каналами и не дублируются: "
                             + ", ".join(assembled.verified_duplicate_columns)
                         )
-                    calculate_data_columns(assembled, profile)
+                    errors = book_setup.recalculate(assembled.values, passport=passport, changed_dates=assembled.changed_dates)
+                    print(f'Диагностика пересчёта без очистки измерений: {errors}')
                     missing = {
                         column: int(pd.to_numeric(
                             assembled.values[column], errors="coerce"
                         ).isna().sum())
-                        for column in ("R", "AB", "AQ", "AV", "AX")
+                        for column in [row['column'] for key,row in book_setup.bindings.items()
+                                       if key in ('eta_compressor','power','fuel','fuel_specific')]
                     }
                     print(
                         "Строки без расчётного значения "
                         "(в том числе остановы и X): "
                         + ", ".join(f"{column} — {count}" for column, count in missing.items())
                     )
-                    source = load_source_data(assembled.as_headered_frame())
+                    source = book_setup.canonical(assembled.values)
                     data_for_export = assembled
                 else:
                     data_for_export = read_data_sheet(file_path)
-                    if passport is not None:
-                        data_for_export.apply_correction_profile(profile)
-                        print("Коэффициентные и газозависимые колонки обновлены по выбранным именованным профилям.")
-                    source = load_source_data(data_for_export.as_headered_frame())
+                    layout = read_layout(file_path)
+                    export_headers=book_setup.import_headers(layout.headers)
+                    data_for_export.apply_headers(export_headers)
+                    source = book_setup.canonical(layout.values)
+                    print('Готовые производные значения основной книги используются без замены формулами другой ГТУ.')
+                print(f'Проверка исходных данных без очистки: {book_setup.audit(source)}')
                 if passport is not None:
-                    # AK хранит массовое Qнр для полинома поправки (МДж/кг),
-                    # а расчёт КПД ГТУ принимает объёмное Qнр (МДж/нм³).
+                    # Анализ КПД ГТУ получает объёмное Qнр паспорта.
+                    # Массовое Qнр в выражениях книги остаётся отдельным узлом.
                     source["q_lower"] = gas_values(passport, source["date"])["q_lower_mj_per_nm3"]
                 rh_data = prepare_rh_data(source)
                 vna_data = prepare_vna_data(source)
@@ -1007,6 +1062,8 @@ class CalculationApp(tk.Tk):
 
                 if assembled is not None:
                     apply_economic_columns(assembled, economics_result)
+                else:
+                    data_for_export.apply_economic_result(economics_result,book_setup.bindings['date']['column'])
                 sections = collect_result_tables(
                     rh_periods, output_tables, vna_results, economics_result["table"]
                 )
@@ -1043,6 +1100,7 @@ class CalculationApp(tk.Tk):
                     filename_stem=f"{file_path.stem}{suffix}",
                     correction_sheet=corrections, gas_passport=passport,
                     correction_profile=correction_profile,
+                    book_profile=book_setup.metadata(),
                 )
 
                 pressure_figure = plot_pressure_drops(
@@ -1477,6 +1535,7 @@ class CalculationApp(tk.Tk):
                     correction_sheet=snapshot.correction_sheet,
                     gas_passport=snapshot.gas_passport,
                     correction_profile=snapshot.correction_profile,
+                    book_profile=snapshot.book_profile,
                 )
             else:
                 generate_report(snapshot.report_data, template_path=DEFAULT_TEMPLATE, output_path=path)

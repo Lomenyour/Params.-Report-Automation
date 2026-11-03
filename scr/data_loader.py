@@ -269,9 +269,10 @@ def prepare_vna_data(source: pd.DataFrame) -> pd.DataFrame:
     p_kk = pd.to_numeric(result["p_kk_mpa"], errors="coerce")
     ratio = (p_nk / p_atm).median()
 
-    if ratio > 0.5:
+    pressure_kind=source.attrs.get('inlet_pressure_kind')
+    if pressure_kind=='absolute' or (pressure_kind is None and ratio > 0.5):
         inlet_pa = p_nk
-        print(f"Pнк — абсолютное давление на входе (Pнк/Pатм = {ratio:.3f})")
+        print(f"Pнк — абсолютное давление на входе (Pнк/Pатм = {ratio:.3f}; подтверждённый тип: {pressure_kind or 'авто'})")
     else:
         inlet_pa = p_atm - p_nk
         print(

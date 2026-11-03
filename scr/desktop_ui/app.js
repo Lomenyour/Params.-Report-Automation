@@ -277,7 +277,41 @@
     const gasInputs = [];
     const gasEntries = [];
     const coefficientInputs = [];
-    if (payload.kind === 'mapping') {
+    const bookInputs = [];
+    if (payload.kind === 'bookMapping') {
+      description.textContent='Подтвердите параметры и единицы основной книги. Формулы определяют зависимости, коэффициенты читаются из текущей книги. Вспомогательные колонки сохраняются.';
+      const table=element('table','gtu-mapping-table gtu-book-table'), head=table.createTHead().insertRow();
+      ['Колонка книги','Параметр','Единицы','Тип','Расчётное выражение'].forEach(title=>head.append(element('th','',title)));
+      const tbody=table.createTBody();
+      payload.rows.forEach(data=>{
+        const row=tbody.insertRow();row.insertCell().textContent=`${data.column} — ${data.header || 'Без заголовка'}`;
+        const selectedRole=payload.roles.find(role=>role.value===data.role)?.label || payload.roles[0].label;
+        const role=GtuChoiceField.create({root,choices:payload.roles.map(role=>role.label),value:selectedRole,label:`Параметр ${data.column}`});
+        const units=[...new Set(['',...(payload.unit_catalog||[]).map(unit=>unit.symbol),data.unit])];
+        const unit=GtuChoiceField.create({root,choices:units,value:data.unit,label:`Единицы ${data.column}`,editable:true});
+        const kind=GtuChoiceField.create({root,choices:['Измеренный','Расчётный'],value:data.kind==='computed'?'Расчётный':'Измеренный',label:`Тип ${data.column}`});
+        const roleCell=row.insertCell(), roleText=element('small','gtu-caption');roleCell.append(role,roleText);
+        const showRole=()=>{role.input.title=role.input.value;roleText.textContent=role.input.value.length>26?role.input.value:'';};
+        role.input.onchange=showRole;showRole();unit.input.title=data.unit;
+        const unitCell=row.insertCell();unitCell.append(unit);
+        if(data.unit_inferred)unitCell.append(element('small','gtu-caption','В книге не указаны — проверьте'));
+        row.insertCell().append(kind);
+        const cell=row.insertCell(), variants=data.variants||[];
+        const options=variants.map((variant,index)=>({id:variant.id,label:`Вариант ${index+1} · ${variant.count} строк${variant.error?' · требуется уточнение':''}`,variant}));
+        const choice=GtuChoiceField.create({root,choices:options.map(item=>item.label),value:options.find(item=>item.id===data.recipe)?.label||'',label:`Формула ${data.column}`});
+        const text=element('div','gtu-formula-text');
+        const update=()=>{const found=options.find(item=>item.label===choice.input.value);text.textContent=found ? `${found.variant.formula}${found.variant.error?' — '+found.variant.error:''}` : 'Нет формулы в книге';};
+        choice.input.onchange=update;update();
+        if(variants.length)cell.append(choice);
+        cell.append(text);
+        bookInputs.push({data,role:role.input,unit:unit.input,kind:kind.input,choice:choice.input,options});
+      });
+      body.append(table);
+      const constants=element('details','gtu-coefficient-group'), title=element('summary','',`Коэффициенты из текущей книги (${(payload.constants||[]).length})`);
+      constants.append(title);
+      (payload.constants||[]).forEach(item=>constants.append(element('div','gtu-formula-text',`${item.source} = ${item.value}`)));
+      body.append(constants);
+    } else if (payload.kind === 'mapping') {
       const catalog = payload.unit_catalog || [];
       const unitKey = value => value.trim().toLowerCase().replace(/\s+/g, '');
       const unitInfo = value => catalog.find(unit => unit.aliases.includes(unitKey(value)));
@@ -418,13 +452,14 @@
     }
     const cancel = element('button', 'gtu-action', periods ? 'Автоматические периоды' : 'Отмена'); cancel.type = 'button';
     cancel.onclick = () => send('dialog', {action: periods ? 'auto' : 'cancel'});
-    const accept = element('button', 'gtu-action gtu-primary', periods ? 'Применить периоды' : payload.kind === 'mapping' ? 'Подтвердить маппинг' : ['gasPassport','corrections'].includes(payload.kind) ? 'Сохранить' : 'Применить'); accept.type = 'button';
+    const accept = element('button', 'gtu-action gtu-primary', periods ? 'Применить периоды' : payload.kind === 'bookMapping' ? 'Подтвердить книгу' : payload.kind === 'mapping' ? 'Подтвердить маппинг' : ['gasPassport','corrections'].includes(payload.kind) ? 'Сохранить' : 'Применить'); accept.type = 'button';
     accept.onclick = () => { if (mappingInputs.some(({factor}) => !factor.reportValidity())) return;
       if(payload.kind==='gasPassport') {
         const invalid=gasEntries.find(entry=>entry.chError);
         if(invalid){invalid.section.open=true;invalid.status.scrollIntoView({block:'center'});return;}
       }
       const result={action: periods ? 'manual' : 'accept', text: editor?.value || '', rows: mappingInputs.map(({target, factor, sourceUnit, targetUnit}) => ({target:target.value, factor:factor.value,source_unit:sourceUnit.value,target_unit:targetUnit.value})), values:Object.fromEntries([...gasInputs,...coefficientInputs].map(({key, input}) => [key, input.value]))};
+      if(payload.kind==='bookMapping')result.rows=bookInputs.map(item=>({column:item.data.column,role:payload.roles.find(role=>role.label===item.role.value)?.value||'',unit:item.unit.value,kind:item.kind.value==='Расчётный'?'computed':'measured',recipe:item.options.find(option=>option.label===item.choice.value)?.id||''}));
       if(payload.kind==='gasPassport') result.entries=gasEntries.map(item=>({valid_from:item.from.value,valid_until:item.until.value,values:Object.fromEntries(item.fields.map(({key,input})=>[key,input.value]))})); send('dialog',result); };
     actions.append(cancel, accept); dialog.append(header, body, actions); layer.replaceChildren(dialog); layer.hidden = false;
     requestAnimationFrame(() => (editor || dialog.querySelector('input') || accept).focus());

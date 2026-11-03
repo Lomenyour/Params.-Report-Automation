@@ -7,9 +7,10 @@ import io
 import json
 from pathlib import Path
 import queue
+import threading
 import types
 
-from PySide6.QtCore import QCoreApplication, QEventLoop, QObject, QTimer, Signal, Slot
+from PySide6.QtCore import QCoreApplication, QEventLoop, QObject, QThread, QTimer, Signal, Slot
 from PySide6.QtWidgets import QFileDialog, QMessageBox
 from matplotlib.backends.backend_agg import FigureCanvasAgg
 
@@ -22,6 +23,8 @@ from gas_passport_ui import passport_fields, passport_from_fields, history_rows,
 from gas_composition import ch_model
 from parameter_mapping import parameter_targets, PRESSURE_UNITS, UNIT_CATALOG, canonical_unit
 from correction_profiles_ui import correction_groups, profile_from_fields
+from workbook_mapping_ui import dialog_payload
+from workbook_profile import confirm as confirm_book
 
 
 # Это те же code objects, что и у проверенного сценария. Меняется только
@@ -30,6 +33,7 @@ WORKFLOW_METHODS = (
     "_invalidate_results", "_update_input_controls", "_apply_station",
     "_on_station_changed", "_selected_turbine", "_on_unit_changed", "_on_mode_changed", "_on_raw_sheet_changed",
     "clear_raw_file", "choose_file", "review_chart_events", "_clear_mapping",
+    "review_book_mapping", "_ensure_book_mapping",
     "choose_raw_file", "review_mapping", "start_calculation", "_parse_tariff",
     "_calculation_worker", "_poll_output", "_periods_text", "_format_cell", "review_gas_passport", "review_corrections",
     "_build_vna_overview", "_show_results", "generate_excel_report",
@@ -157,6 +161,9 @@ class MappingDialog(Dialog):
         self._verified_duplicates = verified_duplicates
         self._allowed_targets = sensor_target_columns(station_id, parent.station_repository)
         self._allowed_targets |= set(parameter_targets(target_headers, station_id).values())
+        self._parameter_columns = getattr(parent, 'book_setup', None).sensor_columns if getattr(parent, 'book_setup', None) else {}
+        if self._parameter_columns:
+            self._allowed_targets = set(self._parameter_columns.values())
         self._suggestions = {item.source: item for item in suggestions}
         self._station_id = station_id
         self._unit_rows = {item.source: (Value(canonical_unit(item.source_unit)), Value(canonical_unit(item.target_unit))) for item in suggestions}
@@ -191,6 +198,22 @@ class MappingDialog(Dialog):
             for field, variable in zip(("source_unit", "target_unit"), self._unit_rows[source]):
                 variable.set(values.get(field, variable.get()))
         self._accept()
+
+
+class BookMappingDialog(Dialog):
+    def __init__(self,parent,layout,rows,station,unit):
+        super().__init__(parent,dialog_payload(layout,rows))
+        self.layout,self.rows,self.station,self.unit=layout,rows,station,unit
+        self.payload['unit_catalog']=UNIT_CATALOG
+        self.payload['constants']=[{'source':key,'value':value} for key,value in layout.constants.items()]
+
+    def accept(self,payload):
+        try:
+            self.result=confirm_book(self.layout,self.station,self.unit,payload.get('rows',[]),save=False)
+        except (ValueError,KeyError,TypeError) as error:
+            self.controller.messages.showerror('Проверьте основную книгу',str(error))
+            return
+        self.destroy()
 
 
 class EventsDialog(Dialog):
@@ -257,6 +280,8 @@ class DesktopController(QObject):
         replacements = {"filedialog": self.files, "messagebox": self.messages,
                         "MappingDialog": MappingDialog, "ChartEventsDialog": EventsDialog,
                         "GasPassportDialog": GasPassportDialog, "CorrectionDialog": CorrectionDialog}
+        replacements['BookMappingDialog']=BookMappingDialog
+        replacements['read_layout']=self._read_layout
         for name in WORKFLOW_METHODS:
             descriptor = inspect.getattr_static(workflow.CalculationApp, name)
             static = isinstance(descriptor, staticmethod)
@@ -272,6 +297,7 @@ class DesktopController(QObject):
         self.chart_events = ()
         self.selected_raw_sheet = Value("", self.changed)
         self.sensor_mappings = self.mapping_sheet = None
+        self.book_setup = None
         self.figure_views = []
         self.last_result = None
         self.station_repository = workflow.get_station_repository()
@@ -282,7 +308,7 @@ class DesktopController(QObject):
         self.gas_tariff_var = Value("0", self.changed)
         self.electricity_tariff_var = Value("0", self.changed)
         self.electricity_cost_var = Value("0", self.changed)
-        names = ("station_combo", "unit_combo", "unit_model_label", "events_button", "choose_button", "raw_button", "mapping_button", "gas_passport_button", "corrections_button",
+        names = ("station_combo", "unit_combo", "unit_model_label", "events_button", "choose_button", "raw_button", "mapping_button", "book_mapping_button", "gas_passport_button", "corrections_button",
                  "clear_raw_button", "raw_sheet_combo", "run_button", "excel_button", "report_button",
                  "raw_label", "file_label", "station_hint", "import_controls", "status_label", "progress")
         self.controls = {name: Control(self.changed) for name in names}
@@ -305,6 +331,34 @@ class DesktopController(QObject):
             return
         self._dirty = True
         QTimer.singleShot(0, self.publish_state)
+
+    def _read_layout(self,path):
+        """Parse large books off the UI thread while keeping inputs immutable."""
+        if QThread.currentThread()!=self.thread():
+            return workflow.read_layout(path)
+        result={}; loop=QEventLoop(self.window); timer=QTimer()
+        self._preparing_book=True
+        states={name:control.attributes.get('state') for name,control in self.controls.items()}
+        for control in self.controls.values():
+            if 'state' in control.attributes: control.configure(state='disabled')
+        self.status_label.configure(text='Чтение параметров и формул книги…');self.progress.start(10)
+        def read():
+            try: result['value']=workflow.read_layout(path)
+            except Exception as error: result['error']=error
+        def poll():
+            if result or self.closed: loop.quit()
+        timer.timeout.connect(poll);timer.start(25)
+        threading.Thread(target=read,daemon=True).start()
+        try: loop.exec()
+        finally:
+            timer.stop();self._preparing_book=False
+            if not self.closed:
+                for name,state in states.items():
+                    if state is not None:self.controls[name].configure(state=state)
+                self.progress.stop();self._update_input_controls()
+        if self.closed: raise RuntimeError('Окно закрыто во время чтения книги.')
+        if 'error' in result: raise result['error']
+        return result['value']
 
     def publish_state(self):
         self._dirty = False
@@ -447,7 +501,7 @@ class DesktopController(QObject):
         self.after(0, lambda: self.dispatch(name, data))
 
     def dispatch(self, name, data):
-        if self.closed:
+        if self.closed or getattr(self,'_preparing_book',False):
             return
         payload = json.loads(data or "{}")
         if name == "dialog":
@@ -458,12 +512,14 @@ class DesktopController(QObject):
                 self.chart_tabs.select(payload.get("key", "pressure"))
             return
         actions = {"file": self.choose_file, "raw": self.choose_raw_file,
+                   "bookMapping": self.review_book_mapping,
                    "gasPassport": self.review_gas_passport,
                    "corrections": self.review_corrections,
                    "clearRaw": self.clear_raw_file, "mapping": self.review_mapping,
                    "events": self.review_chart_events, "run": self.start_calculation,
                    "excel": self.generate_excel_report, "word": self.generate_word_report}
         guards = {"file": "choose_button", "raw": "raw_button", "clearRaw": "clear_raw_button",
+                  "bookMapping": "book_mapping_button",
                   "gasPassport": "gas_passport_button",
                   "corrections": "corrections_button",
                   "mapping": "mapping_button", "events": "events_button", "run": "run_button",

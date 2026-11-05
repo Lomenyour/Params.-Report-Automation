@@ -282,7 +282,9 @@
       description.textContent='Проверьте сохранённый маппинг ТЭЦ/ГТ. Измеренные столбцы принимают данные датчиков, расчётные вычисляются по формулам, служебные содержат дату и наработку.';
       const toolbar=element('div','gtu-book-toolbar'), formulasButton=element('button','gtu-action','Показать расчётные формулы');
       formulasButton.type='button';formulasButton.dataset.bookFormulas='';formulasButton.setAttribute('aria-expanded','false');
-      toolbar.append(formulasButton);body.append(toolbar);
+      const coefficientsButton=element('button','gtu-action','Показать коэффициенты');
+      coefficientsButton.type='button';coefficientsButton.dataset.bookCoefficients='';coefficientsButton.setAttribute('aria-expanded','false');
+      toolbar.append(formulasButton,coefficientsButton);body.append(toolbar);
       const table=element('table','gtu-mapping-table gtu-book-table'), head=table.createTHead().insertRow();
       ['Колонка книги','Параметр','Единицы','Тип'].forEach(title=>head.append(element('th','',title)));
       const tbody=table.createTBody();
@@ -310,8 +312,9 @@
       });
       body.append(table);
       const formulaPanel=element('div','gtu-book-formulas');formulaPanel.hidden=true;body.append(formulaPanel);
+      let detailView='mapping';
       formulasButton.onclick=()=>{
-        GtuChoiceField.close();const opened=formulaPanel.hidden;
+        GtuChoiceField.close();const opened=detailView!=='formulas';
         if(opened){
           const formulaTable=element('table','gtu-mapping-table gtu-formula-table'),h=formulaTable.createTHead().insertRow();
           ['Параметр','Используемое выражение'].forEach(title=>h.append(element('th','',title)));
@@ -331,7 +334,35 @@
           formulaPanel.replaceChildren(element('p','gtu-caption','Выбрана структура с наибольшим числом строк. При импорте паспорт газа задаёт C/H, Qнр и плотность в связанных узлах.'),formulaTable);
         }
         table.hidden=opened;formulaPanel.hidden=!opened;formulasButton.textContent=opened?'Вернуться к маппингу':'Показать расчётные формулы';
-        formulasButton.setAttribute('aria-expanded',String(opened));body.scrollTop=0;
+        formulasButton.setAttribute('aria-expanded',String(opened));
+        coefficientsButton.textContent='Показать коэффициенты';coefficientsButton.setAttribute('aria-expanded','false');
+        detailView=opened?'formulas':'mapping';body.scrollTop=0;
+      };
+      coefficientsButton.onclick=()=>{
+        GtuChoiceField.close();const opened=detailView!=='coefficients';
+        if(opened){
+          formulaPanel.replaceChildren(element('p','gtu-caption','Коэффициенты выбранных выражений прочитаны из текущей книги. Числа внутри выражений показаны в самих формулах.'));
+          let groups=0;
+          bookInputs.filter(item=>item.kind.value==='Расчётный'&&!item.data.application_owned).forEach(item=>{
+            const selected=(item.data.variants||[]).find(v=>v.id===item.data.recipe);
+            if(!selected||(!selected.coefficients?.length&&!selected.constant_value))return;
+            groups++;
+            const section=element('section','gtu-coefficient-group'),label=item.role.value==='Вспомогательная колонка'?item.data.header||'Без заголовка':item.role.value;
+            section.append(element('h4','',`${label} (${item.data.column})`),element('div','gtu-formula-text',(selected.constant_value?'Постоянное значение: ':'')+selected.formula));
+            if(selected.coefficients?.length){
+              const coefficients=element('table','gtu-mapping-table gtu-formula-table'),head=coefficients.createTHead().insertRow();
+              ['Источник коэффициента','Значение'].forEach(title=>head.append(element('th','',title)));
+              const rows=coefficients.createTBody();selected.coefficients.forEach(value=>{const row=rows.insertRow();row.insertCell().textContent=value.source;row.insertCell().textContent=value.missing?'Не прочитан':String(value.value);});
+              section.append(coefficients);
+            }
+            formulaPanel.append(section);
+          });
+          if(!groups)formulaPanel.append(element('p','','В выбранных выражениях нет отдельных коэффициентов.'));
+        }
+        table.hidden=opened;formulaPanel.hidden=!opened;coefficientsButton.textContent=opened?'Вернуться к маппингу':'Показать коэффициенты';
+        coefficientsButton.setAttribute('aria-expanded',String(opened));
+        formulasButton.textContent='Показать расчётные формулы';formulasButton.setAttribute('aria-expanded','false');
+        detailView=opened?'coefficients':'mapping';body.scrollTop=0;
       };
     } else if (payload.kind === 'bookCorrections') {
       description.textContent=`Версия расчётной модели: ${payload.revision}`;

@@ -401,7 +401,7 @@ body.gtu-resizing, body.gtu-resizing * { cursor: col-resize !important; user-sel
 #desktop .gtu-book-table td { vertical-align:middle; padding-block:7px; }
 #desktop .gtu-book-table .gtu-choice { margin:0; }
 #desktop .gtu-book-table .gtu-field { height:36px; min-height:36px; box-sizing:border-box; }
-#desktop .gtu-book-toolbar { margin:8px 0 12px; }
+#desktop .gtu-book-toolbar { margin:8px 0 12px; display:flex; gap:10px; flex-wrap:wrap; }
 #desktop .gtu-formula-table { table-layout:fixed; width:100%; }
 #desktop .gtu-formula-table th:first-child { width:32%; }
 #desktop .gtu-formula-table td { vertical-align:top; overflow-wrap:anywhere; }

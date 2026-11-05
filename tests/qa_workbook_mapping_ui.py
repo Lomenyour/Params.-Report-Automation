@@ -41,6 +41,8 @@ try:
     until=time.monotonic()+25
     while not window.controller.ready and time.monotonic()<until:pump(.05)
     assert window.controller.ready,errors
+    assert js("document.querySelector('.gtu-settings [data-action=\"bookMapping\"]')===null")
+    assert js("document.querySelectorAll('.gtu-settings [data-action=\"corrections\"]').length===1")
     c=window.controller;c.messages.showerror=Mock()
     with tempfile.TemporaryDirectory() as temporary,patch('workbook_profile.profile_path',return_value=Path(temporary)/'profiles.json'):
         path=Path(temporary)/'book.xlsx';fixture(path)
@@ -61,6 +63,12 @@ try:
             choose('Параметр A','Температура перед компрессором')
             choose('Единицы A','°C')
             choose('Тип N','Измеренный');choose('Тип N','Расчётный')
+            js("document.querySelector('[data-book-coefficients]').click()");pump(.05)
+            assert js("document.querySelector('.gtu-book-table').hidden")
+            assert js("document.querySelector('.gtu-book-formulas').textContent.includes('Поправки!A1')")
+            assert js("document.querySelector('.gtu-book-formulas').textContent.includes('0.8')")
+            assert js("document.querySelectorAll('.gtu-book-formulas input').length===0")
+            window.view.grab().save(str(ROOT/f'build_test/workbook-unified-coefficients-{size[0]}.png'))
             js("document.querySelector('[data-book-formulas]').click()");pump(.05)
             assert js("document.querySelector('.gtu-book-table').hidden&&!document.querySelector('.gtu-book-formulas').hidden")
             assert js("document.querySelector('.gtu-formula-table').textContent.includes('H2/N2')")
@@ -84,6 +92,6 @@ try:
         js("document.querySelector('.gtu-dialog-actions button').click()");pump(.1)
         assert c.dialog is None
     assert not errors,errors
-    print('PASS: four aligned columns, service type, no field captions, formula view/return preserves mapping, read-only coefficients, bounded dropdowns, confirmation, no settings writes')
+    print('PASS: one sidebar entry, four aligned columns, formula/coefficient switching preserves mapping, read-only coefficients, bounded dropdowns, confirmation, no settings writes')
 finally:
     window.close();application.processEvents()

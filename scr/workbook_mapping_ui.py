@@ -9,6 +9,11 @@ from workbook_formulas import references
 KIND_LABELS={'measured':'Измеренный','computed':'Расчётный','service':'Служебный'}
 
 
+def coefficient_rows(layout, variant):
+    sources=list(dict.fromkeys(ref[1]+'!'+ref[2] for ref in references(variant['node'],'constant'))) if variant.get('node') else []
+    return [{'source':source,'value':layout.constants.get(source),'missing':source not in layout.constants} for source in sources]
+
+
 def dialog_payload(layout, rows):
     owned={row['column'] for row in rows if any(word in str(row['header']).casefold() for word in ('недовыработка','перерасход'))}
     while True:
@@ -28,7 +33,8 @@ def dialog_payload(layout, rows):
             'note':' '.join(warnings),
             'roles':[{'value':'','label':'Вспомогательная колонка'}]+[{'value':key,'label':value[0]} for key,value in ROLES.items()],
             'rows':[{**{key:row[key] for key in ('column','header','role','unit','kind','recipe')},
-                     'variants':[{key:item.get(key) for key in ('id','formula','count','error','constant_value')} for item in row['variants']],
+                     'variants':[{**{key:item.get(key) for key in ('id','formula','count','error','constant_value')},
+                                  'coefficients':coefficient_rows(layout,item)} for item in row['variants']],
                      'application_owned':row['column'] in owned}
                     for row in rows]}
 
@@ -73,6 +79,7 @@ class BookMappingDialog(tk.Toplevel):
         self.title('Основная книга — параметры и расчёт');self.geometry('1100x700');self.minsize(800,500);self.transient(parent)
         toolbar=ttk.Frame(self,padding=12);toolbar.pack(fill='x')
         ttk.Button(toolbar,text='Показать расчётные формулы',command=self.show_formulas).pack(side='left')
+        ttk.Button(toolbar,text='Показать коэффициенты',command=self.show_coefficients).pack(side='left',padx=8)
         note=dialog_payload(layout,rows)['note']
         if note: ttk.Label(toolbar,text=note,wraplength=900).pack(side='left',padx=12)
         canvas=tk.Canvas(self,highlightthickness=0);scroll=ttk.Scrollbar(self,orient='vertical',command=canvas.yview)
@@ -105,6 +112,18 @@ class BookMappingDialog(tk.Toplevel):
             content+=f"{role.get()} ({row['column']})\n"
             content+=(selected['formula']+f"\nИспользуется в {selected['count']} строках." if selected else 'Нет единственной основной формулы.')+'\n\n'
         show_text(self,'Расчётные формулы',content)
+
+    def show_coefficients(self):
+        content='Коэффициенты выбранных выражений из текущей книги.\n\n'
+        for row,role,_,kind in self.fields:
+            if kind.get()!='Расчётный': continue
+            selected=next((item for item in row['variants'] if item['id']==row['recipe']),None)
+            if not selected: continue
+            items=coefficient_rows(self.layout,selected)
+            if not items and not selected.get('constant_value'): continue
+            content+=f"{role.get()} ({row['column']})\n{selected['formula']}\n"
+            content+='\n'.join(f"{item['source']} = {item['value'] if not item['missing'] else 'НЕ ПРОЧИТАН'}" for item in items)+'\n\n'
+        show_text(self,'Коэффициенты из книги',content)
 
     def accept(self):
         roles={label:key for key,(label,_) in ROLES.items()};kinds={label:key for key,label in KIND_LABELS.items()}

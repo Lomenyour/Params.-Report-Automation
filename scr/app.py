@@ -511,10 +511,7 @@ class CalculationApp(tk.Tk):
         self._apply_station(self.stations_by_name.get(self.station_var.get()), automatic=False)
 
     def review_corrections(self):
-        if self.calculation_running or self.export_running or not self.selected_file:
-            return
-        if self._ensure_book_mapping():
-            BookCorrectionsDialog(self,self.book_setup)
+        return self.review_book_mapping()
 
     def _ensure_book_mapping(self):
         setup = getattr(self, 'book_setup', None)

@@ -25,6 +25,14 @@ _application = None
 
 
 class DesktopBridgeTest(unittest.TestCase):
+    def test_corrections_entry_always_opens_editable_workbook_mapping(self):
+        self.choose_book()
+        c=self.controller
+        c.book_setup=object()
+        with patch.object(c,'review_book_mapping',return_value=True) as review:
+            self.assertTrue(c.review_corrections())
+        review.assert_called_once_with()
+
     def test_new_station_requires_book_confirmation_instead_of_syz_method(self):
         self.choose_book('Ижевская ГТ-1 2 квартал 2026.xlsx')
         c=self.controller

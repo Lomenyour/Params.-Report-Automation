@@ -1,4 +1,8 @@
-"""Multiplicative conversions only; normal and actual gas volumes stay distinct."""
+"""Shared affine conversions; base = value * factor + offset.
+
+Temperatures are absolute temperatures. Normal and actual gas volumes remain
+different dimensions; an offset is never guessed for unlabelled data.
+"""
 import re
 
 
@@ -9,6 +13,11 @@ _ROWS = (
     ('мбар','pressure',100.,('mbar',)), ('гПа','pressure',100.,('hpa',)),
     ('мм вод. ст.','pressure',9.80665,('ммвод.ст.','мм вод ст','mmh2o','мм водяного столба')),
     ('мм рт. ст.','pressure',133.322368,('ммрт.ст.','мм рт ст','mmhg','мм ртутного столба')),
+    ('дюйм вод. ст. (условн.)','pressure',249.08891,('дюйм вод. ст.','дюйм вод ст','дюйм водяного столба',
+        'inh2o','inh₂o','in.h2o','in.w.c.','inwc','in.wg','inwg','"h2o','"h₂o')),
+    ('дюйм вод. ст. (4 °C)','pressure',249.082,('inh2o(4°c)','inh₂o(4°c)','inh2o@4c','inh2o@4°c','inh2o(39.2°f)','inh2o@39.2f','inh2o@39.2°f')),
+    ('дюйм вод. ст. (60 °F)','pressure',248.84,('inh2o(60°f)','inh₂o(60°f)','inh2o@60f','inh2o@60°f')),
+    ('дюйм рт. ст. (условн.)','pressure',3386.389,('дюйм рт. ст.','дюйм рт ст','дюйм ртутного столба','inhg','in.hg','"hg')),
     ('м³/с','volume_flow',1.,('м3/с','m3/s','m³/s')),
     ('м³/ч','volume_flow',1/3600,('м3/ч','m3/h','m³/h')),
     ('л/с','volume_flow',.001,('l/s',)), ('л/мин','volume_flow',.001/60,('l/min',)),
@@ -24,9 +33,9 @@ _ROWS = (
     ('Вт','power',1.,('w',)), ('кВт','power',1000.,('kw',)), ('МВт','power',1e6,('mw',)),
     ('о.е.','fraction',1.,('о.е','о. е.','доля','доли','1','безразмерная','-')),
     ('%','fraction',.01,()),
-    ('°C','temperature_c',1.,('°с','° c','° с','c','с','град.с')),
-    ('K','temperature_k',1.,('к','кельвин')),
-    ('°F','temperature_f',1.,('°f','f')),
+    ('°C','temperature',1.,('°с','° c','° с','c','с','град.с','degc','celsius')),
+    ('K','temperature',1.,('к','кельвин','°k','kelvin')),
+    ('°F','temperature',5/9,('°f','f','degf','fahrenheit')),
 )
 
 
@@ -34,7 +43,8 @@ def _key(value):
     return re.sub(r'\s+', '', str(value or '').casefold())
 
 
-UNIT_CATALOG = tuple(dict(symbol=symbol, dimension=dimension, factor=factor,
+_OFFSETS={'°C':273.15,'K':0.,'°F':273.15-32*5/9}
+UNIT_CATALOG = tuple(dict(symbol=symbol, dimension=dimension, factor=factor,offset=_OFFSETS.get(symbol,0.),
                          aliases=list(dict.fromkeys((_key(symbol), *(_key(a) for a in aliases)))))
                      for symbol, dimension, factor, aliases in _ROWS)
 _LOOKUP = {alias: row for row in UNIT_CATALOG for alias in row['aliases']}
@@ -60,15 +70,32 @@ _SUFFIXES = tuple((re.compile(r'(?<![\w.])' + r'\s*'.join(re.escape(ch) for ch i
 
 
 def extract_unit(description):
-    return next((symbol for pattern, symbol in _SUFFIXES if pattern.search(str(description))), '')
+    text = str(description)
+    # One-letter temperature units are unambiguous only in an explicit unit field.
+    explicit = re.search(r'(?:^|[,;\[(])\s*([KКCF])\s*[\])]?$' , text, re.I)
+    if explicit:
+        return canonical_unit(explicit[1])
+    return next((symbol for pattern, symbol in _SUFFIXES if pattern.search(text)), '')
 
 
-def unit_factor(source, target):
+def unit_conversion(source, target):
+    """Return (multiplier, additive offset) for one compatible unit pair."""
     if not source or not target or _key(source)==_key(target):
-        return 1.
+        return 1.,0.
     left, right = unit_info(source), unit_info(target)
     if left and right and left['dimension']==right['dimension']:
-        return left['factor']/right['factor']
-    if left and right and left['dimension'].startswith('temperature') and right['dimension'].startswith('temperature'):
-        raise ValueError('Перевод температур требует смещения; одного коэффициента недостаточно.')
+        return left['factor']/right['factor'],(left['offset']-right['offset'])/right['factor']
     raise ValueError(f'Несовместимые или неизвестные единицы: {source} → {target}. Проверьте назначение и единицы.')
+
+
+def convert_units(values,source,target):
+    multiplier,offset=unit_conversion(source,target)
+    return values*multiplier+offset
+
+
+def unit_factor(source,target):
+    """Compatibility API for paths that can only apply a pure multiplier."""
+    multiplier,offset=unit_conversion(source,target)
+    if offset!=0:
+        raise ValueError('Перевод температур требует смещения; используйте полное преобразование единиц.')
+    return multiplier

@@ -35,6 +35,7 @@ class SensorMapping:
     target_unit: str = ""
     status: str = "mapped"
     target_header: str = ""
+    offset: float = 0.0
 
 
 @dataclass
@@ -252,18 +253,24 @@ def validate_mappings(
         if mapping.target in seen_targets:
             raise ValueError(f"На колонку {mapping.target} назначено два канала.")
         if target_headers:
-            from parameter_mapping import header_unit, unit_factor, unit_info
+            from parameter_mapping import header_unit, unit_conversion, unit_info
             book_unit = header_unit(target_headers.get(mapping.target))
             if unit_info(book_unit) and unit_info(mapping.target_unit):
-                if unit_factor(book_unit, mapping.target_unit) != 1:
+                book_factor,book_offset=unit_conversion(book_unit,mapping.target_unit)
+                if book_factor!=1 or book_offset!=0:
                     raise ValueError(f"Колонка {mapping.target} хранит {book_unit}. Единицы назначения должны соответствовать книге.")
         if mapping.source_unit and mapping.target_unit:
-            from parameter_mapping import unit_factor
-            expected_factor = unit_factor(mapping.source_unit, mapping.target_unit)
+            from parameter_mapping import unit_conversion
+            expected_factor,expected_offset = unit_conversion(mapping.source_unit, mapping.target_unit)
             if not np.isclose(mapping.factor, expected_factor, rtol=1e-9, atol=0):
                 raise ValueError(f"Коэффициент {mapping.source} не соответствует выбранным единицам.")
+            if not np.isclose(mapping.offset,expected_offset,rtol=1e-9,atol=1e-9):
+                raise ValueError(f"Смещение {mapping.source} не соответствует выбранным единицам.")
+        elif mapping.offset!=0:
+            raise ValueError('Для смещения укажите исходную единицу и единицу назначения: '+mapping.source)
         if not np.isfinite(mapping.factor) or mapping.factor == 0:
             raise ValueError(f"Неверный коэффициент для {mapping.source!r}.")
+        if not np.isfinite(mapping.offset):raise ValueError('Неверное смещение для '+mapping.source)
         seen_sources.add(mapping.source)
         seen_targets.add(mapping.target)
     missing = {
@@ -370,11 +377,11 @@ def _read_template(path: str | Path, book_setup=None) -> tuple[pd.DataFrame, dic
     return data.sort_index(), headers, undated_rows
 
 
-def _convert_sensor(series: pd.Series, factor: float) -> tuple[pd.Series, int]:
+def _convert_sensor(series: pd.Series, factor: float, offset: float = 0.) -> tuple[pd.Series, int]:
     decimal = series.map(lambda value: value.strip().replace(" ", "").replace(",", ".") if isinstance(value, str) else value)
     values = pd.to_numeric(decimal, errors="coerce")
     invalid = int((series.notna() & values.isna()).sum())
-    converted = pd.Series(values * factor, index=series.index, dtype=object)
+    converted = pd.Series(values * factor + offset, index=series.index, dtype=object)
     converted.loc[series.notna() & values.isna()] = series.loc[
         series.notna() & values.isna()
     ]
@@ -434,7 +441,7 @@ def assemble_sensor_data(
             result.loc[raw.index, column] = raw[mapping.source].to_numpy()
             headers[column] = f"До уточнения: {mapping.source}"
             continue
-        converted, invalid = _convert_sensor(raw[mapping.source], mapping.factor)
+        converted, invalid = _convert_sensor(raw[mapping.source], mapping.factor,mapping.offset)
         if mapping.target not in result:
             result[mapping.target] = pd.Series(index=result.index, dtype=object)
             headers[mapping.target] = mapping.source

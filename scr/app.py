@@ -52,7 +52,7 @@ from data_assembly import (
 )
 from station_profiles import get_station_repository, sensor_target_columns, unit_number
 from gas_passport import resolve_passport, save_passport, passport_entries, gas_values
-from parameter_mapping import parameter_targets, parameter_for_header, header_unit, unit_factor, PRESSURE_UNITS, unit_info, canonical_unit, UNIT_CATALOG
+from parameter_mapping import parameter_targets, parameter_for_header, header_unit, unit_conversion, PRESSURE_UNITS, unit_info, canonical_unit, UNIT_CATALOG
 from gas_passport_ui import GasPassportDialog
 from correction_sheet import read_correction_sheet
 from correction_profiles import resolve_profile, require_profile, save_profile
@@ -301,23 +301,33 @@ class MappingDialog(tk.Toplevel):
             ttk.Combobox(
                 table, textvariable=target_var, values=choices, width=1
             ).grid(row=index, column=1, sticky="ew", padx=(8, 8), pady=3)
-            ttk.Entry(table, textvariable=factor_var, width=1).grid(
-                row=index, column=2, sticky="ew", pady=3
-            )
+            conversion_cell = ttk.Frame(table)
+            conversion_cell.grid(row=index, column=2, sticky="ew", pady=3)
+            ttk.Entry(conversion_cell, textvariable=factor_var, width=1).pack(fill='x')
+            conversion_text = tk.StringVar()
+            conversion_label = ttk.Label(conversion_cell, textvariable=conversion_text, wraplength=130)
             self._rows.append((suggestion.source, target_var, factor_var))
             source_unit, target_unit = tk.StringVar(value=canonical_unit(suggestion.source_unit)), tk.StringVar(value=canonical_unit(suggestion.target_unit))
             self._unit_rows[suggestion.source] = (source_unit, target_unit)
             for unit_index, variable in enumerate((source_unit, target_unit), start=3):
                 known_units = list(dict.fromkeys(['', *(item['symbol'] for item in UNIT_CATALOG), variable.get()]))
                 ttk.Combobox(table, textvariable=variable, values=known_units, state='readonly', width=12).grid(row=index, column=unit_index, padx=3)
-            def update_factor(*_, source=source_unit, destination=target_unit, coefficient=factor_var):
+            def update_factor(*_, source=source_unit, destination=target_unit, coefficient=factor_var,
+                              summary=conversion_text, display=conversion_label):
+                summary.set('')
+                display.pack_forget()
                 if source.get() and destination.get():
                     try:
-                        coefficient.set(f'{unit_factor(source.get(), destination.get()):.12g}')
+                        multiplier, offset = unit_conversion(source.get(), destination.get())
+                        coefficient.set(f'{multiplier:.12g}')
+                        if offset:
+                            summary.set(f'x × {multiplier:.8g} {"+" if offset > 0 else "−"} {abs(offset):.8g}')
+                            display.pack(anchor='w')
                     except ValueError:
                         pass  # Общая проверка объяснит несовместимую пару при подтверждении.
             source_unit.trace_add('write', update_factor)
             target_unit.trace_add('write', update_factor)
+            update_factor()
         table.columnconfigure(0, weight=2, minsize=180)
         table.columnconfigure(1, weight=4, minsize=300)
         table.columnconfigure(2, weight=1, minsize=130)
@@ -340,17 +350,18 @@ class MappingDialog(tk.Toplevel):
                 target = match.group(1) if match else ""
                 old = self._suggestions[source]
                 if text == 'НЕ УЧИТЫВАТЬ':
-                    mappings.append(replace(old, target='', parameter='', status='ignored', factor=1., source_unit='', target_unit='', target_header=''))
+                    mappings.append(replace(old, target='', parameter='', status='ignored', factor=1., offset=0., source_unit='', target_unit='', target_header=''))
                     continue
                 if text == "ДО УТОЧНЕНИЯ":
-                    mappings.append(replace(old, target="", status="deferred", factor=1.))
+                    mappings.append(replace(old, target="", status="deferred", factor=1., offset=0.))
                     continue
                 factor = float(factor_var.get().strip().replace(",", "."))
+                offset = 0.
                 units = getattr(self, "_unit_rows", {}).get(source)
                 source_unit, target_unit = (value.get().strip() for value in units) if units else (old.source_unit, old.target_unit)
                 if source_unit and target_unit:
-                    factor = unit_factor(source_unit, target_unit)
-                mappings.append(replace(old, source=source, target=target, factor=factor, status="mapped",
+                    factor, offset = unit_conversion(source_unit, target_unit)
+                mappings.append(replace(old, source=source, target=target, factor=factor, offset=offset, status="mapped",
                                         parameter=next((key for key,column in getattr(self,'_parameter_columns',{}).items() if column==target),
                                                        parameter_for_header(self._target_headers.get(target), self._station_id)),
                                         target_header=self._target_headers.get(target) or "",
@@ -739,7 +750,8 @@ class CalculationApp(tk.Tk):
             for item in suggestions:
                 try:
                     if unit_info(item.source_unit) and unit_info(item.target_unit):
-                        item = replace(item, factor=unit_factor(item.source_unit, item.target_unit))
+                        factor, offset = unit_conversion(item.source_unit, item.target_unit)
+                        item = replace(item, factor=factor, offset=offset)
                 except ValueError:
                     pass  # Показываем несовместимую пару в форме для ручной правки.
                 converted.append(item)

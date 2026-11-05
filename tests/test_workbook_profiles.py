@@ -96,6 +96,23 @@ class WorkbookProfileTests(unittest.TestCase):
         self.assertNotIn('coefficients',saved['profiles']['station|1']['current'])
         self.assertTrue(wp.suggestions(self.layout,'station','1'))
 
+    def test_ready_book_temperature_and_inch_pressure_use_shared_converter(self):
+        from unit_conversions import convert_units
+        for unit in ('K','°F'):
+            with self.subTest(unit=unit):
+                rows=wp.suggestions(self.layout,'station','1')
+                next(row for row in rows if row['column']=='A')['unit']=unit
+                next(row for row in rows if row['column']=='D')['unit']='дюйм рт. ст. (условн.)'
+                setup=wp.confirm(self.layout,'station','1',rows,save=False)
+                frame=self.layout.values.copy(deep=True)
+                frame['A']=convert_units(pd.to_numeric(frame.A), '°C',unit)
+                frame['D']=convert_units(pd.to_numeric(frame.D),'кПа','inHg')
+                before=frame.copy(deep=True)
+                canonical=setup.canonical(frame)
+                np.testing.assert_allclose(canonical.t,20.,atol=1e-12)
+                np.testing.assert_allclose(canonical.p_atm_pa,101000.)
+                pd.testing.assert_frame_equal(frame,before)
+
     def test_explicit_pressure_meaning_has_priority_over_legacy_ratio_guess(self):
         from data_loader import prepare_vna_data
         setup=self.setup_book();frame=self.layout.values.copy();setup.recalculate(frame)
@@ -176,6 +193,23 @@ class WorkbookProfileTests(unittest.TestCase):
         self.assertEqual(merged.overlap_rows,1);self.assertEqual(len(merged.values),4)
         self.assertEqual(merged.values.loc[pd.Timestamp('2026-01-01 00:30'),'A'],25)
         self.assertEqual(merged.values.loc[pd.Timestamp('2026-01-01 01:30'),'C'],pd.Timestamp('2026-01-01 01:30'))
+
+    def test_import_converts_temperature_before_evaluating_book_formulas(self):
+        from unit_conversions import unit_conversion
+        book=load_workbook(self.path)
+        for row in (2,3,4):book['Данные'][f'N{row}']=f'=A{row}/100'
+        book.save(self.path);self.layout=wp.read_layout(self.path)
+        setup=self.setup_book()
+        dates=pd.to_datetime(['2026-01-01 00:30','2026-01-01 01:30'])
+        raw=pd.DataFrame({'TEMP':[77.,86.]},index=dates)
+        factor,offset=unit_conversion('°F','°C')
+        mapping=SensorMapping('TEMP','A',factor,source_unit='°F',target_unit='°C',offset=offset)
+        with patch('data_assembly._read_sensor_sheet',return_value=raw),patch('data_assembly.source_selection_info',return_value={}):
+            merged=assemble_sensor_data(self.path,self.path,'Sheet1',[mapping],station_id='syz_tec',unit='10',book_setup=setup)
+        setup.recalculate(merged.values,changed_dates=merged.changed_dates)
+        np.testing.assert_allclose(merged.values.loc[dates,'A'].astype(float),[25.,30.],atol=1e-12)
+        np.testing.assert_allclose(merged.values.loc[dates,'N'].astype(float),[.25,.3],atol=1e-12)
+        self.assertEqual(merged.values.loc[pd.Timestamp('2026-01-01'),'A'],20.)
 
     def test_ready_and_import_export_app_losses_for_station_header_alias(self):
         from data_assembly import AssembledData,apply_economic_columns

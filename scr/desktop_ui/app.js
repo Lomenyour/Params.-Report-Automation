@@ -419,17 +419,25 @@
         const factor = element('input', 'gtu-field'); factor.value = data.factor; factor.inputMode = 'decimal'; factor.setAttribute('aria-label', `Коэффициент для ${data.source}`);
         const sourceField = makeUnits(data.source_unit || '', `Исходные единицы ${data.source}`), sourceUnit = sourceField.input;
         const targetUnitsField = makeUnits(data.target_unit || '', `Единицы назначения ${data.source}`), targetUnit = targetUnitsField.input;
+        const conversion = element('output', 'gtu-unit-formula'); conversion.setAttribute('aria-label', `Преобразование для ${data.source}`);
+        const mappingInput = {target, factor, sourceUnit, targetUnit, offset:0};
         const convert = () => {
+          mappingInput.offset=0; conversion.textContent='';
           const ignored=target.value.trim().toLocaleUpperCase()==='НЕ УЧИТЫВАТЬ';
           [sourceUnit,targetUnit].forEach(input=>{input.disabled=ignored;input.closest('.gtu-choice').querySelector('button').disabled=ignored;});
           factor.disabled=ignored;
           if(ignored){factor.value='1';factor.setCustomValidity('');factor.title='Канал не импортируется';return;}
           const a=unitInfo(sourceUnit.value), b=unitInfo(targetUnit.value);
           factor.setCustomValidity(''); factor.readOnly=Boolean(a && b && a.dimension===b.dimension);
-          if (a && b && a.dimension===b.dimension) { factor.value=String(Number((a.factor/b.factor).toPrecision(10))); factor.title=`${sourceUnit.value} → ${targetUnit.value}: ×${a.factor/b.factor}`; }
+          if (a && b && a.dimension===b.dimension) {
+            const multiplier=a.factor/b.factor, offset=((a.offset||0)-(b.offset||0))/b.factor;
+            mappingInput.offset=offset; factor.value=String(Number(multiplier.toPrecision(12)));
+            const formula=`x × ${Number(multiplier.toPrecision(12))}${offset ? ` ${offset>0?'+':'−'} ${Number(Math.abs(offset).toPrecision(12))}`:''}`;
+            factor.title=`${sourceUnit.value} → ${targetUnit.value}: ${formula}`;
+            if(offset)conversion.textContent=formula;
+          }
           else if (sourceUnit.value && targetUnit.value) {
-            const temperature=a?.dimension.startsWith('temperature') && b?.dimension.startsWith('temperature');
-            factor.setCustomValidity(temperature ? 'Перевод температур требует смещения; одного коэффициента недостаточно.' : 'Несовместимые или неизвестные единицы. Проверьте назначение и единицы.');
+            factor.setCustomValidity('Несовместимые или неизвестные единицы. Проверьте назначение и единицы.');
             factor.title=factor.validationMessage;
           } else factor.title='При неизвестных единицах проверьте коэффициент вручную';
         };
@@ -438,8 +446,8 @@
         target.onchange = () => { const choice=payload.choices.find(value=>value.split('—')[0].trim()===target.value.trim().toUpperCase()) || target.value;
           const text=choice.split('—').slice(1).join('—').trim(), comma=text.indexOf(',');
           targetUnit.value=canonicalUnit(comma>=0 ? text.slice(comma+1).trim() : ''); convert(); };
-        row.insertCell().append(targetField); row.insertCell().append(sourceField); row.insertCell().append(targetUnitsField); row.insertCell().append(factor);
-        mappingInputs.push({target, factor, sourceUnit, targetUnit});
+        row.insertCell().append(targetField); row.insertCell().append(sourceField); row.insertCell().append(targetUnitsField); row.insertCell().append(factor, conversion);
+        mappingInputs.push(mappingInput);
       });
       body.append(table);
     } else if (payload.kind === 'gasPassport') {
@@ -542,7 +550,7 @@
         const invalid=gasEntries.find(entry=>entry.chError);
         if(invalid){invalid.section.open=true;invalid.status.scrollIntoView({block:'center'});return;}
       }
-      const result={action: periods ? 'manual' : 'accept', text: editor?.value || '', rows: mappingInputs.map(({target, factor, sourceUnit, targetUnit}) => ({target:target.value, factor:factor.value,source_unit:sourceUnit.value,target_unit:targetUnit.value})), values:Object.fromEntries([...gasInputs,...coefficientInputs].map(({key, input}) => [key, input.value]))};
+      const result={action: periods ? 'manual' : 'accept', text: editor?.value || '', rows: mappingInputs.map(({target, factor, sourceUnit, targetUnit, offset}) => ({target:target.value, factor:factor.value,source_unit:sourceUnit.value,target_unit:targetUnit.value,offset})), values:Object.fromEntries([...gasInputs,...coefficientInputs].map(({key, input}) => [key, input.value]))};
       if(payload.kind==='bookMapping')result.rows=bookRows();
       if(payload.kind==='gasPassport') result.entries=gasEntries.map(item=>({valid_from:item.from.value,valid_until:item.until.value,values:Object.fromEntries(item.fields.map(({key,input})=>[key,input.value]))})); send('dialog',result); };
     if(payload.kind==='bookCorrections')actions.append(cancel);else actions.append(cancel,accept);

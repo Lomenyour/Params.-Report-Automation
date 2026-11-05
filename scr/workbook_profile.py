@@ -22,7 +22,7 @@ from openpyxl.utils import get_column_letter, column_index_from_string
 from data_loader import _find_header_row, _map_headers, SHORT_NAMES, RECORD_HOURS
 from json_store import read_json, write_json, transaction
 from parameter_mapping import parameter_for_header, header_unit
-from unit_conversions import canonical_unit, unit_factor, unit_info
+from unit_conversions import canonical_unit, unit_factor, unit_info, unit_conversion, convert_units
 from workbook_formulas import FormulaParser, FormulaEvaluator, node_id, references
 from workbook_corrections import CORRECTION_ROLES, correction_role
 from workbook_model import compile_model
@@ -347,10 +347,8 @@ class BookSetup:
             if role=='date': result[role]=pd.to_datetime(source,errors='coerce'); continue
             result[role]=pd.to_numeric(source,errors='coerce')
             target=ROLES[role][1]
-            if target=='°C' and canonical_unit(row['unit'])=='K': result[role]-=273.15
-            elif target=='°C' and canonical_unit(row['unit'])=='°F': result[role]=(result[role]-32)*5/9
-            elif row['unit'] and target and role not in ('hours_input','q_lower'):
-                result[role] *= unit_factor(row['unit'],target)
+            if row['unit'] and target and role not in ('hours_input','q_lower'):
+                result[role] = convert_units(result[role],row['unit'],target)
         if 'p_nk_pa' not in result and 'inlet_pressure_drop' in self.bindings:
             row=self.bindings['inlet_pressure_drop']
             result['p_nk_pa']=pd.to_numeric(values[row['column']],errors='coerce')*unit_factor(row['unit'] or 'Па','Па')
@@ -447,8 +445,7 @@ def confirm(layout,station,unit,rows,*,save=True):
         source_unit=str(row.get('unit','')).strip()
         target_unit=ROLES.get(role,('',''))[1]
         if source_unit and target_unit and role not in ('hours_input','q_lower','gas_q_mass','gas_density','fuel_specific'):
-            if not (target_unit=='°C' and canonical_unit(source_unit) in ('K','°F')):
-                unit_factor(source_unit,target_unit)
+            unit_conversion(source_unit,target_unit)
         if role in ('date','hours_input'): kind='service'
         if kind not in ('measured','computed','service'): raise ValueError('Неизвестный тип колонки '+col)
         if kind=='service' and role not in ('date','hours_input'):

@@ -1,6 +1,6 @@
 """Explicit parameter names and pressure units; no tag-name similarity matching."""
 import re
-from unit_conversions import PRESSURE_UNITS, unit_factor, unit_info, canonical_unit, UNIT_CATALOG
+from unit_conversions import PRESSURE_UNITS, unit_factor, unit_info, canonical_unit, UNIT_CATALOG, unit_conversion
 
 PARAMETERS = {
     "ambient_temperature": ("Температура наружного воздуха", ("токр", "tокр", "токр.воздуха")),

@@ -273,6 +273,15 @@ class DesktopBridgeTest(unittest.TestCase):
         self.assertEqual(len(events.result), 1)
         self.assertIs(events._apply.__func__.__code__, workflow.ChartEventsDialog._apply.__code__)
 
+    def test_mapping_backend_derives_temperature_offset_from_units(self):
+        dialog=MappingDialog(self.controller,[SensorMapping('TEMP','P')],
+                             {'P':'Тнк, °C'},['TEMP'],set(),'syz_tec')
+        dialog.accept({'rows':[{'target':'P','factor':'999','offset':999,
+                               'source_unit':'K','target_unit':'°C'}]})
+        self.assertIsNotNone(dialog.result)
+        self.assertEqual(dialog.result[0].factor,1.)
+        self.assertEqual(dialog.result[0].offset,-273.15)
+
     def test_figure_render_and_table_display_do_not_modify_source_objects(self):
         c = self.controller
         figure = Figure(figsize=(4, 2), dpi=100)

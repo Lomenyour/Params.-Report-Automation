@@ -12,6 +12,7 @@ from desktop_app import DesktopWindow
 from desktop_controller import GasPassportDialog, MappingDialog
 from data_assembly import SensorMapping
 from gas_passport import GasPassportHistory
+from unit_conversions import unit_conversion
 sys.stdout.reconfigure(encoding='utf-8',errors='replace')
 application=QApplication([])
 window=DesktopWindow();window.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen,True);window.show()
@@ -71,17 +72,33 @@ try:
     select('Колонка для LAST','AM — cosφ')
     select('Колонка для LAST','AN — n, Гц')
     for source,target,factor in [('мм вод. ст.','Па',9.80665),('кПа','Па',1000.),('мм рт. ст.','Па',133.322368),
-            ('м³/ч','м³/с',1/3600),('об/мин','Гц',1/60)]:
+            ('м³/ч','м³/с',1/3600),('об/мин','Гц',1/60),('дюйм вод. ст. (условн.)','Па',249.08891),
+            ('дюйм вод. ст. (4 °C)','Па',249.082),('дюйм вод. ст. (60 °F)','Па',248.84),('дюйм рт. ст. (условн.)','Па',3386.389)]:
         select('Исходные единицы LAST',source);select('Единицы назначения LAST',target)
         actual=js("Number([...document.querySelectorAll('.gtu-dialog input')].find(x=>x.getAttribute('aria-label')==='Коэффициент для LAST').value)")
         assert abs(actual-factor)<1e-9,(source,target,actual)
+    for source,target in [('K','°C'),('°C','K'),('°F','°C'),('°C','°F'),('°F','K'),('K','°F')]:
+        select('Исходные единицы LAST',source);select('Единицы назначения LAST',target)
+        multiplier,offset=unit_conversion(source,target)
+        actual=js("Number([...document.querySelectorAll('.gtu-dialog input')].find(x=>x.getAttribute('aria-label')==='Коэффициент для LAST').value)")
+        assert abs(actual-multiplier)<1e-10,(source,target,actual)
+        text=js("document.querySelector('[aria-label=\"Преобразование для LAST\"]').textContent")
+        assert 'x ×' in text and ('+' in text or '−' in text),(source,target,text)
+        assert js("[...document.querySelectorAll('.gtu-dialog input')].find(x=>x.getAttribute('aria-label')==='Коэффициент для LAST').checkValidity()")
+    for width,height in ((900,600),(1200,800)):
+        window.resize(width,height);pump(.1)
+        js("document.querySelector('[aria-label=\"Преобразование для LAST\"]').scrollIntoView({block:'center'})")
+        bounds=js("(()=>{const o=document.querySelector('[aria-label=\"Преобразование для LAST\"]'),r=o.getBoundingClientRect(),c=o.closest('td').getBoundingClientRect();return r.left>=c.left&&r.right<=c.right&&r.bottom<=c.bottom&&o.scrollWidth<=o.clientWidth})()")
+        assert bounds,(width,height)
+        window.view.grab().save(str(ROOT/'build_test'/f'mapping-temperature-{width}.png'))
     assert js("[...document.querySelectorAll('.gtu-dialog input')].find(x=>x.getAttribute('aria-label')==='Исходные единицы LAST').readOnly")
     c.resolve_dialog({'action':'cancel'});pump(.1)
     # Confirm RPM, volume flow and a formerly deferred channel through real controls.
     mappings=[SensorMapping('SPEED','AN',1/60,source_unit='об/мин',target_unit='Гц'),
               SensorMapping('FLOW','AS',1/3600,source_unit='м³/ч',target_unit='м³/с'),
-              SensorMapping('10MKA01FE006','',status='deferred')]
-    dialog=MappingDialog(c,mappings,{'AN':'n, Гц','AS':'B, м³/с','AM':'cosφ'},[x.source for x in mappings],set(),'izhevsk_tec');show(dialog)
+              SensorMapping('10MKA01FE006','',status='deferred'),
+              SensorMapping('TEMP','R',5/9,source_unit='°F',target_unit='°C',offset=unit_conversion('°F','°C')[1])]
+    dialog=MappingDialog(c,mappings,{'AN':'n, Гц','AS':'B, м³/с','AM':'cosφ','R':'Тнк, °C'},[x.source for x in mappings],set(),'izhevsk_tec');show(dialog)
     select('Колонка для 10MKA01FE006','AM — cosφ')
     select('Исходные единицы 10MKA01FE006','о.е.');select('Единицы назначения 10MKA01FE006','о.е.')
     select('Исходные единицы FLOW','кПа')
@@ -91,10 +108,11 @@ try:
     assert not c.messages.showerror.called  # HTML rejected before dispatch; Python is checked separately.
     select('Исходные единицы FLOW','м³/ч')
     js("document.querySelector('.gtu-dialog-actions .gtu-primary').click()");pump(.2)
-    assert c.dialog is None and len(dialog.result)==3
+    assert c.dialog is None and len(dialog.result)==4
     assert dialog.result[2].target=='AM' and dialog.result[2].status=='mapped'
     assert abs(dialog.result[0].factor-1/60)<1e-12 and abs(dialog.result[1].factor-1/3600)<1e-12
+    assert abs(dialog.result[3].factor-5/9)<1e-12 and abs(dialog.result[3].offset+160/9)<1e-12
     assert not errors,errors
-    print('PASS: viewport bounds, upward popup, scrolling/End, full reopening/reselection, units dropdowns/conversions, incompatible pair blocking, manual cosphi confirmation')
+    print('PASS: viewport bounds, upward popup, scrolling/End, reopening/reselection, unit dropdowns, inch pressures, six temperature directions and visible offsets, real affine confirmation, incompatible pair blocking, manual cosphi confirmation')
 finally:
     window.close();application.processEvents()

@@ -178,7 +178,7 @@ class MappingDialog(Dialog):
                      if header and column in self._allowed_targets],
             pressure_units=PRESSURE_UNITS,
             unit_catalog=UNIT_CATALOG,
-            rows=[{"source": source, "target": target.get(), "factor": factor.get(),
+            rows=[{"source": source, "target": target.get(), "factor": factor.get(), "offset": self._suggestions[source].offset,
                    "description": getattr(parent, "mapping_channel_info", {}).get(source, {}).get("description", ""),
                    "declared_unit": getattr(parent, "mapping_channel_info", {}).get(source, {}).get("unit", ""),
                    "source_unit": self._unit_rows[source][0].get(), "target_unit": self._unit_rows[source][1].get()}

@@ -105,7 +105,9 @@ class WorkbookModelTests(unittest.TestCase):
         book.save(self.path)
         layout,rows,setup=self.read()
         self.assertTrue(setup.recipes['N']['constant_value'])
-        self.assertIn('Постоянные поправки',dialog_payload(layout,rows)['note'])
+        self.assertNotIn('Постоянные поправки',dialog_payload(layout,rows)['note'])
+        from workbook_mapping_ui import formula_view
+        self.assertTrue(next(item for item in formula_view(layout,rows)['rows'] if item['column']=='N')['constant_value'])
         values=layout.values.copy();values.loc[3]=values.loc[2];values.loc[3,'N']=None
         setup.recalculate(values);self.assertEqual(values.N.iloc[3],1.)
         for replacement in (None,2.):

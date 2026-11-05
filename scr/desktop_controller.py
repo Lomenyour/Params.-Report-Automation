@@ -23,7 +23,7 @@ from gas_passport_ui import passport_fields, passport_from_fields, history_rows,
 from gas_composition import ch_model
 from parameter_mapping import parameter_targets, PRESSURE_UNITS, UNIT_CATALOG, canonical_unit
 from correction_profiles_ui import correction_groups, profile_from_fields
-from workbook_mapping_ui import dialog_payload, corrections_payload
+from workbook_mapping_ui import dialog_payload, corrections_payload, merge_mapping_rows, formula_view
 from workbook_profile import confirm as confirm_book
 
 
@@ -205,11 +205,11 @@ class BookMappingDialog(Dialog):
         super().__init__(parent,dialog_payload(layout,rows))
         self.layout,self.rows,self.station,self.unit=layout,rows,station,unit
         self.payload['unit_catalog']=UNIT_CATALOG
-        self.payload['constants']=[{'source':key,'value':value} for key,value in layout.constants.items()]
 
     def accept(self,payload):
         try:
-            self.result=confirm_book(self.layout,self.station,self.unit,payload.get('rows',[]),save=False)
+            rows=merge_mapping_rows(self.layout,self.rows,payload.get('rows',[]))
+            self.result=confirm_book(self.layout,self.station,self.unit,rows,save=False)
         except (ValueError,KeyError,TypeError) as error:
             self.controller.messages.showerror('Проверьте основную книгу',str(error))
             return
@@ -510,6 +510,17 @@ class DesktopController(QObject):
         # Сначала возвращаем управление WebChannel. Иначе вложенное ожидание
         # диалога держит IPC-вызов открытым, и WebEngine не исполняет ответ JS.
         self.after(0, lambda: self.dispatch(name, data))
+
+    @Slot(str, result=str)
+    def preview_workbook_formulas(self, text):
+        """Read-only preview of current edits; no file reads or profile writes."""
+        if not isinstance(self.dialog,BookMappingDialog):
+            return json.dumps({'error':'Окно основной книги закрыто.'},ensure_ascii=False)
+        try:
+            rows=merge_mapping_rows(self.dialog.layout,self.dialog.rows,json.loads(text))
+            return json.dumps(formula_view(self.dialog.layout,rows),ensure_ascii=False)
+        except (ValueError,KeyError,TypeError) as error:
+            return json.dumps({'error':str(error)},ensure_ascii=False)
 
     def dispatch(self, name, data):
         if self.closed or getattr(self,'_preparing_book',False):

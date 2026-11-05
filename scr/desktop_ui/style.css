@@ -404,6 +404,10 @@ body.gtu-resizing, body.gtu-resizing * { cursor: col-resize !important; user-sel
 #desktop .gtu-book-toolbar { margin:8px 0 12px; display:flex; gap:10px; flex-wrap:wrap; }
 #desktop .gtu-formula-table { table-layout:fixed; width:100%; }
 #desktop .gtu-formula-table th:first-child { width:32%; }
+#desktop .gtu-formula-table th:last-child { width:auto; }
+#desktop .gtu-coefficients-table th:first-child { width:14%; }
+#desktop .gtu-coefficients-table th:nth-child(2) { width:56%; }
+#desktop .gtu-coefficients-table th:last-child { width:30%; }
 #desktop .gtu-formula-table td { vertical-align:top; overflow-wrap:anywhere; }
 #desktop .gtu-dialog[data-kind="bookCorrections"] { width:min(1100px,calc(100vw - 32px)); }
 #desktop .gtu-book-table[hidden], #desktop .gtu-book-formulas[hidden] { display:none; }

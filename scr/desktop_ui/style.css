@@ -393,10 +393,18 @@ body.gtu-resizing, body.gtu-resizing * { cursor: col-resize !important; user-sel
 #desktop .gtu-mapping-table input:invalid { border-color:#d67d7d; }
 #desktop .gtu-validation-error { color:#e6a3a3; }
 #desktop .gtu-dialog[data-kind="bookMapping"] { width:min(1320px,calc(100vw - 32px)); }
-#desktop .gtu-book-table { table-layout:fixed; width:100%; min-width:760px; }
-#desktop .gtu-book-table th:nth-child(1) { width:17%; }
-#desktop .gtu-book-table th:nth-child(2) { width:24%; }
-#desktop .gtu-book-table th:nth-child(3) { width:10%; }
-#desktop .gtu-book-table th:nth-child(4) { width:17%; }
-#desktop .gtu-book-table th:last-child { width:32%; }
+#desktop .gtu-book-table { table-layout:fixed; width:100%; min-width:0; }
+#desktop .gtu-book-table th:nth-child(1) { width:24%; }
+#desktop .gtu-book-table th:nth-child(2) { width:42%; }
+#desktop .gtu-book-table th:nth-child(3) { width:15%; }
+#desktop .gtu-book-table th:nth-child(4) { width:19%; }
+#desktop .gtu-book-table td { vertical-align:middle; padding-block:7px; }
+#desktop .gtu-book-table .gtu-choice { margin:0; }
+#desktop .gtu-book-table .gtu-field { height:36px; min-height:36px; box-sizing:border-box; }
+#desktop .gtu-book-toolbar { margin:8px 0 12px; }
+#desktop .gtu-formula-table { table-layout:fixed; width:100%; }
+#desktop .gtu-formula-table th:first-child { width:32%; }
+#desktop .gtu-formula-table td { vertical-align:top; overflow-wrap:anywhere; }
+#desktop .gtu-dialog[data-kind="bookCorrections"] { width:min(1100px,calc(100vw - 32px)); }
+#desktop .gtu-book-table[hidden], #desktop .gtu-book-formulas[hidden] { display:none; }
 #desktop .gtu-formula-text { white-space:normal; overflow-wrap:anywhere; font-size:12px; line-height:1.45; color:var(--gtu-text); margin:5px 0; }

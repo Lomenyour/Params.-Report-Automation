@@ -9,8 +9,8 @@ ROOT=Path(__file__).resolve().parents[1];sys.path.insert(0,str(ROOT/'scr'))
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication
 from desktop_app import DesktopWindow
-from desktop_controller import BookMappingDialog
-from workbook_profile import read_layout,suggestions
+from desktop_controller import BookMappingDialog,BookCorrectionsDialog
+from workbook_profile import read_layout,suggestions,confirm
 from test_workbook_profiles import fixture
 
 application=QApplication([]);window=DesktopWindow()
@@ -50,10 +50,24 @@ try:
             dialog=BookMappingDialog(c,layout,rows,'station','1');c.dialog=dialog
             c.dialog_changed.emit(json.dumps(dialog.payload,ensure_ascii=False));pump(.15)
             assert js("document.querySelector('.gtu-dialog [aria-label=\"Параметр C\"]').value==='Дата и время'")
+            assert js("document.querySelector('.gtu-book-table thead tr').cells.length===4")
+            assert js("document.querySelectorAll('.gtu-book-table td small').length===0")
+            assert js("document.querySelector('[aria-label=\"Тип C\"]').value==='Служебный'")
+            assert js("""[...document.querySelectorAll('.gtu-book-table tbody tr')].every(row=>{
+              const controls=[...row.querySelectorAll('.gtu-choice')].map(x=>x.getBoundingClientRect());
+              return controls.length===3&&Math.max(...controls.map(x=>x.top))-Math.min(...controls.map(x=>x.top))<1;
+            })""")
             choose('Параметр A','Вспомогательная колонка')
             choose('Параметр A','Температура перед компрессором')
             choose('Единицы A','°C')
             choose('Тип N','Измеренный');choose('Тип N','Расчётный')
+            js("document.querySelector('[data-book-formulas]').click()");pump(.05)
+            assert js("document.querySelector('.gtu-book-table').hidden&&!document.querySelector('.gtu-book-formulas').hidden")
+            assert js("document.querySelector('.gtu-formula-table').textContent.includes('H2/N2')")
+            assert js("document.querySelectorAll('[aria-label^=\"Формула \"]').length===0")
+            window.view.grab().save(str(ROOT/f'build_test/workbook-formulas-{size[0]}.png'))
+            js("document.querySelector('[data-book-formulas]').click()");pump(.05)
+            assert js("document.querySelector('[aria-label=\"Параметр A\"]').value==='Температура перед компрессором'")
             js("document.querySelector('.gtu-dialog-body').scrollTop=0");pump(.05)
             window.view.grab().save(str(ROOT/f'build_test/workbook-mapping-{size[0]}.png'))
             js("document.querySelector('.gtu-dialog-actions .gtu-primary').click()");pump(.15)
@@ -61,7 +75,15 @@ try:
             assert dialog.result.bindings['date']['column']=='C'
             assert dialog.result.bindings['t']['column']=='A'
             assert not (Path(temporary)/'profiles.json').exists()
+        setup=confirm(layout,'station','1',rows,save=False)
+        coefficients=BookCorrectionsDialog(c,setup);pump(.15)
+        assert js("document.querySelector('.gtu-dialog').dataset.kind==='bookCorrections'")
+        assert js("document.querySelector('.gtu-dialog-body').textContent.includes('Поправки!A1')")
+        assert js("document.querySelectorAll('.gtu-dialog-body input').length===0")
+        window.view.grab().save(str(ROOT/'build_test/workbook-coefficients-1200.png'))
+        js("document.querySelector('.gtu-dialog-actions button').click()");pump(.1)
+        assert c.dialog is None
     assert not errors,errors
-    print('PASS: workbook roles, units, measurement/calculated types, bounded/reopenable dropdowns, confirmation, no settings writes')
+    print('PASS: four aligned columns, service type, no field captions, formula view/return preserves mapping, read-only coefficients, bounded dropdowns, confirmation, no settings writes')
 finally:
     window.close();application.processEvents()

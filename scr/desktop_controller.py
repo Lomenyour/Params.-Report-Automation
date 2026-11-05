@@ -23,7 +23,7 @@ from gas_passport_ui import passport_fields, passport_from_fields, history_rows,
 from gas_composition import ch_model
 from parameter_mapping import parameter_targets, PRESSURE_UNITS, UNIT_CATALOG, canonical_unit
 from correction_profiles_ui import correction_groups, profile_from_fields
-from workbook_mapping_ui import dialog_payload
+from workbook_mapping_ui import dialog_payload, corrections_payload
 from workbook_profile import confirm as confirm_book
 
 
@@ -216,6 +216,16 @@ class BookMappingDialog(Dialog):
         self.destroy()
 
 
+class BookCorrectionsDialog(Dialog):
+    def __init__(self,parent,setup):
+        super().__init__(parent,corrections_payload(setup))
+        parent.dialog=self
+        parent.dialog_changed.emit(json.dumps(self.payload,ensure_ascii=False))
+
+    def accept(self,payload):
+        self.destroy()
+
+
 class EventsDialog(Dialog):
     def __init__(self, parent, events, book_name):
         super().__init__(parent, {"kind": "events", "title": "События на графике",
@@ -281,6 +291,7 @@ class DesktopController(QObject):
                         "MappingDialog": MappingDialog, "ChartEventsDialog": EventsDialog,
                         "GasPassportDialog": GasPassportDialog, "CorrectionDialog": CorrectionDialog}
         replacements['BookMappingDialog']=BookMappingDialog
+        replacements['BookCorrectionsDialog']=BookCorrectionsDialog
         replacements['read_layout']=self._read_layout
         for name in WORKFLOW_METHODS:
             descriptor = inspect.getattr_static(workflow.CalculationApp, name)

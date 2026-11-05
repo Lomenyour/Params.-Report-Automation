@@ -60,7 +60,7 @@ from correction_profiles_ui import CorrectionDialog
 from periods import parse_periods_arg
 from result_export import collect_result_tables, read_data_sheet, save_result_workbook
 from workbook_profile import read_layout, suggestions as suggest_book_columns, confirm as confirm_book, validate_recalculation
-from workbook_mapping_ui import BookMappingDialog
+from workbook_mapping_ui import BookMappingDialog, BookCorrectionsDialog
 from pressure_chart import PressureChartData
 from chart_events import ChartEvent, load_chart_events, save_chart_events
 from chart_events_ui import ChartEventsDialog
@@ -511,7 +511,10 @@ class CalculationApp(tk.Tk):
         self._apply_station(self.stations_by_name.get(self.station_var.get()), automatic=False)
 
     def review_corrections(self):
-        return self.review_book_mapping()
+        if self.calculation_running or self.export_running or not self.selected_file:
+            return
+        if self._ensure_book_mapping():
+            BookCorrectionsDialog(self,self.book_setup)
 
     def _ensure_book_mapping(self):
         setup = getattr(self, 'book_setup', None)

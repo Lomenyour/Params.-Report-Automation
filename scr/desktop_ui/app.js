@@ -279,9 +279,12 @@
     const coefficientInputs = [];
     const bookInputs = [];
     if (payload.kind === 'bookMapping') {
-      description.textContent='Подтвердите параметры и единицы основной книги. Формулы определяют зависимости, коэффициенты читаются из текущей книги. Вспомогательные колонки сохраняются.';
+      description.textContent='Проверьте сохранённый маппинг ТЭЦ/ГТ. Измеренные столбцы принимают данные датчиков, расчётные вычисляются по формулам, служебные содержат дату и наработку.';
+      const toolbar=element('div','gtu-book-toolbar'), formulasButton=element('button','gtu-action','Показать расчётные формулы');
+      formulasButton.type='button';formulasButton.dataset.bookFormulas='';formulasButton.setAttribute('aria-expanded','false');
+      toolbar.append(formulasButton);body.append(toolbar);
       const table=element('table','gtu-mapping-table gtu-book-table'), head=table.createTHead().insertRow();
-      ['Колонка книги','Параметр','Единицы','Тип','Расчётное выражение'].forEach(title=>head.append(element('th','',title)));
+      ['Колонка книги','Параметр','Единицы','Тип'].forEach(title=>head.append(element('th','',title)));
       const tbody=table.createTBody();
       payload.rows.forEach(data=>{
         const row=tbody.insertRow();row.insertCell().textContent=`${data.column} — ${data.header || 'Без заголовка'}`;
@@ -289,28 +292,59 @@
         const role=GtuChoiceField.create({root,choices:payload.roles.map(role=>role.label),value:selectedRole,label:`Параметр ${data.column}`});
         const units=[...new Set(['',...(payload.unit_catalog||[]).map(unit=>unit.symbol),data.unit])];
         const unit=GtuChoiceField.create({root,choices:units,value:data.unit,label:`Единицы ${data.column}`,editable:true});
-        const kind=GtuChoiceField.create({root,choices:['Измеренный','Расчётный'],value:data.kind==='computed'?'Расчётный':'Измеренный',label:`Тип ${data.column}`});
-        const roleCell=row.insertCell(), roleText=element('small','gtu-caption');roleCell.append(role,roleText);
-        const showRole=()=>{role.input.title=role.input.value;roleText.textContent=role.input.value.length>26?role.input.value:'';};
-        role.input.onchange=showRole;showRole();unit.input.title=data.unit;
+        const kinds={measured:'Измеренный',computed:'Расчётный',service:'Служебный'};
+        const kind=GtuChoiceField.create({root,choices:Object.values(kinds),value:kinds[data.kind],label:`Тип ${data.column}`});
+        row.insertCell().append(role);
+        const showRole=()=>{role.input.title=role.input.value;};
+        role.input.onchange=()=>{
+          showRole();
+          const id=payload.roles.find(item=>item.label===role.input.value)?.value;
+          if(['date','hours_input'].includes(id))kind.input.value='Служебный';
+          else if(id?.startsWith('correction_')){kind.input.value='Расчётный';if(!unit.input.value)unit.input.value='о.е.';}
+          else if(kind.input.value==='Служебный')kind.input.value=data.variants?.length?'Расчётный':'Измеренный';
+        };
+        showRole();unit.input.title=data.unit;
         const unitCell=row.insertCell();unitCell.append(unit);
-        if(data.unit_inferred)unitCell.append(element('small','gtu-caption','В книге не указаны — проверьте'));
         row.insertCell().append(kind);
-        const cell=row.insertCell(), variants=data.variants||[];
-        const options=variants.map((variant,index)=>({id:variant.id,label:`Вариант ${index+1} · ${variant.count} строк${variant.error?' · требуется уточнение':''}`,variant}));
-        const choice=GtuChoiceField.create({root,choices:options.map(item=>item.label),value:options.find(item=>item.id===data.recipe)?.label||'',label:`Формула ${data.column}`});
-        const text=element('div','gtu-formula-text');
-        const update=()=>{const found=options.find(item=>item.label===choice.input.value);text.textContent=found ? `${found.variant.formula}${found.variant.error?' — '+found.variant.error:''}` : 'Нет формулы в книге';};
-        choice.input.onchange=update;update();
-        if(variants.length)cell.append(choice);
-        cell.append(text);
-        bookInputs.push({data,role:role.input,unit:unit.input,kind:kind.input,choice:choice.input,options});
+        bookInputs.push({data,role:role.input,unit:unit.input,kind:kind.input});
       });
       body.append(table);
-      const constants=element('details','gtu-coefficient-group'), title=element('summary','',`Коэффициенты из текущей книги (${(payload.constants||[]).length})`);
-      constants.append(title);
-      (payload.constants||[]).forEach(item=>constants.append(element('div','gtu-formula-text',`${item.source} = ${item.value}`)));
-      body.append(constants);
+      const formulaPanel=element('div','gtu-book-formulas');formulaPanel.hidden=true;body.append(formulaPanel);
+      formulasButton.onclick=()=>{
+        GtuChoiceField.close();const opened=formulaPanel.hidden;
+        if(opened){
+          const formulaTable=element('table','gtu-mapping-table gtu-formula-table'),h=formulaTable.createTHead().insertRow();
+          ['Параметр','Используемое выражение'].forEach(title=>h.append(element('th','',title)));
+          const rows=formulaTable.createTBody();
+          bookInputs.filter(item=>item.kind.value==='Расчётный').forEach(item=>{
+            const r=rows.insertRow();r.insertCell().textContent=`${item.role.value==='Вспомогательная колонка'?item.data.header||'Без заголовка':item.role.value} (${item.data.column})`;
+            const cell=r.insertCell(),selected=(item.data.variants||[]).find(v=>v.id===item.data.recipe);
+            cell.append(element('div','gtu-formula-text',item.data.application_owned?'Рассчитывается программой по принятой методике.':selected?(selected.constant_value?'Постоянное значение из числового столбца: ':'')+selected.formula:item.data.variants.length?'Разные формулы встречаются одинаково часто. Уточните книгу.':'В книге нет формулы. Для импорта требуется расчётное выражение.'));
+            if(selected&&!item.data.application_owned){
+              const total=item.data.variants.reduce((sum,v)=>sum+v.count,0);
+              cell.append(element('div','gtu-caption',`Основная структура: ${selected.count} из ${total} строк.`));
+              if(selected.error)cell.append(element('div','gtu-validation-error',selected.error));
+              if(item.data.variants.length>1){const details=element('details'),summary=element('summary','','Другие выражения в книге');details.append(summary);
+                item.data.variants.filter(v=>v.id!==selected.id).forEach(v=>details.append(element('div','gtu-formula-text',`${v.count} строк: ${v.formula}`)));cell.append(details);}
+            }
+          });
+          formulaPanel.replaceChildren(element('p','gtu-caption','Выбрана структура с наибольшим числом строк. При импорте паспорт газа задаёт C/H, Qнр и плотность в связанных узлах.'),formulaTable);
+        }
+        table.hidden=opened;formulaPanel.hidden=!opened;formulasButton.textContent=opened?'Вернуться к маппингу':'Показать расчётные формулы';
+        formulasButton.setAttribute('aria-expanded',String(opened));body.scrollTop=0;
+      };
+    } else if (payload.kind === 'bookCorrections') {
+      description.textContent=`Версия расчётной модели: ${payload.revision}`;
+      (payload.groups||[]).forEach(group=>{
+        const section=element('section','gtu-coefficient-group');section.append(element('h4','',`${group.label} (${group.column})`),element('div','gtu-formula-text',group.formula));
+        if(group.coefficients.length){
+          const table=element('table','gtu-mapping-table gtu-formula-table'),head=table.createTHead().insertRow();
+          ['Источник коэффициента','Значение'].forEach(title=>head.append(element('th','',title)));
+          const rows=table.createTBody();group.coefficients.forEach(item=>{const row=rows.insertRow();row.insertCell().textContent=item.source;row.insertCell().textContent=item.missing?'Не прочитан':String(item.value);});section.append(table);
+        } else section.append(element('p','gtu-caption','В выражении нет ссылок на отдельные ячейки коэффициентов.'));
+        body.append(section);
+      });
+      if(!payload.groups?.length)body.append(element('p','','В выбранных выражениях нет отдельных коэффициентов поправок.'));
     } else if (payload.kind === 'mapping') {
       const catalog = payload.unit_catalog || [];
       const unitKey = value => value.trim().toLowerCase().replace(/\s+/g, '');
@@ -450,7 +484,7 @@
     if (payload.kind === 'events') {
       const clear = element('button', 'gtu-action', 'Очистить'); clear.type = 'button'; clear.style.marginRight = 'auto'; clear.onclick = () => { editor.value = ''; editor.focus(); }; actions.append(clear);
     }
-    const cancel = element('button', 'gtu-action', periods ? 'Автоматические периоды' : 'Отмена'); cancel.type = 'button';
+    const cancel = element('button', 'gtu-action', periods ? 'Автоматические периоды' : payload.kind==='bookCorrections'?'Закрыть':'Отмена'); cancel.type = 'button';
     cancel.onclick = () => send('dialog', {action: periods ? 'auto' : 'cancel'});
     const accept = element('button', 'gtu-action gtu-primary', periods ? 'Применить периоды' : payload.kind === 'bookMapping' ? 'Подтвердить книгу' : payload.kind === 'mapping' ? 'Подтвердить маппинг' : ['gasPassport','corrections'].includes(payload.kind) ? 'Сохранить' : 'Применить'); accept.type = 'button';
     accept.onclick = () => { if (mappingInputs.some(({factor}) => !factor.reportValidity())) return;
@@ -459,10 +493,11 @@
         if(invalid){invalid.section.open=true;invalid.status.scrollIntoView({block:'center'});return;}
       }
       const result={action: periods ? 'manual' : 'accept', text: editor?.value || '', rows: mappingInputs.map(({target, factor, sourceUnit, targetUnit}) => ({target:target.value, factor:factor.value,source_unit:sourceUnit.value,target_unit:targetUnit.value})), values:Object.fromEntries([...gasInputs,...coefficientInputs].map(({key, input}) => [key, input.value]))};
-      if(payload.kind==='bookMapping')result.rows=bookInputs.map(item=>({column:item.data.column,role:payload.roles.find(role=>role.label===item.role.value)?.value||'',unit:item.unit.value,kind:item.kind.value==='Расчётный'?'computed':'measured',recipe:item.options.find(option=>option.label===item.choice.value)?.id||''}));
+      if(payload.kind==='bookMapping')result.rows=bookInputs.map(item=>({column:item.data.column,role:payload.roles.find(role=>role.label===item.role.value)?.value||'',unit:item.unit.value,kind:({'Расчётный':'computed','Измеренный':'measured','Служебный':'service'})[item.kind.value],recipe:item.data.recipe}));
       if(payload.kind==='gasPassport') result.entries=gasEntries.map(item=>({valid_from:item.from.value,valid_until:item.until.value,values:Object.fromEntries(item.fields.map(({key,input})=>[key,input.value]))})); send('dialog',result); };
-    actions.append(cancel, accept); dialog.append(header, body, actions); layer.replaceChildren(dialog); layer.hidden = false;
-    requestAnimationFrame(() => (editor || dialog.querySelector('input') || accept).focus());
+    if(payload.kind==='bookCorrections')actions.append(cancel);else actions.append(cancel,accept);
+    dialog.append(header, body, actions); layer.replaceChildren(dialog); layer.hidden = false;
+    requestAnimationFrame(() => (editor || dialog.querySelector('input') || (payload.kind==='bookCorrections'?cancel:accept)).focus());
     dialog.onkeydown = event => {
       if (event.key === 'Escape') { event.preventDefault(); cancel.click(); }
       if (event.ctrlKey && event.key === 'Enter') { event.preventDefault(); accept.click(); }

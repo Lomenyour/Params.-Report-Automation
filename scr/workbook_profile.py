@@ -24,6 +24,8 @@ from json_store import read_json, write_json, transaction
 from parameter_mapping import parameter_for_header, header_unit
 from unit_conversions import canonical_unit, unit_factor, unit_info
 from workbook_formulas import FormulaParser, FormulaEvaluator, node_id, references
+from workbook_corrections import CORRECTION_ROLES, correction_role
+from workbook_model import compile_model
 
 MARKER = 'GTU_WORKBOOK_PROFILE_V1'
 PROFILE_SHEET = 'Профиль расчёта'
@@ -56,6 +58,7 @@ ROLES = {
     'exhaust_pressure':('Давление уходящих газов','кПа'),
     'exhaust_temperature':('Температура уходящих газов','°C'),
 }
+ROLES.update(CORRECTION_ROLES)
 SENSOR_ROLES = {'ambient_temperature':'ambient_temperature','relative_humidity':'relative_humidity',
     'atmospheric_pressure':'p_atm_pa','inlet_pressure':'p_nk_pa','inlet_pressure_drop':'inlet_pressure_drop',
     'inlet_temperature':'t','outlet_temperature':'tkk','outlet_pressure':'p_kk_mpa',
@@ -157,9 +160,15 @@ def read_layout(path):
                     node=FormulaParser(text,rn).parse(); error=''
                 except (ValueError,IndexError,TypeError) as exc:
                     node=None; error=str(exc)
+                structural=(column,node_id(node)) if node else key2
+                if structural in patterns:
+                    item=patterns[structural]; item['count']+=1; item['last_row']=rn
+                    patterns[key2]=item
+                    continue
                 item={'id':node_id(node) if node else hashlib.sha256(text.encode()).hexdigest(),
                       'formula':text,'node':node,'error':error,'count':1,'first_row':rn,'last_row':rn}
                 patterns[key2]=item
+                patterns[structural]=item
                 layout.variants.setdefault(column,[]).append(item)
         except ValueError as exc:
             layout.formula_error=str(exc)
@@ -202,6 +211,8 @@ def read_layout(path):
 
 
 def suggested_role(header,station):
+    correction=correction_role(header)
+    if correction: return correction
     text=clean(header)
     physical=parameter_for_header(header,station)
     if physical in SENSOR_ROLES: return SENSOR_ROLES[physical]
@@ -215,24 +226,61 @@ def suggested_role(header,station):
     return ''
 
 
+def main_recipe(variants):
+    """Only a unique most frequent structure is eligible for automatic use."""
+    if not variants: return None
+    count=max(item['count'] for item in variants)
+    leaders=[item for item in variants if item['count']==count]
+    return leaders[0] if len(leaders)==1 else None
+
+
+def column_variants(layout,column,role):
+    variants=layout.variants.get(column,[])
+    if variants or role not in CORRECTION_ROLES: return variants
+    # Some station books supply an explicitly constant correction as numbers,
+    # not formulas (e.g. kPη=1). Expose the proposal for confirmation; never
+    # extrapolate a varying, partial or nonnumeric correction this way.
+    date_column=next((key for key,header in layout.headers.items()
+                      if clean(header) in ('дата','date','дата/время','дата и время')),None)
+    if date_column is None: return []
+    valid=pd.to_datetime(layout.values[date_column],errors='coerce').notna()
+    values=pd.to_numeric(layout.values.loc[valid,column],errors='coerce')
+    if values.empty or values.isna().any() or not np.isfinite(values).all() or values.nunique()!=1: return []
+    value=float(values.iloc[0]);node=['number',value]
+    return [{'id':node_id(node),'formula':f'{value:g}','node':node,'error':'','count':len(values),
+             'first_row':layout.header_row+2,'last_row':layout.header_row+1+len(values),
+             'step':1,'phase':0,'constant_value':True}]
+
+
 def suggestions(layout,station,unit):
     data=read_json(profile_path(),{'schema_version':1,'profiles':{}})
     if data.get('schema_version')!=1 or not isinstance(data.get('profiles'),dict):
         raise ValueError('Повреждён справочник основной книги; файл не изменён.')
     owner=data['profiles'].get(f'{station}|{unit}',{})
     signature=hashlib.sha256(json.dumps(sorted(clean(h) for h in layout.headers.values()),ensure_ascii=False).encode()).hexdigest()
+    ordered_signature=node_id(list(layout.headers.values()))
     candidates=[*owner.get('history',[]),owner.get('current',{})]
-    matched=next((record for record in reversed(candidates) if record.get('signature')==signature),None)
-    saved=(matched or owner.get('current',{})).get('columns',[])
+    matched=next((record for record in reversed(candidates) if record.get('ordered_signature')==ordered_signature),None)
+    matched=matched or next((record for record in reversed(candidates) if record.get('signature')==signature),None)
+    record=matched or owner.get('current',{})
+    saved=record.get('columns',[])
+    by_position={row['column']:row for row in saved} if record.get('ordered_signature')==ordered_signature else {}
     # Exact unique headers survive moves. Duplicates require manual resolution.
     counts=Counter(clean(h) for h in layout.headers.values() if h)
-    old={clean(row['header']):row for row in saved if row.get('header')}
-    embedded={clean(row['header']):row for row in layout.embedded_columns if row.get('header')}
+    old_counts=Counter(clean(row['header']) for row in saved if row.get('header'))
+    old={clean(row['header']):row for row in saved if row.get('header') and old_counts[clean(row['header'])]==1}
+    embedded_rows=layout.embedded_columns if layout.embedded_owner in (None,(station,str(unit))) else []
+    embedded_counts=Counter(clean(row['header']) for row in embedded_rows if row.get('header'))
+    embedded={clean(row['header']):row for row in embedded_rows if row.get('header') and embedded_counts[clean(row['header'])]==1}
     rows=[]
     for col,header in layout.headers.items():
-        previous=(old.get(clean(header)) or embedded.get(clean(header))) if header and counts[clean(header)]==1 else None
+        previous=(old.get(clean(header)) or embedded.get(clean(header))) if header and counts[clean(header)]==1 else by_position.get(col)
         role=previous.get('role','') if previous else suggested_role(header,station)
-        if not header and col=='A' and layout.headers.get('B')=='Дата': role='hours_input'
+        # Upgrade old generic correction assignments once. New explicit helper
+        # choices carry mapping_version and must remain user-owned thereafter.
+        upgraded=bool(previous and not role and not previous.get('mapping_version') and correction_role(header))
+        if upgraded: role=correction_role(header)
+        if previous is None and not header and col=='A' and layout.headers.get('B')=='Дата': role='hours_input'
         unit_text=previous.get('unit','') if previous else header_unit(header)
         unit_inferred=bool(role and not unit_text and ROLES[role][1])
         if role and not unit_text: unit_text=ROLES[role][1]
@@ -240,13 +288,13 @@ def suggestions(layout,station,unit):
         # Syz Qнр is stored in MJ/kg despite its volumetric-looking legacy header.
         if role=='q_lower' and any('Результаты!' in item['formula'] and '/' in item['formula'] for item in layout.variants.get(col,[])):
             role='gas_q_mass'; unit_text='МДж/кг'
-        variants=layout.variants.get(col,[])
-        selected=next((v for v in variants if previous and v['id']==previous.get('recipe')),None)
-        selected=selected or (max(variants,key=lambda x:x['count']) if variants else None)
-        changed=bool(previous and previous.get('recipe') and not any(v['id']==previous['recipe'] for v in variants))
+        variants=column_variants(layout,col,role)
+        selected=main_recipe(variants)
+        changed=bool(previous and previous.get('recipe') and (selected is None or selected['id']!=previous['recipe']))
         rows.append({'column':col,'header':header or '', 'role':role,'unit':canonical_unit(unit_text) or unit_text,
-                     'kind':previous.get('kind') if previous else ('computed' if variants or role in ('power','fuel','fuel_specific','eta_compressor','pi_k','gas_q_mass','gas_c_h') else 'measured'),
-                     'recipe':selected['id'] if selected else '', 'variants':variants,'changed':changed,'unit_inferred':unit_inferred})
+                     'kind':'service' if role in ('date','hours_input') else previous.get('kind') if previous and not upgraded else ('computed' if variants or role in CORRECTION_ROLES or role in ('power','fuel','fuel_specific','eta_compressor','pi_k','gas_q_mass','gas_c_h') else 'measured'),
+                     'recipe':selected['id'] if selected else '', 'variants':variants,'changed':changed,'unit_inferred':unit_inferred,
+                     'formula_conflict':bool(variants and selected is None)})
     # A calculated conversion of measured flow is a helper, not a second sensor.
     for role in set(r['role'] for r in rows if r['role']):
         candidates=[r for r in rows if r['role']==role]
@@ -332,8 +380,10 @@ class BookSetup:
     def metadata(self):
         headers=self.import_headers({row['column']:row['header'] for row in self.columns})
         columns=[{**row,'source_header':row['header'],'header':headers[row['column']]} for row in self.columns]
+        model,column_ids,source_ids=compile_model(columns,self.recipes,self.constants,self.header_row+2)
         return {'schema_version':1,'station':self.station,'unit':self.unit,'columns':columns,
-                'recipes':self.recipes,'constants':self.constants}
+                'recipes':self.recipes,'constants':self.constants,'calculation_model':model.to_dict(),
+                'source_bindings':{'columns':column_ids,'coefficients':source_ids}}
 
     def recalculate(self,values,*,passport=None,changed_dates=None):
         overrides={}
@@ -351,7 +401,9 @@ class BookSetup:
                     recipe['node'][3]=['constant','Паспорт газа','density']
                     constants['Паспорт газа!density']=gas['density_kg_per_nm3']
         mask=None if changed_dates is None else pd.DatetimeIndex(pd.to_datetime(values[self.bindings['date']['column']])).isin(changed_dates)
-        evaluator=FormulaEvaluator(values,recipes,constants,overrides,origin_row=self.header_row+2,active_mask=mask)
+        model,column_ids,_=compile_model(self.columns,recipes,constants,self.header_row+2)
+        frame=values.rename(columns=column_ids)
+        evaluator=model.evaluator(frame,{column_ids[key]:value for key,value in overrides.items()},mask)
         diagnostics={}
         used={ref[1] for recipe in recipes.values() if recipe['node'] for ref in references(recipe['node'],'data')}
         for column in sorted(used-set(recipes)):
@@ -361,7 +413,7 @@ class BookSetup:
                 if count: diagnostics['Нет входного значения '+column]=count
         calculated={}
         for column,recipe in self.recipes.items():
-            result=evaluator.column(column)
+            result=evaluator.column(column_ids[column])
             # Every-second-row summaries keep the workbook's established phase.
             step=recipe.get('step') or 1; phase=recipe.get('phase') or 0
             if step>1:
@@ -370,7 +422,7 @@ class BookSetup:
         for column,result in calculated.items():
             if mask is None: values[column]=result
             else:
-                changed=evaluator.change_mask(column)
+                changed=evaluator.change_mask(column_ids[column])
                 values[column]=values[column].astype(object)
                 values.loc[changed,column]=result[changed]
         for column,value in overrides.items():
@@ -397,12 +449,18 @@ def confirm(layout,station,unit,rows,*,save=True):
         if source_unit and target_unit and role not in ('hours_input','q_lower','gas_q_mass','gas_density','fuel_specific'):
             if not (target_unit=='°C' and canonical_unit(source_unit) in ('K','°F')):
                 unit_factor(source_unit,target_unit)
-        if kind not in ('measured','computed'): raise ValueError('Неизвестный тип колонки '+col)
-        selected=next((v for v in layout.variants.get(col,[]) if v['id']==row.get('recipe')),None)
+        if role in ('date','hours_input'): kind='service'
+        if kind not in ('measured','computed','service'): raise ValueError('Неизвестный тип колонки '+col)
+        if kind=='service' and role not in ('date','hours_input'):
+            raise ValueError('Служебный тип предназначен только для даты и наработки: '+col)
+        if role in CORRECTION_ROLES and kind!='computed':
+            raise ValueError('Поправка должна иметь расчётный тип: '+col)
+        variants=column_variants(layout,col,role)
+        selected=main_recipe(variants)
         # Legacy loss formulas are intentionally excluded: the app owns them.
         loss=any(word in clean(layout.headers[col]) for word in ('недовыработка','перерасход'))
         if kind=='computed' and selected and role not in ('date','hours_input') and not loss:
-            recipes[col]={k:selected.get(k) for k in ('id','formula','node','error','step','phase')}
+            recipes[col]={k:selected.get(k) for k in ('id','formula','node','error','step','phase','count','constant_value')}
             node=selected['node']; info=unit_info(row.get('unit',''))
             # Recognized mass-to-normal-volume conversion; this is not a
             # dimensionless correction factor. The passport supplies density.
@@ -410,7 +468,8 @@ def confirm(layout,station,unit,rows,*,save=True):
                 if '3600.0' in json.dumps(node[2]) and info and info['dimension']=='normal_volume_flow':
                     recipes[col]['gas_density_conversion']=True
         columns.append({'column':col,'header':layout.headers[col] or '', 'role':role,
-                        'unit':str(row.get('unit','')).strip(),'kind':kind,'recipe':row.get('recipe','')})
+                        'unit':str(row.get('unit','')).strip(),'kind':kind,'recipe':selected['id'] if selected else '',
+                        'mapping_version':2,'formula_conflict':bool(variants and selected is None)})
     excluded={col for col,h in layout.headers.items() if any(word in clean(h) for word in ('недовыработка','перерасход'))}
     # Blank-headed averages/footers of the legacy losses must not run either.
     changed=True
@@ -434,7 +493,8 @@ def confirm(layout,station,unit,rows,*,save=True):
             data=read_json(profile_path(),{'schema_version':1,'profiles':{}})
             owner=data['profiles'].setdefault(f'{station}|{unit}',{'history':[]})
             signature=hashlib.sha256(json.dumps(sorted(clean(h) for h in layout.headers.values()),ensure_ascii=False).encode()).hexdigest()
-            current={'columns':columns,'signature':signature,'updated_at':datetime.now(timezone.utc).isoformat(timespec='seconds')}
+            current={'columns':columns,'signature':signature,'ordered_signature':node_id(list(layout.headers.values())),
+                     'updated_at':datetime.now(timezone.utc).isoformat(timespec='seconds')}
             if owner.get('current') and owner['current']['columns']!=columns: owner['history'].append(owner['current'])
             owner['current']=current
             write_json(profile_path(),data)
@@ -442,6 +502,11 @@ def confirm(layout,station,unit,rows,*,save=True):
 
 
 def validate_recalculation(setup):
+    for row in setup.columns:
+        if row.get('formula_conflict') and row['kind']=='computed':
+            raise ValueError('Колонка '+row['column']+': разные формулы встречаются одинаково часто. Уточните основную зависимость в исходной книге.')
+        if row['role'] in CORRECTION_ROLES and row['column'] not in setup.recipes:
+            raise ValueError('Для поправки '+ROLES[row['role']][0]+' ('+row['column']+') нет формулы или подтверждённой полной постоянной колонки.')
     for column,recipe in setup.recipes.items():
         if recipe.get('error') or recipe.get('node') is None:
             raise ValueError(f"Колонка {column}: {recipe.get('error') or 'нет поддерживаемой формулы'}")

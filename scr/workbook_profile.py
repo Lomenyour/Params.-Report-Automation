@@ -23,7 +23,7 @@ from data_loader import _find_header_row, _map_headers, SHORT_NAMES, RECORD_HOUR
 from json_store import read_json, write_json, transaction
 from parameter_mapping import parameter_for_header, header_unit
 from unit_conversions import canonical_unit, unit_factor, unit_info, unit_conversion, convert_units
-from workbook_formulas import FormulaParser, FormulaEvaluator, node_id, references
+from workbook_formulas import FormulaParser, FormulaEvaluator, node_id, references, data_reference_columns
 from workbook_corrections import CORRECTION_ROLES, correction_role
 from workbook_model import compile_model
 
@@ -468,13 +468,31 @@ def confirm(layout,station,unit,rows,*,save=True):
                         'unit':str(row.get('unit','')).strip(),'kind':kind,'recipe':selected['id'] if selected else '',
                         'mapping_version':2,'formula_conflict':bool(variants and selected is None)})
     excluded={col for col,h in layout.headers.items() if any(word in clean(h) for word in ('недовыработка','перерасход'))}
+    service={row['column'] for row in columns if row['role'] in ('date','hours_input')}
+    summary_dependencies={}
+    for row in columns:
+        col=row['column']
+        if row['role'] or col not in recipes:
+            continue
+        # A summary may occupy a few cells beside dated measurements. Its most
+        # frequent expression can reference its own earlier subtotal, hiding
+        # the loss dependency in a less frequent, unsupported SUMIF initializer.
+        dependencies=[data_reference_columns(item['formula']) for item in layout.variants.get(col,[])]
+        if dependencies and all(item is not None for item in dependencies):
+            summary_dependencies[col]=set().union(*dependencies)
     # Blank-headed averages/footers of the legacy losses must not run either.
     changed=True
     while changed:
         changed=False
         for col,item in list(recipes.items()):
-            if item['node'] and any(ref[1] in excluded for ref in references(item['node'],'data')):
+            selected_loss=item['node'] and any(ref[1] in excluded for ref in references(item['node'],'data'))
+            dependencies=summary_dependencies.get(col,set())
+            loss_only_summary=bool(dependencies & excluded) and not (dependencies-excluded-service-{col})
+            if selected_loss or loss_only_summary:
                 excluded.add(col); del recipes[col]; changed=True
+    for row in columns:
+        if row['column'] in excluded:
+            row['excluded_calculation']='legacy_losses'
     # Any unsupported formula with no semantic role is a preserved helper;
     # reject it only if a required calculation actually depends on it.
     for col,item in list(recipes.items()):

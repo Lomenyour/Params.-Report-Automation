@@ -49,7 +49,8 @@ class CalculationModel:
 
     def evaluator(self, values, overrides=None, active_mask=None):
         constants={'coefficients!'+key:value for key,value in self.coefficients.items()}
-        return FormulaEvaluator(values,self.recipes,constants,overrides,self.record_origin,active_mask)
+        return FormulaEvaluator(values,self.recipes,constants,overrides,self.record_origin,active_mask,
+                                labels={key:value['label'] for key,value in self.parameters.items()})
 
 
 def compile_model(columns, recipes, constants, record_origin=2):

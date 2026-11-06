@@ -8,7 +8,7 @@ from collections import Counter
 
 import numpy as np
 import pandas as pd
-from openpyxl.formula.tokenizer import Tokenizer
+from openpyxl.formula.tokenizer import Tokenizer, TokenizerError
 from openpyxl.utils import column_index_from_string, get_column_letter
 from CoolProp.CoolProp import PropsSI
 from CoolProp.HumidAirProp import HAPropsSI
@@ -122,6 +122,39 @@ class FormulaParser:
         return ['constant', sheet, column.upper()+row]
 
 
+def data_reference_columns(formula, data_sheet='Данные'):
+    """Inspect dependencies without executing functions or expanding row ranges.
+
+    Used to identify old loss summaries, including unsupported SUMIF and
+    absolute ranges. Unknown names/structured references return None so the
+    caller cannot silently classify a mixed or unrecognized calculation.
+    """
+    columns = set()
+    try:
+        tokens = Tokenizer('=' + str(formula).lstrip('=')).items
+        for token in tokens:
+            if token.type != 'OPERAND' or token.subtype != 'RANGE':
+                continue
+            sheet, address = token.value.rsplit('!', 1) if '!' in token.value else (data_sheet, token.value)
+            if sheet.strip("'").replace("''", "'") != data_sheet:
+                continue
+            endpoints = address.split(':')
+            pattern = r'\$?([A-Z]{1,3})\$?[0-9]+' if len(endpoints) == 1 else r'\$?([A-Z]{1,3})(?:\$?[0-9]+)?'
+            if len(endpoints) > 2:
+                return None
+            points = [re.fullmatch(pattern, endpoint, re.I) for endpoint in endpoints]
+            if not all(points):
+                return None
+            left = column_index_from_string(points[0][1].upper())
+            right = column_index_from_string(points[-1][1].upper())
+            if right < left or right > 16384:
+                return None
+            columns.update(get_column_letter(index) for index in range(left, right + 1))
+    except (ValueError, IndexError, TypeError, TokenizerError):
+        return None
+    return columns
+
+
 def references(node, kind):
     if node[0] == kind:
         yield node
@@ -136,7 +169,7 @@ def references(node, kind):
 
 
 class FormulaEvaluator:
-    def __init__(self, frame, recipes, constants, overrides=None, origin_row=2, active_mask=None):
+    def __init__(self, frame, recipes, constants, overrides=None, origin_row=2, active_mask=None, labels=None):
         self.frame, self.recipes, self.constants = frame, recipes, constants
         self.base_mask=np.ones(len(frame),dtype=bool) if active_mask is None else np.asarray(active_mask,dtype=bool)
         self.masks={}
@@ -146,11 +179,12 @@ class FormulaEvaluator:
             self.cache[column]=np.where(self.base_mask,value,old)
         self.active, self.errors = set(), Counter()
         self.origin_row=origin_row
+        self.labels = labels or {}
 
     def change_mask(self,column,active=None):
         if column in self.masks: return self.masks[column]
         active=set() if active is None else active
-        if column in active: raise ValueError('Циклическая зависимость '+column)
+        if column in active: raise ValueError('Циклическая зависимость '+self.labels.get(column,column))
         active=active|{column}; mask=self.base_mask.copy()
         if column in self.recipes:
             for reference in references(self.recipes[column]['node'],'data'):
@@ -163,7 +197,7 @@ class FormulaEvaluator:
         if column in self.cache:
             return self.cache[column]
         if column in self.active:
-            raise ValueError('Циклическая зависимость расчётной колонки ' + column)
+            raise ValueError('Циклическая зависимость расчётной колонки ' + self.labels.get(column,column))
         if column not in self.recipes:
             if column not in self.frame:
                 raise ValueError('Нет исходной колонки ' + column)

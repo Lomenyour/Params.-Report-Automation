@@ -20,6 +20,8 @@ import pandas as pd
 from docxtpl import DocxTemplate
 from jinja2 import Environment, StrictUndefined
 from project_paths import OUTPUT_DIR
+from data_loader import RECORD_HOURS
+from periods import period_bounds, select_period_data
 
 
 if getattr(sys, "frozen", False):
@@ -338,9 +340,14 @@ def build_report_data(
     electricity_cost: float,
     source_file: str | Path | None = None,
     turbine: dict[str, str] | None = None,
+    manual_periods=None,
 ) -> dict[str, Any]:
     """Собирает JSON-контекст после финального выбора периодов."""
 
+    if manual_periods:
+        if source_data is not None:
+            source_data = select_period_data(source_data, manual_periods)
+        rh_data = select_period_data(rh_data, manual_periods)
     periods: list[dict[str, Any]] = []
     vna_results = vna_results or []
     vna_by_period = {}
@@ -388,6 +395,11 @@ def build_report_data(
     if input_total is None:
         input_total = _last_numeric(rh_data, "hours_input")
     calculated_total = _last_numeric(rh_data, "hours")
+    if manual_periods:
+        # Source counters remain cumulative in the full-history Excel. They
+        # cannot represent hours of a disjoint manual selection in the report.
+        input_total = len(source_data) * RECORD_HOURS if source_data is not None else None
+        calculated_total = len(rh_data) * RECORD_HOURS
     total_row = _economics_total(economics_result.get("table"))
     annualized = economics_result.get("annualized") or {}
     weighted = (
@@ -407,6 +419,10 @@ def build_report_data(
             "data_start_date": data_start_date,
             "data_end_date": data_end_date,
             "invalid_date_rows": invalid_date_rows,
+            **({"selection_mode": "manual", "selected_intervals": [
+                {"start": start.isoformat(), "end": end.isoformat()}
+                for start, end in period_bounds(manual_periods)
+            ]} if manual_periods else {}),
         },
         "period_count": len(periods),
         "tariffs": {

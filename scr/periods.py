@@ -175,6 +175,48 @@ def parse_periods_arg(value):
     return periods
 
 
+def period_bounds(overrides):
+    """Validate manual bounds once for both period labels and date selection."""
+    bounds = []
+    for number, (raw_start, raw_end) in enumerate(overrides, start=1):
+        try:
+            start = pd.to_datetime(raw_start, dayfirst=True)
+            end = pd.to_datetime(raw_end, dayfirst=True)
+            if pd.isna(start) or pd.isna(end):
+                raise ValueError('пустая дата')
+        except Exception as error:
+            raise ValueError(
+                f"Не разобрать даты периода {number}: "
+                f"{raw_start!r} .. {raw_end!r} ({error})"
+            ) from error
+        if start > end:
+            raise ValueError(
+                f"Период {number}: начало ({raw_start}) позже конца ({raw_end})"
+            )
+        bounds.append((start, end))
+    return bounds
+
+
+def period_selection_mask(dates, overrides):
+    """Union of inclusive manual intervals, including stops inside each one.
+
+    Empty overrides keep the automatic mode unchanged. Unlike period labels,
+    this scope is independent of power and includes no rows in intervening gaps.
+    """
+    moments = pd.to_datetime(pd.Series(dates, copy=False), errors='coerce')
+    if not overrides:
+        return pd.Series(True, index=moments.index)
+    selected = pd.Series(False, index=moments.index)
+    for start, end in period_bounds(overrides):
+        selected |= moments.between(start, end)
+    return selected
+
+
+def select_period_data(df, overrides):
+    """Select the calculation scope without changing counters or source rows."""
+    return df.loc[period_selection_mask(df['date'], overrides)].copy()
+
+
 def apply_period_overrides(df, overrides):
     """Размечает периоды по списку, заданному в PERIOD_OVERRIDES.
 
@@ -188,22 +230,7 @@ def apply_period_overrides(df, overrides):
     result = df.copy()
     result["period"] = 0
 
-    for number, (raw_start, raw_end) in enumerate(overrides, start=1):
-
-        try:
-            start = pd.to_datetime(raw_start, dayfirst=True)
-            end = pd.to_datetime(raw_end, dayfirst=True)
-        except Exception as error:
-            raise ValueError(
-                f"Не разобрать даты периода {number}: "
-                f"{raw_start!r} .. {raw_end!r} ({error})"
-            ) from error
-
-        if start > end:
-            raise ValueError(
-                f"Период {number}: начало ({raw_start}) позже конца ({raw_end})"
-            )
-
+    for number, (start, end) in enumerate(period_bounds(overrides), start=1):
         mask = (
             (result["date"] >= start)
             & (result["date"] <= end)

@@ -982,10 +982,6 @@ class CalculationApp(tk.Tk):
                     source = book_setup.canonical(layout.values)
                     print('Готовые производные значения основной книги используются без замены формулами другой ГТУ.')
                 print(f'Проверка исходных данных без очистки: {book_setup.audit(source)}')
-                if passport is not None:
-                    # Анализ КПД ГТУ получает объёмное Qнр паспорта.
-                    # Массовое Qнр в выражениях книги остаётся отдельным узлом.
-                    source["q_lower"] = gas_values(passport, source["date"])["q_lower_mj_per_nm3"]
                 rh_data = prepare_rh_data(source)
                 vna_data = prepare_vna_data(source)
 
@@ -1021,7 +1017,23 @@ class CalculationApp(tk.Tk):
                         f"Используем {len(periods_mod.PERIOD_OVERRIDES)} "
                         "периодов, заданных вручную."
                     )
+                    full_rows = len(source)
+                    source = periods_mod.select_period_data(source, periods_mod.PERIOD_OVERRIDES)
+                    if source.empty:
+                        raise ValueError('В выбранных интервалах нет данных. Проверьте даты периодов.')
+                    # Keep the full export history and the original time counters.
+                    # Every downstream analysis/plot receives this same date scope.
+                    rh_data = prepare_rh_data(source)
+                    vna_data = prepare_vna_data(source)
+                    event_mask = periods_mod.period_selection_mask(
+                        [event.date for event in chart_events], periods_mod.PERIOD_OVERRIDES,
+                    )
+                    chart_events = tuple(event for event, keep in zip(chart_events, event_mask) if keep)
+                    print(f'Отбор по выбранным интервалам: {len(source)} из {full_rows} строк; '
+                          'история листа «Данные» в Excel сохраняется полностью.')
                     _, corrected_periods = periods_mod.build_periods(rh_data)
+                    if corrected_periods.empty:
+                        raise ValueError('В выбранных интервалах нет рабочих записей. Проверьте даты периодов.')
                     corrected_figure = plot_pressure_drops(
                         rh_data,
                         corrected_periods,
@@ -1032,6 +1044,13 @@ class CalculationApp(tk.Tk):
                 else:
                     print()
                     print("Используем автоматическую разбивку периодов.")
+
+                if passport is not None:
+                    # Apply analytical gas values to the accepted date scope.
+                    # Import formulas were prepared earlier with their full context.
+                    source["q_lower"] = gas_values(passport, source["date"])["q_lower_mj_per_nm3"]
+                    rh_data = prepare_rh_data(source)
+                    vna_data = prepare_vna_data(source)
 
                 print()
                 print("=" * 78)
@@ -1094,6 +1113,7 @@ class CalculationApp(tk.Tk):
                     source_file=file_path,
                     turbine={"name": selected_turbine.name, "number": turbine,
                              "model": selected_turbine.model, "station_id": station.id},
+                    manual_periods=periods_mod.PERIOD_OVERRIDES or None,
                 )
                 suffix = "_обновлённые_данные_результаты" if raw_file_path is not None else "_результаты"
                 report_data["gas_passports"] = [entry.to_dict() for entry in passport_entries(passport)] if passport else []
@@ -1116,7 +1136,7 @@ class CalculationApp(tk.Tk):
                 )
 
                 pressure_figure = plot_pressure_drops(
-                    rh_df,
+                    rh_data if periods_mod.PERIOD_OVERRIDES else rh_df,
                     rh_periods,
                     show=False,
                 )

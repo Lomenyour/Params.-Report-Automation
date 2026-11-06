@@ -328,6 +328,17 @@ body.gtu-resizing, body.gtu-resizing * { cursor: col-resize !important; user-sel
 #desktop .gtu-data-table th, #desktop .gtu-data-table td { max-width: 720px; padding: 12px 14px; font-size: 12px; }
 #desktop .gtu-table-section + .gtu-table-section { margin-top: 28px; }
 #desktop .gtu-table-section h4 { font-size: 13px; font-weight: 500; margin: 0 0 10px; }
+#desktop .gtu-top10-tabs { display:flex; gap:6px; }
+#desktop .gtu-top10-tabs [aria-selected="true"] { background:var(--gtu-soft-accent); color:var(--gtu-text); border-color:var(--gtu-sub); }
+#desktop .gtu-selected-pair { background:rgba(110,160,205,.12); }
+#desktop .gtu-compressor-controls { display:flex; flex-wrap:wrap; align-items:center; gap:10px; margin-bottom:10px; }
+#desktop .gtu-compressor-controls h4 { margin:0; }
+#desktop .gtu-compressor-select { max-width:100%; width:auto; min-width:260px; }
+#desktop .gtu-compressor-image { width:100%; overflow:auto; margin-top:10px; border-radius:8px; background:white; }
+#desktop .gtu-compressor-message { padding:24px 0; }
+#desktop .gtu-compressor-period input[type="radio"] { accent-color:#8eb8df; width:16px; height:16px; }
+#desktop .gtu-compressor-period th:first-child,
+#desktop .gtu-compressor-period td:first-child { position:sticky; left:0; background:var(--gtu-panel); z-index:1; }
 #desktop .gtu-overlay { grid-template-rows: minmax(0, 1fr); grid-template-columns: minmax(0, 1fr); min-height: 0; overflow: hidden; }
 #desktop .gtu-dialog { max-height: calc(100dvh - 40px); min-height: 0; overflow: hidden; display: flex; flex-direction: column; }
 #desktop .gtu-dialog-head { flex-shrink: 0; display: flex; align-items: flex-start; gap: 12px; margin-bottom: 10px; }

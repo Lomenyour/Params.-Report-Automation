@@ -25,6 +25,8 @@ from parameter_mapping import parameter_targets, PRESSURE_UNITS, UNIT_CATALOG, c
 from correction_profiles_ui import correction_groups, profile_from_fields
 from workbook_mapping_ui import dialog_payload, corrections_payload, merge_mapping_rows, formula_view
 from workbook_profile import confirm as confirm_book
+from compressor_degradation_chart import prepare_compressor_plots, selected_compressor_pairs
+from compressor_preview import render_compressor_preview
 
 
 # Это те же code objects, что и у проверенного сценария. Меняется только
@@ -274,6 +276,10 @@ class CorrectionDialog(Dialog):
         self.destroy()
 
 
+class PreviewEvents(QObject):
+    completed = Signal(object)
+
+
 class DesktopController(QObject):
     state_changed = Signal(str)
     view_changed = Signal(str)
@@ -285,6 +291,10 @@ class DesktopController(QObject):
         self.window, self.closed, self.ready = window, False, False
         self._dirty = False
         self.views, self.figures, self.logs = {}, {}, ""
+        self._top10_results, self._top10_mode = [], "table"
+        self._compressor_preview_cache, self._compressor_preview_busy = {}, False
+        self._preview_events = PreviewEvents(self)
+        self._preview_events.completed.connect(self._finish_compressor_previews)
         self.dialog, self.period_request = None, None
         self.messages, self.files = Messages(window), FileDialogs(window)
         replacements = {"filedialog": self.files, "messagebox": self.messages,
@@ -423,6 +433,8 @@ class DesktopController(QObject):
             self.log_changed.emit(json.dumps({"replace": ""}))
 
     def _clear_charts(self):
+        self._top10_results, self._top10_mode = [], "table"
+        self._compressor_preview_cache.clear()
         for figure in self.figures.values():
             workflow.plt.close(figure)
         self.figures.clear()
@@ -455,12 +467,90 @@ class DesktopController(QObject):
         self.set_view(key, {"type": "table", **self._table(table, key)})
 
     def _show_top10_tables(self, results):
+        self._top10_results = results
+        self._refresh_top10_view()
+
+    def _refresh_top10_view(self):
         tables = []
-        for index, table in enumerate(results, start=1):
-            period = table.attrs.get("period_number", index)
+        chart = self.last_result.pressure_chart if self.last_result else None
+        choices = (chart.compressor_pair_ranks or {}) if chart is not None else {}
+        for index, table in enumerate(self._top10_results, start=1):
+            if table is None or table.empty:
+                continue
+            period = int(table.attrs.get("period_number", index))
+            rank = int(choices.get(period, table.iloc[0].get("rank", 1)))
             display = table.drop(columns=["share_percent"], errors="ignore").copy()
-            tables.append({"title": f"Период {period} · ТОП-10 ВНА", **self._table(display)})
-        self.set_view("top10", {"type": "tables", "tables": tables})
+            pairs = [{"rank": int(row.get("rank", position)),
+                      "label": f"Пара №{int(row.get('rank', position))} · Δдней {self._format_cell(row.get('delta_days'))} · ΔКПД {self._format_cell(row.get('delta_eta'))} п.п."}
+                     for position, (_, row) in enumerate(table.iterrows(), 1)]
+            preview = self._compressor_preview_cache.get((period, rank)) if self._top10_mode == "graphs" else None
+            tables.append({"title": f"Период {period} · ТОП-10 ВНА", "period": period,
+                           "selected_rank": rank, "pairs": pairs, "preview": preview,
+                           **self._table(display)})
+        self.set_view("top10", {"type": "vna_top10", "mode": self._top10_mode, "tables": tables})
+
+    def _request_compressor_previews(self):
+        if self.closed or self._compressor_preview_busy or self._top10_mode != "graphs" or self.last_result is None:
+            return
+        snapshot = self.last_result
+        chart = snapshot.pressure_chart
+        if chart is None:
+            return
+        selected = selected_compressor_pairs(chart.vna_top10, chart.compressor_pair_ranks)
+        missing = [(number, int(row.get("rank", 1))) for number, row in selected.items()
+                   if (number, int(row.get("rank", 1))) not in self._compressor_preview_cache]
+        if not missing:
+            return
+        self._compressor_preview_busy = True
+
+        def render():
+            images = {}
+            try:
+                periods = chart.periods.loc[chart.periods["period"].isin([number for number, _ in missing])]
+                plots = {plot.period: plot for plot in prepare_compressor_plots(
+                    chart.degradation_values, periods, chart.vna_top10, chart.compressor_pair_ranks)}
+                for number, rank in missing:
+                    if self.closed or snapshot is not self.last_result:
+                        break
+                    plot = plots.get(number)
+                    images[number, rank] = ({"src": "data:image/png;base64," +
+                        base64.b64encode(render_compressor_preview(plot)).decode("ascii"),
+                        "points": len(plot.points)} if plot is not None else
+                        {"message": "Для выбранной пары нет измерений, удовлетворяющих условиям графика."})
+            except Exception as error:
+                images = {key: {"message": f"Не удалось подготовить график: {error}"} for key in missing}
+            try:
+                self._preview_events.completed.emit({"snapshot": snapshot, "images": images})
+            except RuntimeError:
+                pass  # The window was destroyed while the independent renderer finished.
+
+        threading.Thread(target=render, daemon=True).start()
+
+    @Slot(object)
+    def _finish_compressor_previews(self, result):
+        self._compressor_preview_busy = False
+        if self.closed:
+            return
+        if result["snapshot"] is self.last_result:
+            self._compressor_preview_cache.update(result["images"])
+        if self.last_result is not None and self._top10_results:
+            self._request_compressor_previews()
+            self._refresh_top10_view()
+
+    def select_compressor_pair(self, period, rank):
+        if self.calculation_running or self.export_running or self.last_result is None:
+            return
+        try:
+            updated = self.last_result.with_compressor_pair(period, rank)
+        except (ValueError, KeyError, TypeError) as error:
+            self.messages.showerror("Пара ТОП-10 ВНА", str(error))
+            return
+        if updated is self.last_result:
+            return
+        self.last_result = updated
+        self._append_log(f"График компрессора: период {period}, пара №{rank}.\n")
+        self._request_compressor_previews()
+        self._refresh_top10_view()
 
     def set_view(self, key, payload):
         self.views[key] = payload
@@ -532,6 +622,15 @@ class DesktopController(QObject):
         if self.dialog is not None or self.period_request is not None:
             if name == "tab" and self.period_request is not None:
                 self.chart_tabs.select(payload.get("key", "pressure"))
+            return
+        if name == "top10Mode":
+            if payload.get("mode") in ("table", "graphs") and self.last_result is not None:
+                self._top10_mode = payload["mode"]
+                self._request_compressor_previews()
+                self._refresh_top10_view()
+            return
+        if name == "compressorPair":
+            self.select_compressor_pair(payload.get("period"), payload.get("rank"))
             return
         actions = {"file": self.choose_file, "raw": self.choose_raw_file,
                    "bookMapping": self.review_book_mapping,

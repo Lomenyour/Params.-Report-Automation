@@ -1,9 +1,10 @@
-"""Графики КПД компрессора и степени сжатия по первой паре TOP-10 ВНА."""
+"""Графики компрессора по выбранной паре TOP-10 ВНА (по умолчанию первой)."""
 from __future__ import annotations
 
 from dataclasses import dataclass
 import math
 import re
+from numbers import Integral
 
 import numpy as np
 import pandas as pd
@@ -50,16 +51,38 @@ class CompressorPlot:
     p_upper: float
     data_first: int = 6
 
+    @property
+    def pair_rank(self):
+        return int(self.top.get("rank", 1))
 
-def prepare_compressor_plots(values, periods, top10_results):
-    """Берёт TOP-1 каждого периода и фильтрует только строки этого периода."""
-    if values is None or values.empty or periods is None or periods.empty:
-        return []
+
+def selected_compressor_pairs(top10_results, pair_ranks=None):
+    """Resolve ranks without sorting, changing or removing TOP-10 rows."""
     by_period = {
-        int(table.attrs["period_number"]): table.iloc[0]
+        int(table.attrs["period_number"]): table
         for table in (top10_results or [])
         if table is not None and not table.empty and "period_number" in table.attrs
     }
+    selected = {number: table.iloc[0] for number, table in by_period.items()}
+    for number, rank in (pair_ranks or {}).items():
+        if (isinstance(number, bool) or not isinstance(number, Integral) or number < 1 or
+                isinstance(rank, bool) or not isinstance(rank, Integral) or rank < 1):
+            raise ValueError("Период и номер пары должны быть положительными целыми числами.")
+        if number not in by_period:
+            raise ValueError(f"Нет ТОП-10 ВНА для периода {number}.")
+        table = by_period[number]
+        matching = table.loc[table["rank"] == rank] if "rank" in table else table.iloc[:1] if rank == 1 else table.iloc[:0]
+        if len(matching) != 1:
+            raise ValueError(f"В периоде {number} нет однозначной пары №{rank}.")
+        selected[number] = matching.iloc[0]
+    return selected
+
+
+def prepare_compressor_plots(values, periods, top10_results, pair_ranks=None):
+    """Apply the existing filters to the chosen pair of each period."""
+    if values is None or values.empty or periods is None or periods.empty:
+        return []
+    by_period = selected_compressor_pairs(top10_results, pair_ranks)
     plots = []
     dates = pd.to_datetime(values["date"], errors="coerce")
     for period in periods.itertuples(index=False):
@@ -348,7 +371,7 @@ def _add_annotations(chart, secondary, plot, chart_size):
         eta = float(plot.top[f"eta_{suffix}"])
         pi_k = float(plot.top[f"pi_k_{suffix}"])
         pi_y = low + (pi_k - other_low) / (other_high - other_low) * (high - low)
-        chart.series.append(_annotation([(moment, pi_y), (moment, eta)], "Граница TOP-1"))
+        chart.series.append(_annotation([(moment, pi_y), (moment, eta)], f"Граница TOP-{plot.pair_rank}"))
         eta_text = f"{eta:.1f}".replace(".", ",")
         pi_text = f"{pi_k:.1f}".replace(".", ",")
         text = f"{moment:%d.%m.%Y}\nηoi = {eta_text} %\nπк = {pi_text}"
@@ -377,7 +400,7 @@ def add_compressor_charts(sheet, plots, start_row, *, two_columns=True):
             f"{_letter(column)}{block_row}:{_letter(column + 17)}{block_row}"
         )
         cells.setdefault(block_row, {})[column] = (
-            f"Период {plot.period}. Деградация компрессора — TOP-1 ВНА", "period"
+            f"Период {plot.period}. Деградация компрессора — TOP-{plot.pair_rank} ВНА", "period"
         )
         sheet.row_dimensions[block_row].height = 25
         criteria = _criteria(plot)

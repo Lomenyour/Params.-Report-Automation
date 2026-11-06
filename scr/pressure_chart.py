@@ -68,6 +68,7 @@ class PressureChartData:
     vna_top10: list[pd.DataFrame] | None = None
     rh_values: pd.DataFrame | None = None
     rh_results: list[dict] | None = None
+    compressor_pair_ranks: dict[int, int] | None = None
 
 
 def _number(frame, key):
@@ -341,6 +342,7 @@ def write_pressure_sheet(book, headers, header_row, row_count, source: PressureC
     keys = [key for key in pressure_channels(frame) if key in columns]
     compressor_plots = prepare_compressor_plots(
         source.degradation_values, source.periods, source.vna_top10,
+        source.compressor_pair_ranks,
     ) if source.vna_top10 else []
     rh_plots = prepare_rh_plots(source.rh_values, source.rh_results)
     if frame.empty or not keys:

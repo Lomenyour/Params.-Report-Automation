@@ -100,7 +100,7 @@
   }
   function rememberScroll() {
     const viewport = panel.querySelector('.gtu-view-viewport');
-    if (viewport) scrolls[selected] = [viewport.scrollLeft, viewport.scrollTop];
+    if (viewport) scrolls[viewport.dataset.scrollKey || selected] = [viewport.scrollLeft, viewport.scrollTop];
   }
   function emptyState() {
     // Сохраняем DOM между обновлениями состояния: вращение не начинается заново.
@@ -130,19 +130,40 @@
       empty.querySelector('#empty-description').textContent = 'Укажите станцию и ГТУ в панели подготовки. Название модели появится после выбора агрегата.';
     }
   }
-  function makeTable(data) {
+  function makeTable(data, selectable = false) {
     if (!data.rows.length) return element('p', 'gtu-caption', 'Нет данных для отображения');
     const wrap = element('div', 'gtu-table-wrap');
     const table = element('table', 'gtu-data-table');
     table.setAttribute('aria-label', titles[selected]);
     const row = table.createTHead().insertRow();
+    if (selectable) row.append(element('th', '', 'Для графика'));
     data.columns.forEach(name => { const th = element('th', '', name); th.scope = 'col'; row.append(th); });
     const body = table.createTBody();
-    data.rows.forEach(values => { const row = body.insertRow(); values.forEach(value => { row.insertCell().textContent = value; }); });
+    data.rows.forEach((values, index) => {
+      const row = body.insertRow();
+      if (selectable) {
+        const rank = data.pairs[index].rank;
+        const radio = element('input'); radio.type = 'radio';
+        radio.name = `compressor-pair-${data.period}`; radio.value = String(rank);
+        radio.dataset.compressorPair = String(data.period);
+        radio.setAttribute('aria-label', `Период ${data.period}: пара №${rank} для графика`);
+        radio.checked = rank === data.selected_rank;
+        radio.disabled = Boolean(model?.running || model?.exporting);
+        radio.onchange = () => send('compressorPair', {period:data.period, rank});
+        row.insertCell().append(radio);
+        row.classList.toggle('gtu-selected-pair', radio.checked);
+      }
+      values.forEach(value => { row.insertCell().textContent = value; });
+    });
     wrap.append(table);
     return wrap;
   }
   function renderView(keepScroll = true) {
+    const focus = panel.contains(document.activeElement) ? {
+      mode:document.activeElement.dataset.top10Mode,
+      period:document.activeElement.dataset.compressorPair,
+      value:document.activeElement.value, tag:document.activeElement.tagName
+    } : null;
     if (keepScroll) rememberScroll();
     panel.setAttribute('aria-labelledby', `tab-${selected}`);
     root.querySelectorAll('[data-tab]').forEach(button => button.setAttribute('aria-selected', String(button.dataset.tab === selected)));
@@ -153,8 +174,75 @@
     title.append(element('h3', '', titles[selected]));
     heading.append(title);
     const viewport = element('div', 'gtu-view-viewport');
+    viewport.dataset.scrollKey = selected === 'top10' ? `top10:${data.mode || 'table'}` : selected;
     panel.replaceChildren(heading, viewport);
-    if (data.type === 'figure') {
+    if (data.type === 'vna_top10') {
+      title.append(element('p', '', 'Пара выбирается отдельно для каждого периода. Выбор используется в графиках Excel и условиях Word.'));
+      const tabs = element('div', 'gtu-top10-tabs'); tabs.setAttribute('role', 'tablist');
+      tabs.setAttribute('aria-label', 'Представление ТОП-10 ВНА');
+      for (const [mode, label] of [['table','Таблица'], ['graphs','Графики']]) {
+        const button = element('button', 'gtu-action', label); button.type = 'button';
+        button.dataset.top10Mode = mode; button.setAttribute('role','tab');
+        button.id = `top10-${mode}`;
+        button.setAttribute('aria-controls','top10-content');
+        button.setAttribute('aria-selected',String(mode === data.mode));
+        button.onclick = () => send('top10Mode', {mode});
+        tabs.append(button);
+      }
+      tabs.onkeydown = event => {
+        if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
+        event.preventDefault();
+        const mode = data.mode === 'table' ? 'graphs' : 'table';
+        send('top10Mode', {mode});
+      };
+      heading.append(tabs);
+      viewport.id = 'top10-content'; viewport.setAttribute('role','tabpanel');
+      viewport.setAttribute('aria-labelledby',`top10-${data.mode}`);
+      const resizePlots = [];
+      data.tables.forEach(item => {
+        const section = element('section', 'gtu-table-section gtu-compressor-period');
+        const controls = element('div', 'gtu-compressor-controls');
+        controls.append(element('h4', '', data.mode === 'table' ? `Период ${item.period} · ТОП-10 ВНА · для графика пара №${item.selected_rank}` : `Период ${item.period} · пара №${item.selected_rank}`));
+        section.append(controls);
+        if (data.mode === 'table') {
+          section.append(makeTable(item, true));
+        } else {
+          const select = element('select', 'gtu-field gtu-compressor-select');
+          select.dataset.compressorPair = String(item.period);
+          select.setAttribute('aria-label',`Пара графика, период ${item.period}`);
+          item.pairs.forEach(pair => select.append(new Option(pair.label, String(pair.rank))));
+          select.value = String(item.selected_rank);
+          select.disabled = Boolean(model?.running || model?.exporting);
+          select.onchange = () => send('compressorPair', {period:item.period, rank:Number(select.value)});
+          controls.append(select);
+          if (item.preview?.src) {
+            const zoomKey = `compressor:${item.period}:${item.selected_rank}`;
+            zoom[zoomKey] = zoom[zoomKey] || 1;
+            const tools = element('div','gtu-row');
+            const label = element('span','gtu-caption');
+            const image = element('img','gtu-figure'); image.draggable = false;
+            image.alt = `Деградация компрессора, период ${item.period}, пара №${item.selected_rank}`;
+            const area = element('div','gtu-compressor-image');
+            const stage = element('div','gtu-figure-stage'); stage.append(image); area.append(stage);
+            const resize = () => { stage.style.width = `${area.clientWidth * zoom[zoomKey]}px`; label.textContent = `${Math.round(zoom[zoomKey]*100)} % · ${item.preview.points} точек`; };
+            for (const [text, scale] of [['−',1/1.2],['100 %',0],['+',1.2]]) {
+              const button = element('button','gtu-action',text); button.type = 'button';
+              button.setAttribute('aria-label',`${text === '−' ? 'Уменьшить' : text === '+' ? 'Увеличить' : 'По ширине'} график периода ${item.period}`);
+              button.onclick = () => { zoom[zoomKey] = scale ? Math.min(2.5,Math.max(.5,zoom[zoomKey]*scale)) : 1; resize(); };
+              tools.append(button);
+            }
+            tools.append(label); section.append(tools,area);
+            image.onload = resize; image.src = item.preview.src; resizePlots.push(resize);
+          } else {
+            const message = element('p','gtu-caption gtu-compressor-message', item.preview?.message || 'Подготовка графика…');
+            message.setAttribute('role','status'); section.append(message);
+          }
+        }
+        viewport.append(section);
+      });
+      viewport._resizeFigure = () => resizePlots.forEach(resize => resize());
+      if (!data.tables.length) viewport.append(element('p','gtu-caption','Нет подходящих пар ТОП-10 ВНА.'));
+    } else if (data.type === 'figure') {
       title.append(element('p', '', 'Колесо мыши — масштаб · 100 % — по ширине'));
       const controls = element('div', 'gtu-row');
       const reset = element('button', 'gtu-action', '100 %');
@@ -193,10 +281,17 @@
       });
       if (!data.tables.length) viewport.append(element('p', 'gtu-caption', 'Нет таблиц ТОП-10 для отображения'));
     }
-    if (data.type !== 'figure') requestAnimationFrame(() => viewport.scrollTo(...(scrolls[selected] || [0, 0])));
+    if (data.type !== 'figure') requestAnimationFrame(() => {
+      viewport.scrollTo(...(scrolls[viewport.dataset.scrollKey] || [0, 0]));
+      if (focus?.mode) byId(`top10-${data.mode}`)?.focus({preventScroll:true});
+      else if (focus?.period) [...panel.querySelectorAll('[data-compressor-pair]')]
+        .find(node => node.tagName === focus.tag && node.dataset.compressorPair === focus.period &&
+          (node.tagName === 'SELECT' || node.value === focus.value))?.focus({preventScroll:true});
+    });
   }
   function applyState(next) {
     model = next;
+    root.querySelectorAll('[data-compressor-pair]').forEach(node => { node.disabled = Boolean(model.running || model.exporting); });
     root.querySelectorAll('[data-control]').forEach(node => {
       const control = model.controls[node.dataset.control];
       node.disabled = control?.state === 'disabled';

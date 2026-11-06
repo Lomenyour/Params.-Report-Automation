@@ -32,6 +32,8 @@ $env:PATH = (($buildOriginalPath -split ';' | Where-Object {
              -not (Test-Path -LiteralPath (Join-Path $_ 'icuuc.dll')))
 }) -join ';')
 
+# Приложение не использует torch. Не захватывать необязательный пакет
+# локального Python через транзитивные импорты научных библиотек.
 py -m PyInstaller `
     --noconfirm `
     --clean `
@@ -39,6 +41,7 @@ py -m PyInstaller `
     --icon "$PSScriptRoot\scr\desktop_ui\app-icon.ico" `
     --name $Name `
     --paths "$PSScriptRoot\scr" `
+    --exclude-module torch `
     --collect-all CoolProp `
     --collect-all matplotlib `
     --collect-all python_calamine `

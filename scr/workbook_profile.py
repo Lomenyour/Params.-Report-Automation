@@ -68,6 +68,9 @@ SENSOR_ROLES = {'ambient_temperature':'ambient_temperature','relative_humidity':
     'exhaust_pressure':'exhaust_pressure','exhaust_temperature':'exhaust_temperature','power_factor':'power_factor'}
 REQUIRED = {'date','t','tkk','vna','p_atm_pa','p_kk_mpa','power','fuel','eta_compressor'}
 _CACHE = {}
+_FORMULA_PIECES = re.compile(r'''("(?:[^"]|"")*"|'(?:[^']|'')*')''')
+_RELATIVE_REFERENCE = re.compile(r'(?<![\w!$])(\$?[A-Z]{1,3})([0-9]+)')
+_COLUMN_PREFIX = re.compile('[A-Z]+')
 
 
 def profile_path():
@@ -95,6 +98,9 @@ def _formulas(path, first_sheet, last_row):
     if path.suffix.lower() not in ('.xlsx','.xlsm','.xltx','.xltm'):
         raise ValueError('Для чтения формул сохраните расчётную книгу в .xlsx или .xlsm. Готовые значения можно анализировать и без формул.')
     ns={'m':'http://schemas.openxmlformats.org/spreadsheetml/2006/main'}
+    cell_tag='{'+ns['m']+'}c'
+    formula_tag='{'+ns['m']+'}f'
+    row_tag='{'+ns['m']+'}row'
     with zipfile.ZipFile(path) as archive:
         workbook=ET.fromstring(archive.read('xl/workbook.xml'))
         first=workbook.find('m:sheets',ns)[0]
@@ -105,19 +111,22 @@ def _formulas(path, first_sheet, last_row):
         shared={}
         with archive.open(xml_path) as stream:
             for _,row in ET.iterparse(stream,events=['end']):
-                if row.tag.rsplit('}',1)[-1]!='row': continue
+                if row.tag!=row_tag: continue
                 rn=int(row.attrib['r'])
                 if rn>last_row: break
-                for cell in row.findall('m:c',ns):
-                    formula=cell.find('m:f',ns)
+                for cell in row.iterfind(cell_tag):
+                    formula=cell.find(formula_tag)
                     if formula is None: continue
                     address=cell.attrib['r']; text=formula.text
                     if formula.attrib.get('t')=='shared':
                         key=formula.attrib['si']
-                        if text: shared[key]=(address,text)
+                        if text: shared[key]=(address,text,None)
                         elif key in shared:
-                            origin,base=shared[key]
-                            text=Translator('='+base,origin=origin).translate_formula(address)[1:]
+                            origin,base,translator=shared[key]
+                            if translator is None:
+                                translator=Translator('='+base,origin=origin)
+                                shared[key]=(origin,base,translator)
+                            text=translator.translate_formula(address)[1:]
                     if not text: raise ValueError('Не восстановлена общая формула '+address)
                     yield address,rn,text
                 row.clear()
@@ -144,12 +153,12 @@ def read_layout(path):
         try:
             for address,rn,text in _formulas(path,book.sheet_names[0],last):
                 if rn<=header+1: continue
-                column=re.match('[A-Z]+',address)[0]
+                column=_COLUMN_PREFIX.match(address)[0]
                 if column not in headers: continue
                 # Normalize only unqualified relative references. Cross-sheet
                 # references stay literal; coefficient addresses are never guessed.
-                pieces=re.split(r'''("(?:[^"]|"")*"|'(?:[^']|'')*')''',text)
-                pattern=''.join(piece if i%2 else re.sub(r'(?<![\w!$])(\$?[A-Z]{1,3})([0-9]+)',
+                pieces=_FORMULA_PIECES.split(text)
+                pattern=''.join(piece if i%2 else _RELATIVE_REFERENCE.sub(
                     lambda m:m[1]+'@'+str(int(m[2])-rn),piece) for i,piece in enumerate(pieces))
                 key2=(column,pattern)
                 if key2 in patterns:

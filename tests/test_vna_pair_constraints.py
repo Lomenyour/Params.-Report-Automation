@@ -4,6 +4,7 @@ import io
 from pathlib import Path
 import sys
 import unittest
+from unittest.mock import patch
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -14,6 +15,44 @@ import VNA_full as vna
 
 
 class PairConstraintsTest(unittest.TestCase):
+    def test_top10_uses_distinct_displayed_days_before_limit_and_keeps_top1(self):
+        dates = pd.date_range('2026-01-01', periods=2, freq='1D')
+        data = pd.DataFrame({
+            'date': dates, 'vna': [86.21] * 2, 't': [10.] * 2,
+            'p': [990.] * 2, 'tkk': [370.] * 2, 'pi_k': [13.] * 2,
+            'eta_compressor': [80., 80.4],
+        })
+        base = vna._build_pair_result(
+            dates, *[data[col].to_numpy() for col in
+                     ('t', 'p', 'vna', 'tkk', 'pi_k', 'eta_compressor')], 0, 1)
+        candidates = [dict(base, vna_from=86., vna_to=87.,
+                           vna_interval=str(i), count=100-i, share_percent=50.,
+                           delta_days=days, delta_eta=eta)
+                      for i, (days, eta) in enumerate(
+                          [(100.0001, .7), (100., .1)] * 6 +
+                          [(float(day), .4) for day in range(99, 87, -1)])]
+        with patch.object(vna, '_find_flexible_vna_intervals', return_value=candidates), \
+                contextlib.redirect_stdout(io.StringIO()):
+            table, figure = vna.analyze_period(data, 1, show_plot=False)
+        plt.close(figure)
+        self.assertEqual(table.delta_days.tolist(), list(range(100, 90, -1)))
+        self.assertEqual(table.iloc[0].vna_interval, '0')
+        self.assertEqual(table.iloc[0].delta_eta, .7)
+        self.assertEqual(table['rank'].tolist(), list(range(1, 11)))
+
+    def test_top10_can_have_fewer_rows_and_identical_eta_for_distinct_days(self):
+        data = pd.DataFrame({
+            'date': pd.date_range('2026-01-01', periods=4, freq='1D'),
+            'vna': [86.01, 86.11, 86.21, 86.31], 't': [10.] * 4,
+            'p': [990.] * 4, 'tkk': [370.] * 4, 'pi_k': [13.] * 4,
+            'eta_compressor': [80.] * 4,
+        })
+        with contextlib.redirect_stdout(io.StringIO()):
+            table, figure = vna.analyze_period(data, 1, show_plot=False)
+        plt.close(figure)
+        self.assertEqual(table.delta_days.tolist(), [3., 2., 1.])
+        self.assertEqual(table.delta_eta.tolist(), [0., 0., 0.])
+
     def test_eta_limit_is_strict_at_decimal_boundary(self):
         data = pd.DataFrame({
             "date": pd.date_range("2026-01-01", periods=2, freq="1D"),

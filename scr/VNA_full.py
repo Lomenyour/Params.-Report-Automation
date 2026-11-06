@@ -497,7 +497,12 @@ def analyze_period(df, period_number, show_plot=True):
     result_df = result_df.sort_values(
         by=["delta_days", "count", "delta_eta"],
         ascending=[False, False, True],
-    ).head(TOP_INTERVALS).reset_index(drop=True)
+    )
+    # Разные окна могут дать одну длительность. Отбор выполняется до
+    # ограничения TOP-10, на точности итоговой таблицы; порядок прежний.
+    result_df = result_df.loc[
+        ~result_df["delta_days"].round(3).duplicated()
+    ].head(TOP_INTERVALS).reset_index(drop=True)
     result_df.insert(0, "rank", np.arange(1, len(result_df) + 1))
 
     # Сохраняем прежний состав и порядок полей итоговой таблицы.

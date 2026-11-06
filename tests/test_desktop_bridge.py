@@ -42,6 +42,17 @@ class DesktopBridgeTest(unittest.TestCase):
         thread.assert_not_called()
         confirm.assert_called_once()
 
+    def test_missing_previously_confirmed_book_reports_error_without_starting_worker(self):
+        self.choose_book()
+        c = self.controller
+        c.book_setup = object()
+        with patch.object(workflow.threading, 'Thread') as thread, \
+                patch.object(Path, 'stat', side_effect=FileNotFoundError('Книга удалена')):
+            c.start_calculation()
+        thread.assert_not_called()
+        c.messages.showerror.assert_called_once()
+        self.assertIn('недоступна', c.messages.showerror.call_args.args[0])
+
     def test_workbook_reader_keeps_qt_responsive_and_blocks_input_changes(self):
         from PySide6.QtCore import QTimer
         import time

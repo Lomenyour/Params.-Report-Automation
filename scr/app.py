@@ -529,7 +529,11 @@ class CalculationApp(tk.Tk):
         turbine = self._selected_turbine()
         station = self.stations_by_name.get(self.station_var.get())
         if setup and self.selected_file and turbine and station:
-            stat = self.selected_file.stat()
+            try:
+                stat = self.selected_file.stat()
+            except OSError as error:
+                messagebox.showerror('Основная книга недоступна', str(error), parent=self)
+                return False
             if (setup.station, setup.unit, setup.stamp) == (station.id, turbine.number,
                     (str(self.selected_file.resolve()), stat.st_mtime_ns, stat.st_size)):
                 return True
@@ -545,8 +549,10 @@ class CalculationApp(tk.Tk):
             return False
         try:
             self._append_log('Чтение параметров и формул основной книги…\n')
+            started = time.perf_counter()
             layout = read_layout(self.selected_file)
             rows = suggest_book_columns(layout, station.id, turbine.number)
+            self._append_log(f'Параметры и формулы прочитаны за {time.perf_counter()-started:.1f} с.\n')
             dialog = BookMappingDialog(self, layout, rows, station.id, turbine.number)
             self.wait_window(dialog)
             if dialog.result is None:

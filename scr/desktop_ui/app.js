@@ -343,10 +343,11 @@
           data.rows.forEach(item=>{
             const r=rows.insertRow(),label=r.insertCell();label.textContent=item.label;label.title=`Колонка ${item.column}`;
             const cell=r.insertCell();
-            cell.append(element('div','gtu-formula-text',item.application_owned?'Рассчитывается программой по принятой методике.':item.display_formula||item.error||'В книге нет единственной поддерживаемой формулы.'));
+            cell.append(element('div','gtu-caption',item.calculation_note));
+            if(!['application','preserved'].includes(item.calculation_status))cell.append(element('div','gtu-formula-text',item.display_formula||item.error||'В книге нет единственной поддерживаемой формулы.'));
             if(!item.application_owned){
               if(item.count)cell.append(element('div','gtu-caption',`Основная структура: ${item.count} из ${item.total} строк.`));
-              if(item.error)cell.append(element('div','gtu-validation-error',item.error));
+              if(item.error&&item.calculation_status!=='preserved')cell.append(element('div','gtu-validation-error',item.error));
               cell.append(sourceDetails(item));
             }
           });
@@ -363,7 +364,7 @@
         if(opened)preview(data=>{
           formulaPanel.replaceChildren(element('p','gtu-caption','Коэффициенты выбранных выражений прочитаны из текущей книги. Числа внутри выражений показаны в самих формулах.'));
           let groups=0;
-          data.rows.filter(item=>!item.application_owned).forEach(item=>{
+          data.rows.filter(item=>['target','dependency'].includes(item.calculation_status)).forEach(item=>{
             if(!item.coefficients.length&&!item.constant_value)return;
             groups++;
             const section=element('section','gtu-coefficient-group');

@@ -109,6 +109,7 @@ class LegacySummaryTests(unittest.TestCase):
         for row in (2,3,4):
             book['Данные'][f'Q{row}']=f'=R{row}+1'
             book['Данные'][f'R{row}']=f'=Q{row}+1'
+            book['Данные'][f'I{row}']=f'=H{row}/Q{row}'
         book['Данные']['S5']=0.
         book.save(self.path);layout,setup=self.setup_book()
         values=layout.values.iloc[:3].copy();before=values.copy(deep=True)

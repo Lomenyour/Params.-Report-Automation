@@ -149,6 +149,8 @@ class WorkbookModelTests(unittest.TestCase):
     def test_changed_neighbor_average_is_updated_while_unrelated_history_is_preserved(self):
         book=load_workbook(self.path);sheet=book['Данные'];sheet['Q1']='Среднее'
         for row in (2,3,4):sheet[f'Q{row}']=f'=AVERAGE(H{row}:H{row+1})'
+        # A helper is extended only when a mapped calculation actually uses it.
+        for row in (2,3,4):sheet[f'I{row}']=f'=Q{row}/N{row}'
         book.save(self.path)
         layout,_,setup=self.read();values=layout.values.copy();values['Q']=[102.5,103.5,777.]
         values.loc[1,'H']=200

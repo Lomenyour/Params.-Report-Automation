@@ -3,9 +3,9 @@ import tkinter as tk
 from tkinter import ttk, messagebox
 from tkinter.scrolledtext import ScrolledText
 
-from workbook_profile import ROLES, confirm, main_recipe, column_variants
+from workbook_profile import ROLES, confirm, main_recipe, column_variants, calculation_recipes
 from workbook_formulas import references
-from workbook_model import compile_model
+from workbook_model import compile_model, calculation_scope
 from formula_display import FormulaNotation, parameter_symbols
 
 KIND_LABELS={'measured':'Измеренный','computed':'Расчётный','service':'Служебный'}
@@ -51,15 +51,17 @@ def formula_view(layout,rows):
         missing={ref[1] for ref in references(choice['node'],'data')}-set(layout.headers)
         if missing:issues[col]='Не найдены входные столбцы: '+', '.join(sorted(missing));continue
         recipes[col]={key:choice.get(key) for key in ('node','step','phase')}
-    owned=application_columns(normalized)
-    recipes={col:recipe for col,recipe in recipes.items() if col not in owned}
+    columns,planned=calculation_recipes(layout,columns)
+    scope=calculation_scope(columns,planned)
+    owned={row['column'] for row in columns if row.get('excluded_calculation')=='legacy_losses'}
+    recipes={col:recipe for col,recipe in recipes.items() if col in planned}
     model,column_ids,source_ids=compile_model(columns,recipes,layout.constants,layout.header_row+2)
     symbols=parameter_symbols(columns,column_ids);sources={identifier:source for source,identifier in source_ids.items()}
     by_id={column_ids[row['column']]:row for row in columns}
     result=[]
     for row in normalized:
         col=row['column'];identifier=column_ids[col]
-        if row['kind']!='computed' or not str(row['header'] or '').strip():continue
+        if row['kind']!='computed' or (not str(row['header'] or '').strip() and col not in planned):continue
         choice=selected.get(col);formatter=FormulaNotation(symbols);expression='';error=issues.get(col,'')
         if identifier in model.recipes:
             try:expression=symbols[identifier]+' = '+formatter.render(model.recipes[identifier]['node'])
@@ -70,22 +72,34 @@ def formula_view(layout,rows):
         dependencies=[{'symbol':symbols[key],'label':ROLES.get(by_id[key]['role'],(by_id[key]['header'] or 'Безымянный вспомогательный столбец',''))[0],
                        'source':by_id[key]['column'],'unit':by_id[key]['unit'],'offset':offset}
                       for key,offset in formatter.dependencies]
-        result.append({'column':col,'label':ROLES.get(row['role'],(row['header'],''))[0],
+        status=('application' if col in owned else 'target' if col in scope['targets']
+                else 'dependency' if col in planned else 'preserved')
+        note={'application':'Старая формула потерь исключена. Перерасход и недовыработку рассчитывает программа.',
+              'target':'Пересчитывается: параметр назначен в маппинге.',
+              'dependency':'Пересчитывается: нужен в формуле назначенного параметра.',
+              'preserved':'Сохраняется без пересчёта: не входит в зависимости назначенных параметров.'}[status]
+        result.append({'column':col,'label':ROLES.get(row['role'],(row['header'] or col,''))[0],
                        'display_formula':expression,'error':error,'application_owned':col in owned,
+                       'calculation_status':status,'calculation_note':note,
                        'constant_value':bool(choice and choice.get('constant_value')),
                        'source_formula':choice['formula'] if choice else '',
                        'count':choice['count'] if choice else 0,'total':sum(v['count'] for v in row['variants']),
                        'coefficients':coefficients,'dependencies':dependencies,
                        'alternatives':[{'formula':variant['formula'],'count':variant['count']} for variant in row['variants'] if variant is not choice]})
-    return {'rows':result}
+    return {'rows':result,'plan':scope}
 
 
 def dialog_payload(layout, rows):
     owned=application_columns(rows)
+    columns,recipes=calculation_recipes(layout,rows)
+    scope=calculation_scope(columns,recipes)
+    needed=set(scope['targets'])|set(scope['calculated'])
+    needed.update(ref[1] for recipe in recipes.values() if recipe['node']
+                  for ref in references(recipe['node'],'data'))
     warnings=[layout.formula_error] if layout.formula_error else []
-    conflicts=[row['column'] for row in rows if row.get('formula_conflict')]
+    conflicts=[row['column'] for row in rows if row.get('formula_conflict') and row['column'] in needed]
     if conflicts: warnings.append('Нет единственной основной формулы: '+', '.join(conflicts)+'. Уточните выражения в книге перед импортом.')
-    changed=[row['column'] for row in rows if row.get('changed')]
+    changed=[row['column'] for row in rows if row.get('changed') and row['column'] in needed]
     if changed: warnings.append('Изменились формулы: '+', '.join(changed)+'. Проверьте расчётные выражения.')
     return {'kind':'bookMapping','title':'Основная книга — параметры и расчёт',
             'note':' '.join(warnings),
@@ -164,7 +178,7 @@ class BookMappingDialog(tk.Toplevel):
     def show_formulas(self):
         content='t — текущая строка, t+1 — следующая строка.\n\n'
         for item in formula_view(self.layout,self.current_rows())['rows']:
-            content+=item['label']+'\n'+(item['display_formula'] or ('Расчёт программы' if item['application_owned'] else item['error'] or 'Нет формулы'))
+            content+=item['label']+'\n'+item['calculation_note']+'\n'+(item['display_formula'] or item['error'])
             content+='\nExcel: '+item['source_formula']+'\n'
             content+='\n'.join(f"{coefficient['symbol']}: {coefficient['source']} = {coefficient['value']}" for coefficient in item['coefficients'])+'\n\n'
         show_text(self,'Расчётные формулы',content)

@@ -25,7 +25,7 @@ from parameter_mapping import parameter_for_header, header_unit
 from unit_conversions import canonical_unit, unit_factor, unit_info, unit_conversion, convert_units
 from workbook_formulas import FormulaParser, FormulaEvaluator, node_id, references, data_reference_columns
 from workbook_corrections import CORRECTION_ROLES, correction_role
-from workbook_model import compile_model
+from workbook_model import compile_model, calculation_scope
 
 MARKER = 'GTU_WORKBOOK_PROFILE_V1'
 PROFILE_SHEET = 'Профиль расчёта'
@@ -272,9 +272,18 @@ def suggestions(layout,station,unit):
     embedded_rows=layout.embedded_columns if layout.embedded_owner in (None,(station,str(unit))) else []
     embedded_counts=Counter(clean(row['header']) for row in embedded_rows if row.get('header'))
     embedded={clean(row['header']):row for row in embedded_rows if row.get('header') and embedded_counts[clean(row['header'])]==1}
+    # Portable values-only exports no longer contain formulas in preserved
+    # helpers. Restore their kinds too, only for a matching ordered layout.
+    # Readers may omit completely blank, unassigned trailing columns.
+    embedded_positions={row['column']:row for row in embedded_rows} if embedded_rows and all(
+        (row['column'] not in layout.headers and not row.get('header') and not row.get('role')) or
+        (row['column'] in layout.headers and clean(layout.headers[row['column']]) in {
+            clean(row.get('header')),clean(row.get('source_header',row.get('header')))})
+        for row in embedded_rows) else {}
     rows=[]
     for col,header in layout.headers.items():
-        previous=(old.get(clean(header)) or embedded.get(clean(header))) if header and counts[clean(header)]==1 else by_position.get(col)
+        previous=(old.get(clean(header)) or embedded.get(clean(header))) if header and counts[clean(header)]==1 else (
+            by_position.get(col) or embedded_positions.get(col))
         role=previous.get('role','') if previous else suggested_role(header,station)
         # Upgrade old generic correction assignments once. New explicit helper
         # choices carry mapping_version and must remain user-owned thereafter.
@@ -381,11 +390,13 @@ class BookSetup:
         model,column_ids,source_ids=compile_model(columns,self.recipes,self.constants,self.header_row+2)
         return {'schema_version':1,'station':self.station,'unit':self.unit,'columns':columns,
                 'recipes':self.recipes,'constants':self.constants,'calculation_model':model.to_dict(),
-                'source_bindings':{'columns':column_ids,'coefficients':source_ids}}
+                'source_bindings':{'columns':column_ids,'coefficients':source_ids},
+                'calculation_plan':calculation_scope(columns,self.recipes)}
 
     def recalculate(self,values,*,passport=None,changed_dates=None):
         overrides={}
-        recipes=copy.deepcopy(self.recipes)
+        scope=calculation_scope(self.columns,self.recipes)
+        recipes={key:copy.deepcopy(self.recipes[key]) for key in scope['calculated']}
         constants=dict(self.constants)
         if passport is not None:
             from gas_passport import gas_values
@@ -400,6 +411,7 @@ class BookSetup:
                     constants['Паспорт газа!density']=gas['density_kg_per_nm3']
         mask=None if changed_dates is None else pd.DatetimeIndex(pd.to_datetime(values[self.bindings['date']['column']])).isin(changed_dates)
         model,column_ids,_=compile_model(self.columns,recipes,constants,self.header_row+2)
+        order=model.execution_order([column_ids[key] for key in recipes])
         frame=values.rename(columns=column_ids)
         evaluator=model.evaluator(frame,{column_ids[key]:value for key,value in overrides.items()},mask)
         diagnostics={}
@@ -410,8 +422,10 @@ class BookSetup:
                 count=int((missing & evaluator.base_mask).sum())
                 if count: diagnostics['Нет входного значения '+column]=count
         calculated={}
-        for column,recipe in self.recipes.items():
-            result=evaluator.column(column_ids[column])
+        source_columns={identifier:column for column,identifier in column_ids.items()}
+        for identifier in order:
+            column=source_columns[identifier];recipe=recipes[column]
+            result=evaluator.column(identifier)
             # Every-second-row summaries keep the workbook's established phase.
             step=recipe.get('step') or 1; phase=recipe.get('phase') or 0
             if step>1:
@@ -431,27 +445,11 @@ class BookSetup:
         return {**dict(evaluator.errors),**diagnostics}
 
 
-def confirm(layout,station,unit,rows,*,save=True):
-    if layout.embedded_owner and layout.embedded_owner!=(station,str(unit)):
-        raise ValueError('Встроенный профиль расчёта относится к другой ТЭЦ или ГТУ.')
-    if len(rows)!=len(layout.headers) or {r.get('column') for r in rows}!=set(layout.headers):
-        raise ValueError('Набор колонок изменился. Повторно откройте проверку книги.')
-    columns=[]; recipes={}; assigned=set()
-    for row in rows:
-        col=row['column']; role=row.get('role',''); kind=row.get('kind','measured')
-        if role and role not in ROLES: raise ValueError('Неизвестный параметр '+role)
-        if role in assigned: raise ValueError('Параметр назначен дважды: '+ROLES[role][0])
-        if role: assigned.add(role)
-        source_unit=str(row.get('unit','')).strip()
-        target_unit=ROLES.get(role,('',''))[1]
-        if source_unit and target_unit and role not in ('hours_input','q_lower','gas_q_mass','gas_density','fuel_specific'):
-            unit_conversion(source_unit,target_unit)
-        if role in ('date','hours_input'): kind='service'
-        if kind not in ('measured','computed','service'): raise ValueError('Неизвестный тип колонки '+col)
-        if kind=='service' and role not in ('date','hours_input'):
-            raise ValueError('Служебный тип предназначен только для даты и наработки: '+col)
-        if role in CORRECTION_ROLES and kind!='computed':
-            raise ValueError('Поправка должна иметь расчётный тип: '+col)
+def calculation_recipes(layout, columns):
+    """Shared selection for confirmation, formula preview and exported profiles."""
+    columns=copy.deepcopy(columns);recipes={}
+    for row in columns:
+        col=row['column'];role=row.get('role','');kind=row['kind']
         variants=column_variants(layout,col,role)
         selected=main_recipe(variants)
         # Legacy loss formulas are intentionally excluded: the app owns them.
@@ -464,9 +462,8 @@ def confirm(layout,station,unit,rows,*,save=True):
             if node and node[:2]==['binary','/'] and node[3][0]=='number' and 0<node[3][1]<5:
                 if '3600.0' in json.dumps(node[2]) and info and info['dimension']=='normal_volume_flow':
                     recipes[col]['gas_density_conversion']=True
-        columns.append({'column':col,'header':layout.headers[col] or '', 'role':role,
-                        'unit':str(row.get('unit','')).strip(),'kind':kind,'recipe':selected['id'] if selected else '',
-                        'mapping_version':2,'formula_conflict':bool(variants and selected is None)})
+        row.update(recipe=selected['id'] if selected else '',formula_conflict=bool(variants and selected is None))
+        row.pop('excluded_calculation',None)
     excluded={col for col,h in layout.headers.items() if any(word in clean(h) for word in ('недовыработка','перерасход'))}
     service={row['column'] for row in columns if row['role'] in ('date','hours_input')}
     summary_dependencies={}
@@ -498,6 +495,33 @@ def confirm(layout,station,unit,rows,*,save=True):
     for col,item in list(recipes.items()):
         if item['error'] and not next(row['role'] for row in columns if row['column']==col):
             excluded.add(col); del recipes[col]
+    scope=calculation_scope(columns,recipes)
+    return columns,{key:recipes[key] for key in scope['calculated']}
+
+
+def confirm(layout,station,unit,rows,*,save=True):
+    if layout.embedded_owner and layout.embedded_owner!=(station,str(unit)):
+        raise ValueError('Встроенный профиль расчёта относится к другой ТЭЦ или ГТУ.')
+    if len(rows)!=len(layout.headers) or {r.get('column') for r in rows}!=set(layout.headers):
+        raise ValueError('Набор колонок изменился. Повторно откройте проверку книги.')
+    columns=[];assigned=set()
+    for row in rows:
+        col=row['column'];role=row.get('role','');kind=row.get('kind','measured')
+        if role and role not in ROLES: raise ValueError('Неизвестный параметр '+role)
+        if role in assigned: raise ValueError('Параметр назначен дважды: '+ROLES[role][0])
+        if role: assigned.add(role)
+        source_unit=str(row.get('unit','')).strip();target_unit=ROLES.get(role,('',''))[1]
+        if source_unit and target_unit and role not in ('hours_input','q_lower','gas_q_mass','gas_density','fuel_specific'):
+            unit_conversion(source_unit,target_unit)
+        if role in ('date','hours_input'): kind='service'
+        if kind not in ('measured','computed','service'): raise ValueError('Неизвестный тип колонки '+col)
+        if kind=='service' and role not in ('date','hours_input'):
+            raise ValueError('Служебный тип предназначен только для даты и наработки: '+col)
+        if role in CORRECTION_ROLES and kind!='computed':
+            raise ValueError('Поправка должна иметь расчётный тип: '+col)
+        columns.append({'column':col,'header':layout.headers[col] or '', 'role':role,
+                        'unit':source_unit,'kind':kind,'mapping_version':2})
+    columns,recipes=calculation_recipes(layout,columns)
     missing=REQUIRED-assigned
     if not assigned.intersection({'p_nk_pa','inlet_pressure_drop'}): missing.add('p_nk_pa')
     if missing: raise ValueError('Назначьте параметры: '+', '.join(ROLES[k][0] for k in sorted(missing)))
@@ -517,7 +541,12 @@ def confirm(layout,station,unit,rows,*,save=True):
 
 
 def validate_recalculation(setup):
+    scope=calculation_scope(setup.columns,setup.recipes)
+    needed=set(scope['targets'])|set(scope['calculated'])
+    needed.update(ref[1] for recipe in setup.recipes.values() if recipe['node']
+                  for ref in references(recipe['node'],'data'))
     for row in setup.columns:
+        if row['column'] not in needed: continue
         if row.get('formula_conflict') and row['kind']=='computed':
             raise ValueError('Колонка '+row['column']+': разные формулы встречаются одинаково часто. Уточните основную зависимость в исходной книге.')
         if row['role'] in CORRECTION_ROLES and row['column'] not in setup.recipes:
@@ -530,9 +559,15 @@ def validate_recalculation(setup):
             if key not in setup.constants: raise ValueError('В текущей книге отсутствует коэффициент '+key)
         for reference in references(recipe['node'],'data'):
             row=next((r for r in setup.columns if r['column']==reference[1]),None)
+            if row is None:
+                raise ValueError(f"Для {column} не найден входной столбец {reference[1]}.")
             if row and row['kind']=='computed' and row['role'] not in ('date','hours_input') and row['column'] not in setup.recipes:
                 raise ValueError(f"Для {column} нужна неподдерживаемая формула {row['column']}.")
-    for role in ('power','fuel','fuel_specific','eta_compressor'):
-        row=setup.bindings.get(role)
-        if row and row['column'] not in setup.recipes:
+    passport_roles={'gas_density','gas_c_h','gas_q_mass','q_lower'}
+    for role,row in setup.bindings.items():
+        required=role in ('power','fuel','fuel_specific','eta_compressor') or (
+            row['kind']=='computed' and role not in passport_roles)
+        if required and row['column'] not in setup.recipes:
             raise ValueError('Для новых строк нет формулы: '+ROLES[role][0]+'. Нужна книга с формулами либо встроенным профилем расчёта.')
+    model,column_ids,_=compile_model(setup.columns,setup.recipes,setup.constants,setup.header_row+2)
+    model.execution_order([column_ids[key] for key in scope['calculated']])

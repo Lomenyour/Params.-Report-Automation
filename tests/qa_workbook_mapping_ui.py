@@ -54,10 +54,11 @@ try:
     c=window.controller;c.messages.showerror=Mock()
     with tempfile.TemporaryDirectory() as temporary,patch('workbook_profile.profile_path',return_value=Path(temporary)/'profiles.json'):
         path=Path(temporary)/'book.xlsx';fixture(path)
-        book=load_workbook(path);sheet=book['Данные'];sheet['N1']='kTN';sheet['R1']='Дополнительный датчик';sheet['S1']='kPη'
+        book=load_workbook(path);sheet=book['Данные'];sheet['N1']='kTN';sheet['R1']='Дополнительный датчик';sheet['S1']='kPη';sheet['T1']='Посторонний итог'
         for col,label in (('V','kφN'),('W','kPN'),('X','kΔPвхN'),('Y','kΔPвыхN')):sheet[f'{col}1']=label
         for row in (2,3,4):
             sheet[f'Q{row}']=f'=H{row}+1';sheet[f'R{row}']=0;sheet[f'S{row}']=1
+            sheet[f'M{row}']=f'=84+Q{row}*0';sheet[f'T{row}']=f'=H{row}*2'
             for col in ('V','W','X','Y'):sheet[f'{col}{row}']=1
             sheet[f'I{row}']=f'=H{row}/(V{row}*W{row}*X{row}*N{row}*Y{row})'
         book.save(path)
@@ -92,6 +93,8 @@ try:
             assert js("document.querySelector('.gtu-book-table').hidden&&!document.querySelector('.gtu-book-formulas').hidden")
             assert js("document.querySelector('.gtu-formula-table').textContent.includes('H2/(V2*W2*X2*N2*Y2)')")
             assert js("document.querySelectorAll('[aria-label^=\"Формула \"]').length===0")
+            assert js("document.querySelector('.gtu-formula-table').textContent.includes('Сохраняется без пересчёта')")
+            assert js("document.querySelector('.gtu-formula-table').textContent.includes('нужен в формуле назначенного параметра')")
             window.view.grab().save(str(ROOT/f'build_test/workbook-formulas-{size[0]}.png'))
             js("document.querySelector('[data-book-formulas]').click()");pump(.05)
             choose('Параметр N','Поправка температуры на КПД')
@@ -109,6 +112,7 @@ try:
             assert dialog.result.bindings['date']['column']=='C'
             assert dialog.result.bindings['t']['column']=='A'
             assert 'Q' in dialog.result.recipes
+            assert 'T' not in dialog.result.recipes
             assert not (Path(temporary)/'profiles.json').exists()
         setup=confirm(layout,'station','1',rows,save=False)
         coefficients=BookCorrectionsDialog(c,setup);pump(.15)

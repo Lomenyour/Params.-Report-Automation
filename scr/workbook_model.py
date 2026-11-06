@@ -8,7 +8,29 @@ import copy
 import hashlib
 import json
 
-from workbook_formulas import FormulaEvaluator
+from workbook_formulas import FormulaEvaluator, references
+
+
+def select_recipes(recipes, targets):
+    """Select only requested outputs and their transitive formula dependencies."""
+    selected=set(); pending=list(targets)
+    while pending:
+        key=pending.pop()
+        if key in selected or key not in recipes: continue
+        selected.add(key)
+        if recipes[key]['node'] is not None:
+            pending.extend(ref[1] for ref in references(recipes[key]['node'],'data'))
+    return {key:value for key,value in recipes.items() if key in selected}
+
+
+def calculation_scope(columns, recipes):
+    """The adapter explicitly names outputs; unassigned formulas are dependencies only."""
+    targets=[row['column'] for row in columns if row.get('role') and row['kind']=='computed']
+    selected=select_recipes(recipes,targets)
+    return {'targets':targets,'calculated':list(selected),
+            'dependencies':[key for key in selected if key not in targets],
+            'preserved':[row['column'] for row in columns
+                         if row['kind']=='computed' and row['column'] not in selected and row['column'] not in targets]}
 
 
 def _digest(value):
@@ -51,6 +73,31 @@ class CalculationModel:
         constants={'coefficients!'+key:value for key,value in self.coefficients.items()}
         return FormulaEvaluator(values,self.recipes,constants,overrides,self.record_origin,active_mask,
                                 labels={key:value['label'] for key,value in self.parameters.items()})
+
+    def execution_order(self, targets):
+        """Validate the reachable graph before any numeric evaluation or writes."""
+        ordered=[]; visiting=[]; visited=set()
+        def visit(key):
+            label=self.parameters.get(key,{}).get('label',key)
+            if key not in self.parameters:
+                raise ValueError('Не найден входной параметр '+label)
+            if key in visited: return
+            if key in visiting:
+                chain=visiting[visiting.index(key):]+[key]
+                raise ValueError('Циклическая зависимость расчётной колонки '+
+                                 ' → '.join(self.parameters[item]['label'] for item in chain))
+            if key not in self.recipes:
+                if self.parameters[key]['kind']=='computed':
+                    raise ValueError('Нужна неподдерживаемая формула параметра '+label)
+                return
+            recipe=self.recipes[key]
+            if recipe['node'] is None:
+                raise ValueError('Нет поддерживаемой формулы параметра '+label)
+            visiting.append(key)
+            for ref in references(recipe['node'],'data'): visit(ref[1])
+            visiting.pop(); visited.add(key); ordered.append(key)
+        for target in targets: visit(target)
+        return ordered
 
 
 def compile_model(columns, recipes, constants, record_origin=2):

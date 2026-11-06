@@ -932,6 +932,11 @@ class CalculationApp(tk.Tk):
                 assembled = None
                 if raw_file_path is not None:
                     validate_recalculation(book_setup)
+                    plan=book_setup.metadata()['calculation_plan']
+                    labels={row['column']:row['header'] or row['column'] for row in book_setup.columns}
+                    for title,key in (('Расчётные параметры','targets'),('Зависимые вспомогательные колонки','dependencies'),
+                                      ('Расчётные колонки без пересчёта','preserved')):
+                        print(title+': '+', '.join(f'{column} — {labels[column]}' for column in plan[key]))
                     print(f"Исходная выгрузка: {raw_file_path.name}, лист: {raw_sheet}")
                     assembled = assemble_sensor_data(
                         file_path, raw_file_path, raw_sheet, mappings or [],

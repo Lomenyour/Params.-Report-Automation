@@ -34,7 +34,7 @@ def main():
             continue
         assert normalized(actual) == normalized(compile(source.read_bytes(), str(source), 'exec')), source
         modules.append(source.stem)
-    assert {'degradation_chart', 'pressure_chart', 'reporting', 'RH_raschet'} <= set(modules)
+    assert {'degradation_chart', 'pressure_chart', 'reporting', 'RH_raschet', 'rh_display'} <= set(modules)
     for source in (root/'scr/desktop_ui').iterdir():
         if source.is_file():
             assert source.read_bytes() == (bundle/'_internal/desktop_ui'/source.name).read_bytes(), source

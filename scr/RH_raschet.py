@@ -1389,16 +1389,16 @@ PLOT_CELL_W = 9.0      # ширина одной ячейки, дюймов, д�
 PLOT_CELL_H = 6.0      # высота одной ячейки, дюймов
 
 
-def select_rh_variants(results):
-    """По одному из уже предложенных вариантов: первый kкон ≥ kнач, иначе первый."""
+def select_rh_variants(results, values=None):
+    """Первый bкон > bнач с END выше START на всём участке, иначе первый."""
+    from rh_display import dirty_above_clean, power_bounds
     groups = {}
     for result in results:
         groups.setdefault(result["period"], []).append(result)
     selected = []
     for candidates in groups.values():
         chosen = next((row for row in candidates
-            if np.isfinite(row["k_start"]) and np.isfinite(row["k_end"])
-            and row["k_end"] >= row["k_start"]), candidates[0])
+                       if dirty_above_clean(row, power_bounds(values, row))), candidates[0])
         selected.append(chosen)
     return selected
 
@@ -1411,7 +1411,8 @@ def rh_equation(name, slope, intercept):
 
 def plot_selected_windows(df, results, show=True):
 
-    results = select_rh_variants(results)
+    from rh_display import window_points, power_bounds, dirty_above_clean, parallel_state_arrows
+    results = select_rh_variants(results, df)
 
     if not results:
         print("Нет найденных результатов.")
@@ -1435,6 +1436,7 @@ def plot_selected_windows(df, results, show=True):
     )
 
     flat_axes = axes.ravel()
+    annotations = []
 
     for position, result in enumerate(results):
 
@@ -1453,17 +1455,8 @@ def plot_selected_windows(df, results, show=True):
         end_begin = result["end_window_begin"]
         end_end = result["end_window_end"]
 
-        start_data = df[
-            (df["period"] == period) &
-            (df["date"] >= start_begin) &
-            (df["date"] <= start_end)
-        ].copy()
-
-        end_data = df[
-            (df["period"] == period) &
-            (df["date"] >= end_begin) &
-            (df["date"] <= end_end)
-        ].copy()
+        start_data = window_points(df, result, 'start')
+        end_data = window_points(df, result, 'end')
 
         if start_data.empty or end_data.empty:
             print(
@@ -1472,6 +1465,9 @@ def plot_selected_windows(df, results, show=True):
             )
             ax.axis("off")
             continue
+        if not dirty_above_clean(result, power_bounds(df, result)):
+            print(f"РХ, период {period}: предпочтительная пара с bкон > bнач "
+                  "и END выше START на всём участке не найдена; показан первый кандидат.")
 
         # ====================================================
         # КОЭФФИЦИЕНТЫ РЕГРЕССИИ
@@ -1570,14 +1566,16 @@ def plot_selected_windows(df, results, show=True):
         # ИНФОРМАЦИЯ
         # ====================================================
 
-        for x, y, title, date, k, b, color in (
-            (.03, .95, "Условно-загрязнённое", end_begin, k_end, b_end, "#C00000"),
-            (.42, .24, "Условно-чистое", start_begin, k_start, b_start, "#4472C4"),
+        boxes = {}
+        for prefix, x, y, title, date, k, b, color in (
+            ('end', .03, .95, "Условно-загрязнённое", end_begin, k_end, b_end, "#C00000"),
+            ('start', .42, .24, "Условно-чистое", start_begin, k_start, b_start, "#4472C4"),
         ):
             text = f"{title} состояние {date:%d.%m.%Y}\n{rh_equation('B', k, b)}"
-            ax.text(x, y, text,
+            boxes[prefix] = ax.text(x, y, text,
                 transform=ax.transAxes, va="top", fontsize=10, fontfamily="Times New Roman",
                 bbox=dict(boxstyle="square,pad=0.3", facecolor="white", edgecolor=color))
+        annotations.append((ax, result, boxes, (float(all_power.min()), float(all_power.max()))))
 
         ax.grid(
             True,
@@ -1595,6 +1593,21 @@ def plot_selected_windows(df, results, show=True):
         ax.axis("off")
 
     fig.tight_layout()
+    fig.canvas.draw()
+    renderer = fig.canvas.get_renderer()
+    for ax, result, boxes, bounds in annotations:
+        starts = {}
+        for prefix, text in boxes.items():
+            frame = text.get_bbox_patch().get_window_extent(renderer)
+            edge = (frame.y0 if prefix == 'end' else frame.y1)
+            starts[prefix] = tuple(ax.transAxes.inverted().transform(((frame.x0 + frame.x1) / 2, edge)))
+        arrows = parallel_state_arrows(result, ax.get_xlim(), ax.get_ylim(), starts, bounds)
+        for prefix, color in (('end', '#C00000'), ('start', '#4472C4')):
+            beginning, target = arrows[prefix]
+            arrow = ax.annotate('', xy=target, xytext=beginning,
+                arrowprops=dict(arrowstyle='->', color=color, lw=1.2,
+                                shrinkA=0, shrinkB=0, connectionstyle='arc3,rad=0'))
+            arrow.set_in_layout(False)
     if show:
         maximize_window()
     if show:

@@ -19,6 +19,7 @@ from openpyxl.styles import Alignment, Font, PatternFill
 from chart_text import rich_text, label_series, fitted_label_layout
 from chart_layout import cell_anchor, cell_size_points
 from RH_raschet import select_rh_variants, rh_equation
+from rh_display import window_points, parallel_state_arrows
 
 
 @dataclass
@@ -42,14 +43,10 @@ def prepare_rh_plots(values, results):
     if values is None or values.empty or not results:
         return []
     plots = []
-    for result in select_rh_variants(results):
+    for result in select_rh_variants(results, values):
         parts = []
         for prefix in ("start", "end"):
-            dates = pd.to_datetime(values["date"], errors="coerce")
-            part = values.loc[(values["period"] == result["period"])
-                & (dates >= result[f"{prefix}_window_begin"])
-                & (dates <= result[f"{prefix}_window_end"])].copy()
-            part = part.sort_values("date", kind="stable")
+            part = window_points(values, result, prefix)
             if part.empty:
                 break
             for key in ("power", "fuel"):
@@ -194,20 +191,28 @@ def add_rh_charts(sheet, plots, start_row, *, two_columns=True):
                                     x, dirty, "Линия загрязнённая", "C00000", True))
         xlow, xhigh = chart.x_axis.scaling.min, chart.x_axis.scaling.max
         ylow, yhigh = chart.y_axis.scaling.min, chart.y_axis.scaling.max
-        for prefix, name, state, xr, yr, target_fraction, color in (
-            ("end", "Bзагр", "Условно-загрязнённое", .36, .84, .50, "C00000"),
-            ("start", "Bчист", "Условно-чистое", .65, .21, .88, "4472C4"),
+        labels, starts = {}, {}
+        for prefix, name, state, xr, yr, color in (
+            ("end", "Bзагр", "Условно-загрязнённое", .36, .84, "C00000"),
+            ("start", "Bчист", "Условно-чистое", .65, .21, "4472C4"),
         ):
             text = (f'"{state}"\nсостояние {result[f"{prefix}_window_begin"]:%d.%m.%Y}\n'
                     f"{rh_equation(name, result[f'k_{prefix}'], result[f'b_{prefix}'])}")
-            target_x = float(x[0] + (x[-1] - x[0]) * target_fraction)
-            target_y = result[f"k_{prefix}"] * target_x + result[f"b_{prefix}"]
-            chart.series.append(_arrow((xlow + (xhigh-xlow)*xr, ylow + (yhigh-ylow)*yr),
-                                       (target_x, target_y), color))
+            layout = fitted_label_layout(text, cell_size_points(sheet,column,top+2,14,33),
+                                         (.16+.79*xr, .04+.79*(1-yr)))
+            frame = layout.manualLayout
+            edge_y = frame.y + frame.h if prefix == 'end' else frame.y
+            starts[prefix] = ((frame.x + frame.w / 2 - .16) / .79,
+                              1 - (edge_y - .04) / .79)
+            labels[prefix] = (text, xr, yr, color, layout)
+        arrows = parallel_state_arrows(result, (xlow, xhigh), (ylow, yhigh),
+                                       starts, (float(x[0]), float(x[-1])))
+        for prefix in ('end', 'start'):
+            text, xr, yr, color, layout = labels[prefix]
+            chart.series.append(_arrow(*arrows[prefix], color))
             chart.series.append(label_series(xlow + (xhigh - xlow) * xr,
                 ylow + (yhigh - ylow) * yr, text, bold=True, color=color, size=1400,
-                layout=fitted_label_layout(text, cell_size_points(sheet,column,top+2,14,33),
-                                           (.16+.79*xr, .04+.79*(1-yr)))))
+                layout=layout))
         chart.legend.legendEntry = [LegendEntry(idx=i, delete=True) for i in range(2, len(chart.series))]
         sheet.add_chart(chart, cell_anchor(column, top + 2, 14, 33))
         bottom = max(bottom, top + 35)

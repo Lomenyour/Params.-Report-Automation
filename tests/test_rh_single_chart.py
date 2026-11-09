@@ -15,20 +15,21 @@ from openpyxl import Workbook, load_workbook
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scr"))
 from RH_raschet import select_rh_variants, plot_selected_windows
 from rh_chart import prepare_rh_plots, add_rh_charts
+from rh_display import power_bounds, dirty_above_clean, parallel_state_arrows
 
 
 class RHSingleChartTest(unittest.TestCase):
-    def candidate(self, rank, end_slope, period=1):
+    def candidate(self, rank, end_slope, period=1, end_b=6600.):
         first = pd.Timestamp(2026, period, 1)
         return {"period": period, "rank": rank, "k_start": 200., "k_end": end_slope,
-                "b_start": 6500., "b_end": 6300.,
+                "b_start": 6500., "b_end": end_b,
                 "start_window_begin": first, "start_window_end": first + pd.Timedelta(hours=23.5),
                 "end_window_begin": first + pd.Timedelta(days=2),
                 "end_window_end": first + pd.Timedelta(days=2, hours=23.5)}
 
     def values(self):
         result = []
-        for start, k, b in (("2026-01-01", 200., 6500.), ("2026-01-03", 201., 6300.)):
+        for start, k, b in (("2026-01-01", 200., 6500.), ("2026-01-03", 201., 6600.)):
             for index, date in enumerate(pd.date_range(start, periods=48, freq="30min")):
                 power = 65. + index * .4
                 result.append({"date": date, "period": 1, "power": power,
@@ -36,26 +37,54 @@ class RHSingleChartTest(unittest.TestCase):
         return pd.DataFrame(result)
 
     def test_selection_first_second_third_equal_fallback_and_short_lists(self):
-        for slopes, rank in (([201., 202., 203.], 1), ([199., 200., 201.], 2),
-                             ([199., 198., 201.], 3), ([199., 198., 197.], 1),
-                             ([200.], 1), ([199., 201.], 2)):
-            with self.subTest(slopes=slopes):
-                rows = [self.candidate(i + 1, slope) for i, slope in enumerate(slopes)]
+        for intercepts, rank in (([6600., 6700., 6800.], 1), ([6400., 6600., 6700.], 2),
+                             ([6400., 6300., 6600.], 3), ([6400., 6300., 6200.], 1),
+                             ([6500.], 1), ([6500., 6600.], 2), ([6500., 6500., 6600.], 3)):
+            with self.subTest(intercepts=intercepts):
+                rows = [self.candidate(i + 1, 200., end_b=b) for i, b in enumerate(intercepts)]
                 original = copy.deepcopy(rows)
-                self.assertEqual(select_rh_variants(rows)[0]["rank"], rank)
+                self.assertEqual(select_rh_variants(rows, self.values())[0]["rank"], rank)
                 self.assertEqual(rows, original)
         self.assertEqual(select_rh_variants([]), [])
 
-    def test_each_period_selected_independently_without_line_position_criterion(self):
-        rows = [self.candidate(1, 199.), self.candidate(2, 201.),
-                self.candidate(1, 199., 2), self.candidate(2, 198., 2)]
-        selected = select_rh_variants(rows)
+    def test_each_period_selected_independently_by_signed_b(self):
+        rows = [self.candidate(1, 200., end_b=6400.), self.candidate(2, 199., end_b=6800.),
+                self.candidate(1, 200., 2), self.candidate(2, 200., 2)]
+        second = self.values()
+        second['period'] = 2
+        second['date'] += pd.DateOffset(months=1)
+        selected = select_rh_variants(rows, pd.concat([self.values(), second]))
         self.assertEqual([(row["period"], row["rank"]) for row in selected], [(1, 2), (2, 1)])
-        # END с большим k может быть ниже из-за меньшего b: это не отменяет выбор.
-        self.assertLess(selected[0]["k_end"] * 70 + selected[0]["b_end"], 200 * 70 + 6500)
+        self.assertLess(selected[0]['k_end'], selected[0]['k_start'])
+        negative = [self.candidate(1, 200., end_b=-3500.), self.candidate(2, 200., end_b=-3300.)]
+        for row in negative:
+            row['b_start'] = -3400.
+        self.assertEqual(select_rh_variants(negative, self.values())[0]['rank'], 2)
+
+    def test_five_percent_slope_tolerance_does_not_prevent_crossing(self):
+        rows = [self.candidate(1, 198., end_b=6650.), self.candidate(2, 199., end_b=6800.)]
+        bounds = power_bounds(self.values(), rows[0])
+        self.assertLess(abs(rows[0]['k_end']/rows[0]['k_start'] - 1), .05)
+        self.assertLess(abs(rows[0]['b_end']/rows[0]['b_start'] - 1), .05)
+        self.assertTrue(bounds[0] < 75 < bounds[1])
+        self.assertFalse(dirty_above_clean(rows[0], bounds))
+        self.assertTrue(dirty_above_clean(rows[1], bounds))
+        self.assertEqual(select_rh_variants(rows, self.values())[0]['rank'], 2)
+        self.assertIs(select_rh_variants(rows[:1], self.values())[0], rows[0])
+        rows[0]['k_end'] = float('nan')
+        self.assertEqual(select_rh_variants(rows, self.values())[0]['rank'], 2)
+
+    def test_manual_axis_fallback_keeps_both_arrows_at_degenerate_direction(self):
+        result = dict(k_start=-38., k_end=-40., b_start=10., b_end=11.)
+        arrows = parallel_state_arrows(result, (0.,1.), (0.,1.),
+            {'end':(.3,.8), 'start':(.7,.3)}, (0.,1.))
+        self.assertEqual(set(arrows), {'end','start'})
+        for prefix, (_, target) in arrows.items():
+            self.assertTrue(np.isfinite(target).all())
+            self.assertAlmostEqual(target[1],result[f'k_{prefix}']*target[0]+result[f'b_{prefix}'])
 
     def test_excel_and_gui_use_same_candidate_and_preserve_window_values(self):
-        rows = [self.candidate(1, 199.), self.candidate(2, 201.), self.candidate(3, 202.)]
+        rows = [self.candidate(1, 200., end_b=6400.), self.candidate(2, 201.), self.candidate(3, 202.)]
         values = self.values()
         original = values.copy(deep=True)
         plots = prepare_rh_plots(values, rows)
@@ -66,6 +95,20 @@ class RHSingleChartTest(unittest.TestCase):
         self.assertEqual(len([axis for axis in figure.axes if axis.has_data()]), 1)
         self.assertIn("вариант №2", figure.axes[0].get_title())
         self.assertEqual(figure.axes[0].xaxis.label.get_size(), 16)
+        axis = figure.axes[0]
+        texts = [text for text in axis.texts if text.get_bbox_patch() is not None]
+        arrows_gui = [text for text in axis.texts if getattr(text, 'arrow_patch', None) is not None]
+        self.assertEqual(len(arrows_gui), 2)
+        vectors = []
+        for box, arrow, prefix in zip(texts, arrows_gui, ('end', 'start')):
+            rect = box.get_bbox_patch().get_window_extent(figure.canvas.get_renderer())
+            expected = ((rect.x0 + rect.x1) / 2, rect.y0 if prefix == 'end' else rect.y1)
+            actual = axis.transData.transform(arrow.get_position())
+            np.testing.assert_allclose(actual, expected, atol=1e-6)
+            end = axis.transData.transform(arrow.xy)
+            vectors.append(end - actual)
+            self.assertAlmostEqual(arrow.xy[1], plots[0].result[f'k_{prefix}']*arrow.xy[0]+plots[0].result[f'b_{prefix}'])
+        self.assertAlmostEqual(vectors[0][0]*vectors[1][1] - vectors[0][1]*vectors[1][0], 0., places=6)
         book = Workbook(write_only=True)
         sheet = book.create_sheet("Графики")
         cells, bottom = add_rh_charts(sheet, plots, 1)
@@ -102,6 +145,23 @@ class RHSingleChartTest(unittest.TestCase):
                 x = float(arrow.findall('c:xVal/c:numLit/c:pt/c:v', ns)[-1].text)
                 y = float(arrow.findall('c:yVal/c:numLit/c:pt/c:v', ns)[-1].text)
                 self.assertAlmostEqual(y, plots[0].result[f'k_{prefix}']*x + plots[0].result[f'b_{prefix}'])
+            axes = chart.findall('.//c:valAx', ns)
+            scales = [(float(a.find('c:scaling/c:min', ns).get('val')),
+                       float(a.find('c:scaling/c:max', ns).get('val'))) for a in axes]
+            vectors = []
+            labels = chart.findall('.//c:dLbl/c:layout/c:manualLayout', ns)
+            for arrow, label, prefix in zip(arrows, labels, ('end', 'start')):
+                xs = [float(v.text) for v in arrow.findall('c:xVal//c:pt/c:v', ns)]
+                ys = [float(v.text) for v in arrow.findall('c:yVal//c:pt/c:v', ns)]
+                rect = {key: float(label.find(f'c:{key}', ns).get('val')) for key in ('x','y','w','h')}
+                xn = (rect['x'] + rect['w']/2 - .16)/.79
+                yn = 1 - (rect['y'] + (rect['h'] if prefix == 'end' else 0) - .04)/.79
+                self.assertAlmostEqual(xs[0], scales[0][0] + xn*(scales[0][1]-scales[0][0]))
+                self.assertAlmostEqual(ys[0], scales[1][0] + yn*(scales[1][1]-scales[1][0]))
+                vectors.append((xs[1]-xs[0],ys[1]-ys[0]))
+                self.assertTrue(values.power.min() <= xs[1] <= values.power.max())
+            cross = vectors[0][0]*vectors[1][1] - vectors[0][1]*vectors[1][0]
+            self.assertAlmostEqual(cross, 0., places=6)
         output.seek(0)
         saved = load_workbook(output)
         data = saved["Данные РХ"]

@@ -88,6 +88,7 @@ ZONE_SIZE = 48 * DAYS_ZONE # 480 записей
 
 # Допуски
 K_TOLERANCE = 0.05
+K_TOLERANCE_STEPS = (K_TOLERANCE, 0.06, 0.07)
 B_TOLERANCE = 0.05
 
 # Сколько ближайших/первых вариантов оставлять для диагностики поиска.
@@ -287,7 +288,7 @@ def make_windows(period_df, zone_type, period_number, zone_size):
 # ПОИСК ПАР
 # ============================================================
 
-def find_pairs(start_windows, end_windows):
+def build_rh_pairs(start_windows, end_windows):
     pairs = []
 
     for _, start in start_windows.iterrows():
@@ -324,14 +325,17 @@ def find_pairs(start_windows, end_windows):
                 "power_max": max(start["power_max"], end["power_max"]),
             })
 
-    pairs_df = pd.DataFrame(pairs)
+    return pd.DataFrame(pairs)
 
+
+def rank_rh_pairs(pairs_df, k_tolerance=K_TOLERANCE):
+    """Apply one k threshold, the unchanged b threshold and the original order."""
     if pairs_df.empty:
         return pd.DataFrame(), pd.DataFrame()
 
     pairs_k = pairs_df[
         np.isfinite(pairs_df["delta_k_pct"]) &
-        (pairs_df["delta_k_pct"] <= K_TOLERANCE * 100)
+        (pairs_df["delta_k_pct"] <= k_tolerance * 100)
     ].copy()
 
     pairs_b = pairs_k[
@@ -347,7 +351,8 @@ def find_pairs(start_windows, end_windows):
         ).reset_index(drop=True)
 
         top3 = pairs_b.head(TOP_N_EXPORT).copy()
-        top3["status"] = "Прошла фильтры Δk ≤ 5% и Δb ≤ 5%"
+        top3["status"] = (f"Прошла фильтры Δk ≤ {k_tolerance*100:g}% "
+                          f"и Δb ≤ {B_TOLERANCE*100:g}%")
         return top3, pairs_b
 
     nearest = pairs_df.sort_values(
@@ -356,8 +361,13 @@ def find_pairs(start_windows, end_windows):
         kind="mergesort"
     ).head(TOP_N_EXPORT).copy()
 
-    nearest["status"] = "Нет пары ≤5%; показаны ближайшие"
+    nearest["status"] = (f"Нет пары с Δk ≤ {k_tolerance*100:g}% "
+                         f"и Δb ≤ {B_TOLERANCE*100:g}%; показаны ближайшие")
     return nearest, pairs_b
+
+
+def find_pairs(start_windows, end_windows, k_tolerance=K_TOLERANCE):
+    return rank_rh_pairs(build_rh_pairs(start_windows, end_windows), k_tolerance)
 
 
 def select_rh_pair(top_candidates, admissible):
@@ -378,6 +388,26 @@ def select_rh_pair(top_candidates, admissible):
     selected["preferred"] = bool(len(positions))
     selected["status"] = top_candidates["status"].iloc[0]
     return selected
+
+
+def select_rh_pair_steps(pairs_df):
+    """Try k=5/6/7%, stop at the first successful level, keep the old fallback."""
+    attempts = []
+    fallback = None
+    for k_tolerance in K_TOLERANCE_STEPS:
+        k_percent = int(round(k_tolerance * 100))
+        top, admissible = rank_rh_pairs(pairs_df, k_tolerance)
+        chosen = select_rh_pair(top, admissible)
+        chosen["k_tolerance_percent"] = k_percent
+        chosen["b_tolerance_percent"] = B_TOLERANCE * 100
+        preferred = not chosen.empty and bool(chosen.iloc[0]["preferred"])
+        attempts.append(dict(k_tolerance_percent=k_percent,
+                             candidate_count=len(admissible), preferred=preferred))
+        if fallback is None:
+            fallback = chosen.copy()
+        if preferred:
+            return chosen, tuple(attempts)
+    return fallback, tuple(attempts)
 
 
 # ============================================================
@@ -1233,7 +1263,6 @@ def main(data=None, periods_only=False, show_plots=True, vna_data=None,
         }])
 
     all_windows = []
-    all_pairs = []
     results = []
 
     for period_number, period_df in df.groupby("period"):
@@ -1275,25 +1304,26 @@ def main(data=None, periods_only=False, show_plots=True, vna_data=None,
         all_windows.append(start_windows)
         all_windows.append(end_windows)
 
-        top3, pairs_final = find_pairs(start_windows, end_windows)
+        selected, attempts = select_rh_pair_steps(build_rh_pairs(start_windows, end_windows))
 
-        if top3.empty:
+        if selected.empty:
             print("  Не удалось подобрать пару")
             continue
 
-        if not pairs_final.empty:
-            all_pairs.append(pairs_final.copy())
-
-        selected = select_rh_pair(top3, pairs_final)
+        for attempt in attempts:
+            outcome = "подходящая пара найдена" if attempt['preferred'] else "подходящей пары нет"
+            print(f"  РХ: Δk ≤ {attempt['k_tolerance_percent']:g}%, "
+                  f"Δb ≤ {B_TOLERANCE*100:g}% — "
+                  f"допустимых пар {attempt['candidate_count']}; {outcome}.")
         choice = selected.iloc[0]
         if choice.preferred:
-            print(f"  РХ: из {len(pairs_final)} допустимых пар выбрана №{int(choice['rank'])}: "
+            print(f"  РХ: при Δk ≤ {choice.k_tolerance_percent:g}% "
+                  f"из {int(choice.candidate_count)} допустимых пар выбрана №{int(choice['rank'])}: "
                   "END не ниже START на всём нарисованном участке мощности.")
-        elif pairs_final.empty:
-            print("  РХ: пар в допусках 5 % нет; показан первый ближайший кандидат.")
         else:
-            print(f"  РХ: проверены все {len(pairs_final)} допустимых пар; "
-                  "END не ниже START на всём участке не найдено. Показан первый кандидат.")
+            print("  РХ: подходящей пары нет даже при Δk ≤ 7%; "
+                  "сохранён первый кандидат исходной ступени 5%"
+                  + (" (ближайший, вне допусков)." if choice.candidate_count == 0 else "."))
 
         for row in selected.itertuples(index=False):
             rank = int(row.rank)
@@ -1303,6 +1333,9 @@ def main(data=None, periods_only=False, show_plots=True, vna_data=None,
                 "status": row.status,
                 "candidate_count": int(row.candidate_count),
                 "preferred": bool(row.preferred),
+                "k_tolerance_percent": float(row.k_tolerance_percent),
+                "b_tolerance_percent": float(row.b_tolerance_percent),
+                "selection_attempts": attempts,
 
                 "period_date_start": period_start,
                 "period_date_end": period_end,

@@ -23,8 +23,8 @@ from rh_chart import prepare_rh_plots, add_rh_charts
 from rh_display import dirty_above_clean, power_bounds
 
 
-def previous_rh():
-    source = subprocess.check_output(['git','show','5ed1149:scr/RH_raschet.py'],
+def previous_rh(revision):
+    source = subprocess.check_output(['git','show',f'{revision}:scr/RH_raschet.py'],
                                     cwd=ROOT, text=True, encoding='utf-8')
     namespace = {'__name__':'rh_baseline', '__file__':str(ROOT/'scr/RH_raschet.py')}
     exec(compile(source, namespace['__file__'], 'exec'), namespace)
@@ -35,9 +35,10 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--snapshot', type=Path, action='append', required=True)
     parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--baseline', default='5ed1149')
     args = parser.parse_args()
     args.output.mkdir(parents=True, exist_ok=True)
-    baseline = previous_rh()
+    baseline = previous_rh(args.baseline)
     reports = []
     for path in args.snapshot:
         snapshot = pickle.loads(path.read_bytes())
@@ -79,13 +80,34 @@ def main():
             bounds = power_bounds(new[0],result)
             np.testing.assert_array_equal(bounds,[result['power_min'],result['power_max']])
             assert bool(dirty_above_clean(result,bounds)) == result['preferred'] or result['candidate_count']==0
+            attempts = result['selection_attempts']
+            levels = [a['k_tolerance_percent'] for a in attempts]
+            assert levels == [5,6,7][:len(levels)]
+            assert result['b_tolerance_percent']==5
+            counts = [a['candidate_count'] for a in attempts]
+            assert counts==sorted(counts)
+            assert not any(a['preferred'] for a in attempts[:-1])
+            if result['preferred']:
+                assert attempts[-1]['preferred']
+                assert result['k_tolerance_percent']==levels[-1]
+                assert result['delta_k_pct'] <= result['k_tolerance_percent']+1e-12
+                assert result['delta_b_pct'] <= 5+1e-12
+            else:
+                assert levels==[5,6,7] and not attempts[-1]['preferred']
+            previous = [r for r in old[2] if r['period']==number]
+            if result['k_tolerance_percent']==5 and len(previous)==1:
+                for key in ('rank','k_start','k_end','b_start','b_end','start_window_id',
+                            'end_window_id','candidate_count'):
+                    assert result[key]==previous[0][key],(path,number,key)
             if not result['preferred']:
                 first = next(r for r in old[2] if r['period']==number)
                 for key in ('k_start','k_end','b_start','b_end','start_window_id','end_window_id'):
                     assert result[key] == first[key], (path,number,key)
             selected.append(dict(period=int(number),rank=int(result['rank']),
                 candidate_count=result['candidate_count'],preferred=result['preferred'],
-                power_min=bounds[0],power_max=bounds[1],b_end_lower=result['b_end']<result['b_start']))
+                power_min=bounds[0],power_max=bounds[1],b_end_lower=result['b_end']<result['b_start'],
+                k_tolerance_percent=result['k_tolerance_percent'],
+                b_tolerance_percent=result['b_tolerance_percent'],selection_attempts=attempts))
         figure = current.plot_selected_windows(new[0],new[2],show=False)
         figure.savefig(args.output/f'{name}_gui.png',dpi=130)
         plt.close(figure)
@@ -99,7 +121,8 @@ def main():
             sheet.append([record.get(c,(None,None))[0] for c in range(1,max(record,default=0)+1)])
         book.save(args.output/f'{name}.xlsx')
         assert pickle.dumps(snapshot)==unchanged, 'Saved snapshot was modified'
-        report = dict(snapshot=str(path),unaffected_results_match=True,snapshot_unchanged=True,selected=selected)
+        report = dict(snapshot=str(path),baseline=args.baseline,unaffected_results_match=True,
+                      snapshot_unchanged=True,selected=selected)
         reports.append(report)
         print(json.dumps(report,ensure_ascii=False),flush=True)
     (args.output/'verification.json').write_text(json.dumps(reports,ensure_ascii=False,indent=2),encoding='utf-8')

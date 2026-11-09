@@ -187,6 +187,12 @@ def _boundary_context(row: Any) -> dict[str, str]:
     }
 
 
+def _pressure_delta_context(values: dict | None) -> dict[str, str]:
+    """Разности перепадов в Па; пропуски не превращаются в нули."""
+    return {key: _number(_get(values, key), 1)
+            for key in ("vlo_pa", "fgo_pa", "fto_pa", "fgo_fto_pa")}
+
+
 def _delta_context(row: Any) -> dict[str, Any]:
     def clipped(value: Any, direction: int) -> float | None:
         if _is_missing(value):
@@ -378,6 +384,10 @@ def build_report_data(
             "boundary": {
                 "start": _boundary_context(start),
                 "end": _boundary_context(end),
+                "delta": _pressure_delta_context(
+                    boundary_table.attrs.get("pressure_deltas_pa", {}).get(index)
+                    if boundary_table is not None else None
+                ),
             },
             "deltas": _delta_context(delta),
             "vna_top1": _vna_top_context(
@@ -557,6 +567,7 @@ def generate_report(
     if isinstance(periods, list) and not isinstance(periods, PeriodCollection):
         context["periods"] = PeriodCollection(periods)
     for period in context["periods"]:
+        period.setdefault("boundary", {}).setdefault("delta", _pressure_delta_context(None))
         deltas = period.get("deltas", {})
         if "show_no_degradation_text" not in deltas:
             values = (deltas.get("n_priv"), deltas.get("b_priv"))

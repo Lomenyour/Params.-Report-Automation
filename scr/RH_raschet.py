@@ -781,6 +781,7 @@ def build_boundary_table(df, periods_df):
 
     rows = []
     summaries = {}
+    pressure_deltas = {}
 
     for row in periods_df.itertuples(index=False):
 
@@ -790,6 +791,14 @@ def build_boundary_table(df, periods_df):
         summaries[number] = summary
         start_row = None if selected.empty else selected.iloc[0]
         end_row = None if selected.empty else selected.iloc[-1]
+        pressure_deltas[number] = {}
+        for key, _ in BOUNDARY_PARAMETERS[:4]:
+            first = pd.to_numeric(start_row.get(key, np.nan), errors="coerce") if start_row is not None else np.nan
+            last = pd.to_numeric(end_row.get(key, np.nan), errors="coerce") if end_row is not None else np.nan
+            pressure_deltas[number][f"{key}_pa"] = (
+                float(last - first) if pd.notna(first) and pd.notna(last)
+                and np.isfinite(first) and np.isfinite(last) else np.nan
+            )
 
         for tag, boundary in (("нач", start_row), ("кон", end_row)):
 
@@ -819,6 +828,8 @@ def build_boundary_table(df, periods_df):
 
     table = pd.DataFrame(rows, columns=columns)
     table.attrs["vna_boundary_summary"] = summaries
+    # Только метаданные для Word: разности до округления, без новых колонок.
+    table.attrs["pressure_deltas_pa"] = pressure_deltas
     return table
 
 

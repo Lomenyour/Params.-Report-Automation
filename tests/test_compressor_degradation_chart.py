@@ -102,7 +102,7 @@ class CompressorDegradationChartTest(unittest.TestCase):
         output.seek(0)
         saved = load_workbook(output)
         sheet = saved["Графики"]
-        self.assertEqual(saved.sheetnames, ["Данные", "Графики", "Данные компрессора"])
+        self.assertEqual(saved.sheetnames, ["Данные", "Графики", "Данные деградации ГТУ", "Данные компрессора"])
         self.assertEqual(len(sheet._charts), 5)  # Перепады, общая деградация, 3 периода
         for number, chart in enumerate(sheet._charts[2:], start=1):
             self.assertEqual(len(chart._charts), 2)

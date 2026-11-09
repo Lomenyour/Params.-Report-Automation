@@ -41,7 +41,17 @@ try {
             $vectorY = -($ys[1]-$ys[0])/$yspan*$plot.InsideHeight
             $vectors += ,@($vectorX,$vectorY)
             $geometry += [pscustomobject]@{Series=$indices[0];Name=$arrow.Name;X=$xs;Y=$ys;
-                TailX=$tailX;TailY=$tailY;FrameX=($label.Left+$label.Width/2);FrameY=$edgeY}
+                TailX=$tailX;TailY=$tailY;FrameX=($label.Left+$label.Width/2);FrameY=$edgeY;
+                EndArrowheadStyle=$arrow.Format.Line.EndArrowheadStyle;
+                EndArrowheadWidth=$arrow.Format.Line.EndArrowheadWidth;
+                EndArrowheadLength=$arrow.Format.Line.EndArrowheadLength;
+                LineWeight=$arrow.Format.Line.Weight}
+            if ($geometry[-1].EndArrowheadStyle -ne 2 -or
+                $geometry[-1].EndArrowheadWidth -ne 3 -or
+                $geometry[-1].EndArrowheadLength -ne 3 -or
+                [Math]::Abs($geometry[-1].LineWeight - 1.5) -gt .001) {
+                throw 'RH arrowhead is not a wide/long triangle or line weight changed.'
+            }
         }
         $cross = $vectors[0][0]*$vectors[1][1]-$vectors[0][1]*$vectors[1][0]
         $scale = [Math]::Sqrt(($vectors[0][0]*$vectors[0][0]+$vectors[0][1]*$vectors[0][1]) *

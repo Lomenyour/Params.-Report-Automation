@@ -13,7 +13,7 @@ import pandas as pd
 from openpyxl import Workbook, load_workbook
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scr"))
-from RH_raschet import select_rh_variants, plot_selected_windows
+from RH_raschet import select_rh_variants, select_rh_pair, plot_selected_windows
 from rh_chart import prepare_rh_plots, add_rh_charts
 from rh_display import power_bounds, dirty_above_clean, parallel_state_arrows
 
@@ -39,7 +39,7 @@ class RHSingleChartTest(unittest.TestCase):
     def test_selection_first_second_third_equal_fallback_and_short_lists(self):
         for intercepts, rank in (([6600., 6700., 6800.], 1), ([6400., 6600., 6700.], 2),
                              ([6400., 6300., 6600.], 3), ([6400., 6300., 6200.], 1),
-                             ([6500.], 1), ([6500., 6600.], 2), ([6500., 6500., 6600.], 3)):
+                             ([6500.], 1), ([6500., 6600.], 1), ([6500., 6500., 6600.], 1)):
             with self.subTest(intercepts=intercepts):
                 rows = [self.candidate(i + 1, 200., end_b=b) for i, b in enumerate(intercepts)]
                 original = copy.deepcopy(rows)
@@ -47,7 +47,7 @@ class RHSingleChartTest(unittest.TestCase):
                 self.assertEqual(rows, original)
         self.assertEqual(select_rh_variants([]), [])
 
-    def test_each_period_selected_independently_by_signed_b(self):
+    def test_each_period_selected_independently_by_line_position(self):
         rows = [self.candidate(1, 200., end_b=6400.), self.candidate(2, 199., end_b=6800.),
                 self.candidate(1, 200., 2), self.candidate(2, 200., 2)]
         second = self.values()
@@ -60,6 +60,56 @@ class RHSingleChartTest(unittest.TestCase):
         for row in negative:
             row['b_start'] = -3400.
         self.assertEqual(select_rh_variants(negative, self.values())[0]['rank'], 2)
+
+    def test_smaller_intercept_coincident_lines_and_touching_endpoint_are_allowed(self):
+        bounds = power_bounds(self.values(), self.candidate(1, 200.))
+        rows = [self.candidate(1, 202., end_b=6400.),
+                self.candidate(2, 200., end_b=6500.),
+                self.candidate(3, 198., end_b=6500.+2*bounds[1]),
+                self.candidate(4, 202., end_b=6500.-2*bounds[0])]
+        for row in rows:
+            with self.subTest(rank=row['rank']):
+                self.assertTrue(dirty_above_clean(row, bounds))
+        self.assertLess(rows[0]['b_end'], rows[0]['b_start'])
+        self.assertEqual(select_rh_variants(rows, self.values())[0]['rank'], 1)
+
+    def test_complete_pool_is_checked_before_top_three_and_rank_is_preserved(self):
+        pool = pd.DataFrame([self.candidate(i, 200., end_b=6400.) for i in range(1, 65)])
+        pool['power_min'], pool['power_max'] = 65., 85.
+        pool.loc[61, 'k_end'] = 202.
+        top = pool.head(3).copy()
+        top['status'] = 'Прошла фильтры Δk ≤ 5% и Δb ≤ 5%'
+        original = pool.copy(deep=True)
+        chosen = select_rh_pair(top, pool)
+        self.assertEqual(chosen.iloc[0]['rank'], 62)
+        self.assertEqual(chosen.iloc[0]['candidate_count'], 64)
+        self.assertTrue(chosen.iloc[0]['preferred'])
+        self.assertLess(chosen.iloc[0]['b_end'], chosen.iloc[0]['b_start'])
+        pd.testing.assert_frame_equal(pool, original)
+
+    def test_full_pool_fallback_and_no_admissible_pairs_keep_first(self):
+        pool = pd.DataFrame([self.candidate(i, 200., end_b=6400.) for i in range(1, 6)])
+        pool['power_min'], pool['power_max'] = 65., 85.
+        top = pool.head(3).copy()
+        top['status'] = 'Допуски'
+        chosen = select_rh_pair(top, pool).iloc[0]
+        self.assertEqual(chosen['rank'], 1)
+        self.assertFalse(chosen['preferred'])
+        self.assertEqual(chosen['candidate_count'], 5)
+        top.loc[1, 'k_end'] = 202.
+        top['status'] = 'Нет пары ≤5%; показаны ближайшие'
+        chosen = select_rh_pair(top, pool.iloc[:0]).iloc[0]
+        self.assertEqual(chosen['rank'], 1)
+        self.assertFalse(chosen['preferred'])
+        self.assertEqual(chosen['candidate_count'], 0)
+        self.assertTrue(select_rh_pair(top.iloc[:0], pool.iloc[:0]).empty)
+
+    def test_vectorized_position_check_rejects_invalid_coefficients_and_ranges(self):
+        rows = pd.DataFrame([self.candidate(i, 200., end_b=6600.) for i in range(1, 5)])
+        rows.loc[1, 'k_end'] = np.nan
+        rows.loc[2, 'b_end'] = np.inf
+        actual = dirty_above_clean(rows, (np.array([65.,65.,65.,85.]),np.array([85.,85.,85.,65.])))
+        np.testing.assert_array_equal(actual, [True,False,False,False])
 
     def test_five_percent_slope_tolerance_does_not_prevent_crossing(self):
         rows = [self.candidate(1, 198., end_b=6650.), self.candidate(2, 199., end_b=6800.)]
@@ -101,6 +151,7 @@ class RHSingleChartTest(unittest.TestCase):
         self.assertEqual(len(arrows_gui), 2)
         vectors = []
         for box, arrow, prefix in zip(texts, arrows_gui, ('end', 'start')):
+            self.assertEqual(arrow.arrow_patch.get_mutation_scale(), 18)
             rect = box.get_bbox_patch().get_window_extent(figure.canvas.get_renderer())
             expected = ((rect.x0 + rect.x1) / 2, rect.y0 if prefix == 'end' else rect.y1)
             actual = axis.transData.transform(arrow.get_position())
@@ -142,6 +193,8 @@ class RHSingleChartTest(unittest.TestCase):
                       if series.find('c:spPr/a:ln/a:tailEnd', ns) is not None]
             self.assertEqual(len(arrows), 2)
             for arrow, prefix in zip(arrows, ('end', 'start')):
+                head = arrow.find('c:spPr/a:ln/a:tailEnd', ns)
+                self.assertEqual((head.get('type'),head.get('w'),head.get('len')),('triangle','lg','lg'))
                 x = float(arrow.findall('c:xVal/c:numLit/c:pt/c:v', ns)[-1].text)
                 y = float(arrow.findall('c:yVal/c:numLit/c:pt/c:v', ns)[-1].text)
                 self.assertAlmostEqual(y, plots[0].result[f'k_{prefix}']*x + plots[0].result[f'b_{prefix}'])

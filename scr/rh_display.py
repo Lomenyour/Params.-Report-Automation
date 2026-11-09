@@ -1,6 +1,4 @@
 """Shared presentation checks and arrow geometry for GUI and Excel RH charts."""
-import math
-
 import numpy as np
 import pandas as pd
 
@@ -26,15 +24,22 @@ def power_bounds(values, result):
 
 
 def dirty_above_clean(result, bounds):
-    """Check b and the complete drawn segment; slope proximity alone is insufficient."""
+    """END is never below START on the drawn segment, for a row or whole table."""
     if bounds is None:
         return False
     try:
-        ks, ke, bs, be = (float(result[key]) for key in ('k_start', 'k_end', 'b_start', 'b_end'))
+        ks, ke, bs, be, low, high = np.broadcast_arrays(
+            *(np.asarray(result[key], dtype=float)
+              for key in ('k_start', 'k_end', 'b_start', 'b_end')),
+            *(np.asarray(value, dtype=float) for value in bounds))
     except (KeyError, TypeError, ValueError):
         return False
-    return (all(math.isfinite(v) for v in (ks, ke, bs, be, *bounds)) and be > bs
-            and all((ke - ks) * x + (be - bs) > 0 for x in bounds))
+    valid = np.logical_and.reduce([np.isfinite(value) for value in (ks, ke, bs, be, low, high)])
+    with np.errstate(over='ignore', invalid='ignore'):
+        left = (ke - ks) * low + (be - bs)
+        right = (ke - ks) * high + (be - bs)
+    return (valid & (low <= high) & np.isfinite(left) & np.isfinite(right)
+            & (left >= 0) & (right >= 0))
 
 
 def parallel_state_arrows(result, xlim, ylim, starts, line_bounds):

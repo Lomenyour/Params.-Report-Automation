@@ -90,7 +90,8 @@ ZONE_SIZE = 48 * DAYS_ZONE # 480 записей
 K_TOLERANCE = 0.05
 B_TOLERANCE = 0.05
 
-# Сколько лучших вариантов выгружать для каждого периода
+# Сколько ближайших/первых вариантов оставлять для диагностики поиска.
+# Пара для графика выбирается из полного списка допустимых, до этого лимита.
 TOP_N_EXPORT = 3
 
 
@@ -264,6 +265,7 @@ def make_windows(period_df, zone_type, period_number, zone_size):
             continue
 
         k, b, r2 = metrics
+        power = pd.to_numeric(window["power"], errors="coerce")
 
         windows.append({
             "period": period_number,
@@ -274,6 +276,8 @@ def make_windows(period_df, zone_type, period_number, zone_size):
             "k": k,
             "b": b,
             "R2": r2,
+            "power_min": float(power.min()),
+            "power_max": float(power.max()),
         })
 
     return pd.DataFrame(windows)
@@ -316,6 +320,8 @@ def find_pairs(start_windows, end_windows):
                 "delta_b_pct": delta_b_pct,
                 "R2_start": start["R2"],
                 "R2_end": end["R2"],
+                "power_min": min(start["power_min"], end["power_min"]),
+                "power_max": max(start["power_max"], end["power_max"]),
             })
 
     pairs_df = pd.DataFrame(pairs)
@@ -340,7 +346,7 @@ def find_pairs(start_windows, end_windows):
             kind="mergesort"
         ).reset_index(drop=True)
 
-        top3 = pairs_b.head(3).copy()
+        top3 = pairs_b.head(TOP_N_EXPORT).copy()
         top3["status"] = "Прошла фильтры Δk ≤ 5% и Δb ≤ 5%"
         return top3, pairs_b
 
@@ -348,10 +354,30 @@ def find_pairs(start_windows, end_windows):
         ["delta_k_pct", "delta_b_pct"],
         na_position="last",
         kind="mergesort"
-    ).head(3).copy()
+    ).head(TOP_N_EXPORT).copy()
 
     nearest["status"] = "Нет пары ≤5%; показаны ближайшие"
     return nearest, pairs_b
+
+
+def select_rh_pair(top_candidates, admissible):
+    """Choose before truncation; retain the rank in the original sorted pool."""
+    from rh_display import dirty_above_clean
+
+    candidates = admissible if not admissible.empty else top_candidates
+    if candidates.empty:
+        return candidates.copy()
+    positions = np.array([], dtype=int)
+    if not admissible.empty:
+        positions = np.flatnonzero(dirty_above_clean(
+            admissible, (admissible["power_min"], admissible["power_max"])))
+    position = int(positions[0]) if len(positions) else 0
+    selected = candidates.iloc[[position]].copy()
+    selected["rank"] = position + 1
+    selected["candidate_count"] = len(admissible)
+    selected["preferred"] = bool(len(positions))
+    selected["status"] = top_candidates["status"].iloc[0]
+    return selected
 
 
 # ============================================================
@@ -1258,14 +1284,25 @@ def main(data=None, periods_only=False, show_plots=True, vna_data=None,
         if not pairs_final.empty:
             all_pairs.append(pairs_final.copy())
 
-        # Берём не более TOP_N_EXPORT вариантов
-        top_export = top3.head(TOP_N_EXPORT).copy()
+        selected = select_rh_pair(top3, pairs_final)
+        choice = selected.iloc[0]
+        if choice.preferred:
+            print(f"  РХ: из {len(pairs_final)} допустимых пар выбрана №{int(choice['rank'])}: "
+                  "END не ниже START на всём нарисованном участке мощности.")
+        elif pairs_final.empty:
+            print("  РХ: пар в допусках 5 % нет; показан первый ближайший кандидат.")
+        else:
+            print(f"  РХ: проверены все {len(pairs_final)} допустимых пар; "
+                  "END не ниже START на всём участке не найдено. Показан первый кандидат.")
 
-        for rank, row in enumerate(top_export.itertuples(index=False), start=1):
+        for row in selected.itertuples(index=False):
+            rank = int(row.rank)
             results.append({
                 "period": period_number,
                 "rank": rank,
                 "status": row.status,
+                "candidate_count": int(row.candidate_count),
+                "preferred": bool(row.preferred),
 
                 "period_date_start": period_start,
                 "period_date_end": period_end,
@@ -1292,6 +1329,8 @@ def main(data=None, periods_only=False, show_plots=True, vna_data=None,
 
                 "R2_start": row.R2_start,
                 "R2_end": row.R2_end,
+                "power_min": float(row.power_min),
+                "power_max": float(row.power_max),
             })
 
             print()
@@ -1390,7 +1429,7 @@ PLOT_CELL_H = 6.0      # высота одной ячейки, дюймов
 
 
 def select_rh_variants(results, values=None):
-    """Первый bкон > bнач с END выше START на всём участке, иначе первый."""
+    """Общий GUI/Excel выбор: END не ниже START на всём участке, иначе первый."""
     from rh_display import dirty_above_clean, power_bounds
     groups = {}
     for result in results:
@@ -1465,9 +1504,9 @@ def plot_selected_windows(df, results, show=True):
             )
             ax.axis("off")
             continue
-        if not dirty_above_clean(result, power_bounds(df, result)):
-            print(f"РХ, период {period}: предпочтительная пара с bкон > bнач "
-                  "и END выше START на всём участке не найдена; показан первый кандидат.")
+        if 'candidate_count' not in result and not dirty_above_clean(result, power_bounds(df, result)):
+            print(f"РХ, период {period}: среди переданных кандидатов END не ниже START "
+                  "на всём участке не найдено; показан первый кандидат.")
 
         # ====================================================
         # КОЭФФИЦИЕНТЫ РЕГРЕССИИ
@@ -1605,7 +1644,7 @@ def plot_selected_windows(df, results, show=True):
         for prefix, color in (('end', '#C00000'), ('start', '#4472C4')):
             beginning, target = arrows[prefix]
             arrow = ax.annotate('', xy=target, xytext=beginning,
-                arrowprops=dict(arrowstyle='->', color=color, lw=1.2,
+                arrowprops=dict(arrowstyle='-|>', mutation_scale=18, color=color, lw=1.2,
                                 shrinkA=0, shrinkB=0, connectionstyle='arc3,rad=0'))
             arrow.set_in_layout(False)
     if show:

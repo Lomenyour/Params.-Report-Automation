@@ -35,7 +35,7 @@ def _arrow(start, end, color):
         yVal=NumDataSource(numLit=NumData(ptCount=2, pt=[NumVal(idx=i, v=float(point[1])) for i, point in enumerate((start,end))])))
     series.marker.symbol = "none"
     series.graphicalProperties.line = LineProperties(solidFill=color, w=19050,
-        tailEnd=LineEndProperties(type="triangle", w="sm", len="sm"))
+        tailEnd=LineEndProperties(type="triangle", w="lg", len="lg"))
     return series
 
 

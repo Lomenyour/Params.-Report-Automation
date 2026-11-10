@@ -51,6 +51,10 @@ try:
     c=window.controller
     assert c.ready,errors
     assert js("document.querySelector('[data-action=sourceBook]').disabled")
+    assert js("document.querySelectorAll('.gtu-export [data-action]').length") == 3
+    assert js("[...document.querySelectorAll('.gtu-export [data-action]')].map(x=>x.dataset.action).join(',')") == 'sourceBook,excel,word'
+    assert not js("document.getElementById('settings-panel').querySelector('[data-action=sourceBook]') !== null")
+    assert not js("document.body.textContent.includes('Копия с выгрузкой и формулами. Паспорт и поправки берутся из книги.')")
     station=c.station_repository.get_station('izhevsk_tec')
     c.station_var.set(station.name)
     c.unit_var.set(c.station_repository.list_turbines(station.id)[0].name)
@@ -128,11 +132,11 @@ try:
     output=ROOT/'build_test/source_book_log_ui';output.mkdir(parents=True,exist_ok=True)
     for width,height in ((900,600),(1200,800)):
         window.resize(width,height);pump(.15)
-        js("document.querySelector('[data-action=sourceBook]').scrollIntoView({block:'center'})")
         bounds=json.loads(js("JSON.stringify((()=>{const a=document.querySelector('[data-action=sourceBook]').getBoundingClientRect(),b=document.querySelector('[data-action=fullLog]').getBoundingClientRect();return {source:{left:a.left,right:a.right,top:a.top,bottom:a.bottom},log:{left:b.left,right:b.right,top:b.top,bottom:b.bottom},width:innerWidth,height:innerHeight}})())"))
         for item in ('source','log'):
             rect=bounds[item]
             assert rect['left']>=0 and rect['right']<=bounds['width'] and rect['top']>=0 and rect['bottom']<=bounds['height'],bounds
+        assert js("(()=>{const a=document.querySelector('[data-action=sourceBook]'),e=document.querySelector('[data-action=excel]'),w=document.querySelector('[data-action=word]'),ar=a.getBoundingClientRect(),er=e.getBoundingClientRect(),wr=w.getBoundingClientRect();return ar.right<=er.left && er.right<=wr.left && Math.abs(ar.top-er.top)<1 && Math.abs(er.top-wr.top)<1 && getComputedStyle(a).color===getComputedStyle(e).color})()"),bounds
         window.view.grab().save(str(output/f'workspace-{width}.png'))
     viewer.grab().save(str(output/'full-log.png'))
     assert not errors,errors

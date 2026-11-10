@@ -84,6 +84,7 @@ html, body { margin: 0; height: 100%; background: #252525; overflow: hidden; }
 #desktop .gtu-work-heading p { font-size: 12px; color: var(--gtu-sub); margin: 0; }
 #desktop .gtu-export { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; padding-top: 3px; }
 #desktop .gtu-export .gtu-action { font-size: 12px; padding: 7px 10px; }
+#desktop .gtu-export [data-action="sourceBook"],
 #desktop .gtu-export [data-action="excel"] { color: var(--gtu-green); }
 #desktop .gtu-export [data-action="word"] { color: #9ecbff; }
 #desktop .gtu-results { border: 1px solid var(--gtu-line); border-radius: var(--gtu-radius); background: var(--gtu-panel); overflow: clip; }
@@ -307,7 +308,6 @@ body.gtu-resizing, body.gtu-resizing * { cursor: col-resize !important; user-sel
 #desktop .gtu-log { margin: 0; height: 96px; overflow: auto; font-size: 12px; line-height: 1.7; padding: 10px 0; white-space: pre; }
 #desktop .gtu-journal summary .gtu-chevron { display: flex; }
 #desktop .gtu-journal summary .gtu-open-log { font-size: 11px; padding: 4px 8px; flex-shrink: 0; }
-#desktop [data-action="sourceBook"] { margin-top: 8px; }
 #desktop .gtu-foot { flex-shrink: 0; flex-wrap: wrap; padding-top: 12px; gap: 8px; }
 #desktop .gtu-foot .gtu-action { margin-left: auto; font-size: 11px; padding: 2px 0; min-height: 22px; }
 #desktop .gtu-foot #status { font-size: 11px; }

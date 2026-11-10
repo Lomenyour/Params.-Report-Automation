@@ -50,7 +50,7 @@ from data_assembly import (
     template_columns,
     validate_mappings,
 )
-from station_profiles import get_station_repository, sensor_target_columns, unit_number
+from station_profiles import get_station_repository, sensor_target_columns, unit_number, StationTariffs
 from gas_passport import resolve_passport, save_passport, passport_entries, gas_values
 from parameter_mapping import parameter_targets, parameter_for_header, header_unit, unit_conversion, PRESSURE_UNITS, unit_info, canonical_unit, UNIT_CATALOG
 from gas_passport_ui import GasPassportDialog
@@ -482,13 +482,18 @@ class CalculationApp(tk.Tk):
         self.station_manually_selected = not automatic
         self._clear_mapping()
         if station is not None:
-            tariffs = self.station_repository.get_tariffs(station.id)
+            try:
+                tariffs = self.station_repository.get_tariffs(station.id)
+            except (ValueError, OSError) as error:
+                tariffs = None
+                messagebox.showwarning('Тарифы не загружены',
+                    f'Не удалось прочитать сохранённые тарифы. Введите их для расчёта вручную.\n{error}', parent=self)
             for variable, value in (
                 (self.gas_tariff_var, tariffs.gas_rub_per_nm3 if tariffs else None),
                 (self.electricity_tariff_var, tariffs.electricity_rub_per_mwh if tariffs else None),
                 (self.electricity_cost_var, tariffs.electricity_cost_rub_per_mwh if tariffs else None),
             ):
-                variable.set(f"{value:g}".replace(".", ",") if value is not None else "")
+                variable.set(str(value).removesuffix('.0').replace('.', ',') if value is not None else '')
             self.station_hint.configure(text=(
                 "Определена по имени файла; можно изменить."
                 if automatic else "Выбрана вручную. Тарифы можно изменить."
@@ -1144,6 +1149,8 @@ class CalculationApp(tk.Tk):
                     correction_sheet=corrections, gas_passport=passport,
                     correction_profile=correction_profile,
                     book_profile=book_setup.metadata(),
+                    tariffs_station_id=station.id,
+                    station_tariffs=StationTariffs(gas_tariff, electricity_tariff, electricity_cost),
                 )
 
                 pressure_figure = plot_pressure_drops(
@@ -1522,6 +1529,15 @@ class CalculationApp(tk.Tk):
         self._show_table("delta", results.get("delta_table"))
         self._show_table("economics", results.get("economics_table"))
         self._show_figure("rh", results.get("rh_figure"))
+        snapshot = self.last_result
+        if snapshot.station_tariffs is not None:
+            try:
+                self.station_repository.save_tariffs(snapshot.tariffs_station_id, snapshot.station_tariffs)
+                self._append_log('Тарифы сохранены для ТЭЦ завершённого расчёта.\n')
+            except (OSError, ValueError) as error:
+                self._append_log(f'Расчёт завершён, но тарифы не сохранены: {error}\n')
+                messagebox.showwarning('Тарифы не сохранены',
+                    f'Результаты расчёта доступны, но сохранить тарифы не удалось.\n{error}', parent=self)
 
     def generate_excel_report(self):
         self._start_export("Excel")

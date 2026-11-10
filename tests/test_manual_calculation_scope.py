@@ -107,6 +107,10 @@ class ManualWorkerScopeTests(unittest.TestCase):
 
     def test_every_result_uses_manual_union_and_excel_keeps_history(self):
         result=self.calculate(INTERVALS);snapshot=result['snapshot']
+        self.assertEqual(snapshot.tariffs_station_id, 'izhevsk_tec')
+        self.assertEqual(snapshot.station_tariffs.gas_rub_per_nm3, 1.)
+        self.assertEqual(snapshot.station_tariffs.electricity_rub_per_mwh, 2.)
+        self.assertEqual(snapshot.station_tariffs.electricity_cost_rub_per_mwh, 1.)
         chart=snapshot.pressure_chart
         expected=self.dates[self.dates.day.isin([1,3])]
         self.assertEqual(pd.DatetimeIndex(chart.values.date).tolist(),expected.tolist())

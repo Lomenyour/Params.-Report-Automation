@@ -1,10 +1,12 @@
 """Справочники ТЭЦ, тарифов и каналов. Файловый адаптер будущего хранилища БД."""
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
+from datetime import datetime, timezone
 from functools import lru_cache
 import json
 import math
+import os
 from pathlib import Path
 import re
 import sys
@@ -36,6 +38,14 @@ class StationTariffs:
 
 
 @dataclass(frozen=True)
+class StationInformation:
+    station: Station
+    company_name: str
+    turbines: tuple[Turbine, ...]
+    contact_names: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
 class SensorChannel:
     station_id: str
     unit_number: str
@@ -61,6 +71,9 @@ class StationRepository(Protocol):
     def get_station(self, station_id: str) -> Station: ...
     def detect_station(self, filename: str | Path) -> Station | None: ...
     def get_tariffs(self, station_id: str) -> StationTariffs | None: ...
+    def save_tariffs(self, station_id: str, tariffs: StationTariffs) -> StationTariffs: ...
+    def get_station_information(self, station_id: str) -> StationInformation: ...
+    def save_station_contacts(self, contacts: dict, *, unassigned=None, source=None) -> None: ...
     def list_turbines(self, station_id: str) -> tuple[Turbine, ...]: ...
     def get_turbine(self, station_id: str, number: str) -> Turbine: ...
     def detect_turbine(self, filename: str | Path, station_id: str) -> Turbine | None: ...
@@ -96,9 +109,45 @@ def catalog_path() -> Path:
     return Path(__file__).resolve().parents[1] / "config" / "stations.json"
 
 
+def tariff_store_path() -> Path:
+    return Path(os.environ.get('LOCALAPPDATA') or Path.home()/'.config')/'GTU_Report/station_tariffs.json'
+
+
+def information_store_path() -> Path:
+    return Path(os.environ.get('LOCALAPPDATA') or Path.home()/'.config')/'GTU_Report/station_information.json'
+
+
+def _validated_tariffs(record) -> StationTariffs:
+    names = ('gas_rub_per_nm3', 'electricity_rub_per_mwh', 'electricity_cost_rub_per_mwh')
+    try:
+        if any(isinstance(record[name], bool) for name in names):
+            raise ValueError()
+        values = [float(record[name]) for name in names]
+        if any(not math.isfinite(value) or value < 0 for value in values):
+            raise ValueError()
+        return StationTariffs(*values)
+    except (KeyError, TypeError, ValueError, OverflowError) as error:
+        raise ValueError('Набор тарифов должен содержать три конечных неотрицательных числа.') from error
+
+
+def _read_tariff_store(path):
+    from json_store import read_json
+    data = read_json(path, {'schema_version': 1, 'tariffs': {}})
+    if type(data.get('schema_version')) is not int or data['schema_version'] != 1 or not isinstance(data.get('tariffs'), dict):
+        raise ValueError('Повреждён пользовательский справочник тарифов; файл не изменён.')
+    for key, record in data['tariffs'].items():
+        if not key or not isinstance(record, dict):
+            raise ValueError('Повреждена запись пользовательского справочника тарифов.')
+        _validated_tariffs(record)
+    return data
+
+
 class JsonStationRepository:
-    def __init__(self, path: str | Path):
+    def __init__(self, path: str | Path, *, tariff_store: str | Path | None = None,
+                 information_store: str | Path | None = None):
         self.path = Path(path)
+        self.tariff_store = Path(tariff_store) if tariff_store is not None else None
+        self.information_store = Path(information_store) if information_store is not None else None
         try:
             raw = json.loads(self.path.read_text(encoding="utf-8-sig"))
             self._load(raw)
@@ -190,6 +239,22 @@ class JsonStationRepository:
         except KeyError as error:
             raise ValueError(f"Неизвестная ТЭЦ: {station_id!r}. Выберите ТЭЦ из списка.") from error
 
+    def get_station_information(self, station_id: str) -> StationInformation:
+        from station_information import read_information
+        station = self.get_station(station_id)
+        names = (read_information(self.information_store)['contacts'].get(station_id, [])
+                 if self.information_store is not None else [])
+        return StationInformation(station, self.companies.get(station.company_id, ''),
+                                  self.list_turbines(station_id), tuple(names))
+
+    def save_station_contacts(self, contacts: dict, *, unassigned=None, source=None) -> None:
+        from station_information import update_contacts
+        if self.information_store is None:
+            raise ValueError('Пользовательское хранилище сведений о ТЭЦ не настроено.')
+        for station_id in contacts:
+            self.get_station(station_id)
+        update_contacts(self.information_store, contacts, unassigned=unassigned, source=source)
+
     def detect_station(self, filename: str | Path) -> Station | None:
         name = _normalized_name(Path(filename).stem)
         matches = [(max((len(_normalized_name(alias)) for alias in
@@ -202,7 +267,26 @@ class JsonStationRepository:
 
     def get_tariffs(self, station_id: str) -> StationTariffs | None:
         self.get_station(station_id)
+        if self.tariff_store is not None:
+            record = _read_tariff_store(self.tariff_store)['tariffs'].get(station_id)
+            if record is not None:
+                return _validated_tariffs(record)
         return self._tariffs.get(station_id)
+
+    def save_tariffs(self, station_id: str, tariffs: StationTariffs) -> StationTariffs:
+        """Update only this station after a successful calculation, atomically."""
+        from json_store import transaction, write_json
+        self.get_station(station_id)
+        if self.tariff_store is None:
+            raise ValueError('Пользовательское хранилище тарифов не настроено.')
+        validated = _validated_tariffs(asdict(tariffs))
+        with transaction():
+            data = _read_tariff_store(self.tariff_store)
+            data['tariffs'][station_id] = {**asdict(validated),
+                'updated_at': datetime.now(timezone.utc).isoformat(timespec='seconds'),
+                'source': 'successful_calculation'}
+            write_json(self.tariff_store, data)
+        return validated
 
     def list_turbines(self, station_id: str) -> tuple[Turbine, ...]:
         self.get_station(station_id)
@@ -231,7 +315,8 @@ class JsonStationRepository:
 
 @lru_cache(maxsize=1)
 def get_station_repository() -> StationRepository:
-    return JsonStationRepository(catalog_path())
+    return JsonStationRepository(catalog_path(), tariff_store=tariff_store_path(),
+                                 information_store=information_store_path())
 
 
 def resolve_station(book_path: str | Path, station_id: str | None = None,

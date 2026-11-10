@@ -12,6 +12,7 @@ if TYPE_CHECKING:
     from data_assembly import AssembledData
     from pressure_chart import PressureChartData
     from result_export import DataSheetValues
+    from station_profiles import StationTariffs
 
 
 @dataclass(frozen=True)
@@ -26,6 +27,8 @@ class CalculationSnapshot:
     gas_passport: Any = None
     correction_profile: Any = None
     book_profile: Any = None
+    tariffs_station_id: str = ''
+    station_tariffs: StationTariffs | None = None
 
     def with_compressor_pair(self, period: int, rank: int) -> CalculationSnapshot:
         """A new export snapshot; analytical tables and TOP-10 stay untouched."""

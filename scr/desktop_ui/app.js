@@ -668,7 +668,10 @@
     const tab = event.target.closest('[data-tab]');
     if (tab) send('tab', {key:tab.dataset.tab});
     const button = event.target.closest('[data-action]');
-    if (button && !button.disabled) send(button.dataset.action);
+    if (button && !button.disabled) {
+      if (button.dataset.action === 'fullLog') event.preventDefault();
+      send(button.dataset.action);
+    }
   });
   root.addEventListener('change', event => {
     if (event.target.matches('input[name="mode"]')) send('value', {key:'mode', value:event.target.value});

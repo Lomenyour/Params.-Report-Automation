@@ -80,6 +80,12 @@ class DesktopWindow(QMainWindow):
                 pass
 
     def closeEvent(self, event):
+        if self.controller.source_book_running:
+            self.controller.status_label.configure(text='Дождитесь сохранения исходной книги в Excel.')
+            event.ignore()
+            return
+        if self.controller.log_viewer is not None:
+            self.controller.log_viewer.close()
         self.controller.closed = True
         if self.controller.dialog is not None:
             self.controller.dialog.loop.quit()

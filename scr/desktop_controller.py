@@ -8,6 +8,7 @@ import json
 from pathlib import Path
 import queue
 import threading
+import traceback
 import types
 
 from PySide6.QtCore import QCoreApplication, QEventLoop, QObject, QThread, QTimer, Signal, Slot
@@ -315,6 +316,8 @@ class DesktopController(QObject):
         self.selected_file = self.selected_raw_file = None
         self.calculation_mode = Value("ready", self.changed)
         self.calculation_running = self.export_running = self.has_calculation_run = False
+        self.source_book_running = False
+        self.log_viewer = None
         self.chart_events = ()
         self.selected_raw_sheet = Value("", self.changed)
         self.sensor_mappings = self.mapping_sheet = None
@@ -330,7 +333,7 @@ class DesktopController(QObject):
         self.electricity_tariff_var = Value("0", self.changed)
         self.electricity_cost_var = Value("0", self.changed)
         names = ("station_combo", "unit_combo", "unit_model_label", "events_button", "choose_button", "raw_button", "mapping_button", "book_mapping_button", "gas_passport_button", "corrections_button",
-                 "clear_raw_button", "raw_sheet_combo", "run_button", "excel_button", "report_button",
+                 "clear_raw_button", "raw_sheet_combo", "run_button", "excel_button", "report_button", "source_book_button",
                  "raw_label", "file_label", "station_hint", "import_controls", "status_label", "progress")
         self.controls = {name: Control(self.changed) for name in names}
         for name, control in self.controls.items():
@@ -613,7 +616,12 @@ class DesktopController(QObject):
             return json.dumps({'error':str(error)},ensure_ascii=False)
 
     def dispatch(self, name, data):
-        if self.closed or getattr(self,'_preparing_book',False):
+        if self.closed:
+            return
+        if name == "fullLog":
+            self.open_full_log()
+            return
+        if getattr(self,'_preparing_book',False):
             return
         payload = json.loads(data or "{}")
         if name == "dialog":
@@ -638,13 +646,14 @@ class DesktopController(QObject):
                    "corrections": self.review_corrections,
                    "clearRaw": self.clear_raw_file, "mapping": self.review_mapping,
                    "events": self.review_chart_events, "run": self.start_calculation,
-                   "excel": self.generate_excel_report, "word": self.generate_word_report}
+                   "excel": self.generate_excel_report, "word": self.generate_word_report,
+                   "sourceBook": self.generate_source_book}
         guards = {"file": "choose_button", "raw": "raw_button", "clearRaw": "clear_raw_button",
                   "bookMapping": "book_mapping_button",
                   "gasPassport": "gas_passport_button",
                   "corrections": "corrections_button",
                   "mapping": "mapping_button", "events": "events_button", "run": "run_button",
-                  "excel": "excel_button", "word": "report_button"}
+                  "excel": "excel_button", "word": "report_button", "sourceBook": "source_book_button"}
         if name in actions:
             if self.controls[guards[name]].attributes.get("state") != "disabled":
                 actions[name]()
@@ -663,3 +672,73 @@ class DesktopController(QObject):
                 variable.set(value)
                 if callback:
                     callback()
+
+    def open_full_log(self):
+        from log_viewer import LogViewer
+        if self.log_viewer is None:
+            self.log_viewer = LogViewer(self)
+        self.log_viewer.show()
+        self.log_viewer.raise_()
+        self.log_viewer.activateWindow()
+
+    def generate_source_book(self):
+        if self.calculation_running or self.export_running or self.calculation_mode.get() != 'import':
+            return
+        station = self.stations_by_name.get(self.station_var.get())
+        turbine = self._selected_turbine()
+        if not all((self.selected_file, self.selected_raw_file, self.selected_raw_sheet.get(), station, turbine)):
+            return
+        if not self._ensure_book_mapping():
+            return
+        try:
+            raw_stat = self.selected_raw_file.stat()
+            book_stat = self.selected_file.stat()
+        except OSError as error:
+            self.messages.showerror('Не удалось прочитать входные файлы', str(error))
+            return
+        if (self.sensor_mappings is None or self.mapping_sheet != self.selected_raw_sheet.get()
+                or (raw_stat.st_mtime_ns, raw_stat.st_size) != getattr(self, 'mapping_source_stamp', None)
+                or (book_stat.st_mtime_ns, book_stat.st_size) != getattr(self, 'mapping_book_stamp', None)):
+            if not self.review_mapping():
+                return
+        directory = workflow.DEFAULT_REPORT_DIR
+        try:
+            directory.mkdir(parents=True, exist_ok=True)
+        except OSError as error:
+            self.messages.showerror('Не удалось открыть папку результатов', str(error))
+            return
+        suffix = self.selected_file.suffix.lower()
+        name = self.files.asksaveasfilename(
+            title='Сохранить исходную книгу с новой выгрузкой', initialdir=str(directory),
+            initialfile=f'{self.selected_file.stem}_обновлённая{suffix}', defaultextension=suffix,
+            filetypes=[('Исходная книга Excel', '*' + suffix)])
+        if not name:
+            return
+        from source_workbook import validate_destination
+        try:
+            path = validate_destination(self.selected_file, self.selected_raw_file, name)
+        except (ValueError, OSError) as error:
+            self.messages.showerror('Выберите другой файл', str(error))
+            return
+        self.export_running = self.source_book_running = True
+        self._update_input_controls()
+        self.status_label.configure(text='Сохранение исходной книги через Excel…')
+        self.progress.start(10)
+        self._append_log(f'\nИсходная книга: {path}\n')
+        threading.Thread(target=self._source_book_worker, args=(
+            self.selected_file, self.selected_raw_file, self.selected_raw_sheet.get(),
+            tuple(self.sensor_mappings), path, self.book_setup, station.id, turbine.number), daemon=True).start()
+
+    def _source_book_worker(self, book, source, sheet, mappings, path, setup, station_id, unit):
+        from source_workbook import save_source_workbook
+        result = dict(kind='Excel (исходная книга)', path=path, error=None)
+        try:
+            response = save_source_workbook(book, source, sheet, mappings, path, setup=setup,
+                station_id=station_id, unit=unit, repository=self.station_repository,
+                log=lambda text: self.output_queue.put(('log', text)))
+            result['warnings'] = response.get('warnings', [])
+        except Exception as error:
+            result.update(error=str(error), traceback=traceback.format_exc())
+        finally:
+            self.source_book_running = False
+        self.output_queue.put(('export_finished', result))

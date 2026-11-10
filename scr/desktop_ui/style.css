@@ -306,6 +306,8 @@ body.gtu-resizing, body.gtu-resizing * { cursor: col-resize !important; user-sel
 #desktop .gtu-journal summary { padding: 11px 0; }
 #desktop .gtu-log { margin: 0; height: 96px; overflow: auto; font-size: 12px; line-height: 1.7; padding: 10px 0; white-space: pre; }
 #desktop .gtu-journal summary .gtu-chevron { display: flex; }
+#desktop .gtu-journal summary .gtu-open-log { font-size: 11px; padding: 4px 8px; flex-shrink: 0; }
+#desktop [data-action="sourceBook"] { margin-top: 8px; }
 #desktop .gtu-foot { flex-shrink: 0; flex-wrap: wrap; padding-top: 12px; gap: 8px; }
 #desktop .gtu-foot .gtu-action { margin-left: auto; font-size: 11px; padding: 2px 0; min-height: 22px; }
 #desktop .gtu-foot #status { font-size: 11px; }

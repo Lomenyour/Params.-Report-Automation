@@ -41,6 +41,8 @@
               <button class="gtu-action gtu-wide" data-action="raw" data-control="raw_button" type="button" disabled><span data-icon="folder" aria-hidden="true"></span>Выбрать выгрузку</button>
               <label class="gtu-field-label gtu-sheet-label" for="sheet">Лист выгрузки</label><select id="sheet" class="gtu-field" data-field="sheet" data-control="raw_sheet_combo" disabled></select>
               <button class="gtu-action gtu-wide" data-action="mapping" data-control="mapping_button" type="button" disabled>Проверить колонки</button>
+              <button class="gtu-action gtu-wide" data-action="sourceBook" data-control="source_book_button" type="button" disabled title="Сохранить полную копию книги с новой выгрузкой и формулами через Excel"><span data-icon="file-sheet" aria-hidden="true"></span>Исходная книга</button>
+              <p class="gtu-caption">Копия с выгрузкой и формулами. Паспорт и поправки берутся из книги.</p>
               <button class="gtu-action gtu-quiet" data-action="clearRaw" data-control="clear_raw_button" type="button" disabled>Убрать выгрузку</button>
               <p class="gtu-caption gtu-raw-label" id="raw-label"></p>
             </div>
@@ -71,7 +73,7 @@
           </nav>
           <div class="gtu-result-content" id="result-panel" role="tabpanel" aria-labelledby="tab-pressure"></div>
         </div>
-        <details class="gtu-journal" open><summary><span data-icon="terminal" aria-hidden="true"></span>Журнал расчёта<span class="gtu-caption" id="journal-status">Ожидание данных</span><span class="gtu-chevron" data-icon="chevron" aria-hidden="true"></span></summary><pre class="gtu-log" id="log" aria-label="Журнал расчёта"></pre></details>
+        <details class="gtu-journal" open><summary><span data-icon="terminal" aria-hidden="true"></span>Журнал расчёта<span class="gtu-caption" id="journal-status">Ожидание данных</span><button type="button" class="gtu-action gtu-open-log" data-action="fullLog" aria-label="Открыть полный журнал выполнения">Открыть журнал</button><span class="gtu-chevron" data-icon="chevron" aria-hidden="true"></span></summary><pre class="gtu-log" id="log" aria-label="Журнал расчёта"></pre></details>
         <footer class="gtu-foot"><span class="gtu-dot" id="status-dot"></span><span id="status" aria-live="polite">Подключение интерфейса…</span><button class="gtu-action gtu-quiet" type="button" data-action="events" data-control="events_button" disabled><span data-icon="flag" aria-hidden="true"></span><span id="events-label">События графика (0)</span></button><span class="gtu-progress" id="progress" hidden role="progressbar" aria-label="Выполняется расчёт"></span></footer>
       </main>
     </div>

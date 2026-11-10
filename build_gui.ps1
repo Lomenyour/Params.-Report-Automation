@@ -48,6 +48,7 @@ py -m PyInstaller `
     --collect-all openpyxl `
     --add-data "$PSScriptRoot\config;config" `
     --add-data "$PSScriptRoot\scr\desktop_ui;desktop_ui" `
+    --add-data "$PSScriptRoot\scr\native_source_excel.ps1;." `
     --add-data "$templateSource;word_auto\templates" `
     --distpath "$PSScriptRoot\dist_test" `
     --workpath "$PSScriptRoot\build_test\work" `

@@ -463,6 +463,8 @@ class CalculationApp(tk.Tk):
         can_run = idle and has_book and has_station and has_unit and (
             not importing or (has_raw and bool(self.selected_raw_sheet.get()))
         )
+        if hasattr(self, "source_book_button"):
+            self.source_book_button.configure(state="normal" if can_run and importing else "disabled")
         self.run_button.configure(
             state="normal" if can_run else "disabled",
             text="Перерасчет" if self.has_calculation_run else "Расчет",
@@ -1622,6 +1624,12 @@ class CalculationApp(tk.Tk):
             return
         path = result["path"].resolve()
         self._append_log(f"{kind} сохранён: {path}\n")
+        if result.get("warnings"):
+            messagebox.showwarning(
+                f"{kind} сохранён с замечаниями",
+                f"Файл сохранён:\n{path}\n\n" + "\n".join(result["warnings"]), parent=self,
+            )
+            return
         messagebox.showinfo(
             f"{kind} сформирован", f"Файл сохранён:\n{path}", parent=self,
         )

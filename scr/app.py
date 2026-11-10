@@ -1114,6 +1114,11 @@ class CalculationApp(tk.Tk):
                 sections = collect_result_tables(
                     rh_periods, output_tables, vna_results, economics_result["table"]
                 )
+                contact_names = ()
+                try:
+                    contact_names = self.station_repository.get_station_information(station.id).contact_names
+                except (ValueError, OSError) as error:
+                    print(f"WARNING: контактные лица ТЭЦ не загружены в Word-контекст: {error}")
                 report_data = build_report_data(
                     source_data=source,
                     rh_data=rh_df,
@@ -1130,6 +1135,9 @@ class CalculationApp(tk.Tk):
                     turbine={"name": selected_turbine.name, "number": turbine,
                              "model": selected_turbine.model, "station_id": station.id},
                     manual_periods=periods_mod.PERIOD_OVERRIDES or None,
+                    station={"id": station.id, "name": station.name,
+                             "name_genitive": station.name_genitive,
+                             "contact_names": list(contact_names)},
                 )
                 suffix = "_обновлённые_данные_результаты" if raw_file_path is not None else "_результаты"
                 report_data["gas_passports"] = [entry.to_dict() for entry in passport_entries(passport)] if passport else []

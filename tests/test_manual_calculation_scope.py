@@ -23,6 +23,7 @@ from chart_events import ChartEvent
 from data_loader import RECORD_HOURS
 from gas_passport import GasPassportHistory
 from result_export import save_result_workbook
+from station_profiles import JsonStationRepository, catalog_path
 
 INTERVALS=[('01-01-2026 00:00','01-01-2026 03:30'),
            ('03-01-2026 00:00','03-01-2026 03:30')]
@@ -75,6 +76,8 @@ class ManualWorkerScopeTests(unittest.TestCase):
     def setUp(self):
         self.temp=tempfile.TemporaryDirectory();self.addCleanup(self.temp.cleanup)
         self.root=Path(self.temp.name);self.path=self.root/'Ижевская ГТ-1.xlsx'
+        self.repository=JsonStationRepository(catalog_path(),information_store=self.root/'contacts.json')
+        self.repository.save_station_contacts({'izhevsk_tec':['Иванов Иван Иванович']})
         self.addCleanup(plt.close,'all')
         self.old_overrides=periods.PERIOD_OVERRIDES
         self.addCleanup(setattr,periods,'PERIOD_OVERRIDES',self.old_overrides)
@@ -96,7 +99,7 @@ class ManualWorkerScopeTests(unittest.TestCase):
 
     def calculate(self,overrides,passport=None):
         capture=Capture(overrides)
-        runner=SimpleNamespace(output_queue=capture,station_repository=app.get_station_repository(),
+        runner=SimpleNamespace(output_queue=capture,station_repository=self.repository,
                                _build_vna_overview=app.CalculationApp._build_vna_overview)
         events=tuple(ChartEvent(datetime.datetime(2026,1,day,1),'Событие') for day in (1,2,3))
         with patch('app.resolve_passport',return_value=passport):
@@ -111,6 +114,9 @@ class ManualWorkerScopeTests(unittest.TestCase):
         self.assertEqual(snapshot.station_tariffs.gas_rub_per_nm3, 1.)
         self.assertEqual(snapshot.station_tariffs.electricity_rub_per_mwh, 2.)
         self.assertEqual(snapshot.station_tariffs.electricity_cost_rub_per_mwh, 1.)
+        self.assertEqual(snapshot.report_data['station'],dict(id='izhevsk_tec',name='Ижевская ТЭЦ',
+            name_genitive='Ижевской ТЭЦ',contact_names=['Иванов Иван Иванович'],
+            contact_persons='Иванов Иван Иванович'))
         chart=snapshot.pressure_chart
         expected=self.dates[self.dates.day.isin([1,3])]
         self.assertEqual(pd.DatetimeIndex(chart.values.date).tolist(),expected.tolist())
@@ -165,3 +171,9 @@ class ManualWorkerScopeTests(unittest.TestCase):
             app.CalculationApp._calculation_worker(runner,self.path,None,'',None,1.,2.,1.,(),'izhevsk_tec','1',self.setup)
         self.assertIsNone(capture.result)
         self.assertIn('В выбранных интервалах нет данных',str(capture.error))
+
+    def test_corrupt_contact_store_warns_without_losing_calculation(self):
+        self.repository.information_store.write_text('broken',encoding='utf-8')
+        result=self.calculate(INTERVALS)
+        self.assertEqual(result['snapshot'].report_data['station']['name_genitive'],'Ижевской ТЭЦ')
+        self.assertEqual(result['snapshot'].report_data['station']['contact_persons'],'')

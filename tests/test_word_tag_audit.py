@@ -2,10 +2,15 @@
 import unittest
 
 from jinja2 import Environment
-from audit_word_tags import References, fields
+from audit_word_tags import References, fields, context_schema
 
 
 class WordTagAuditTest(unittest.TestCase):
+    def test_station_fields_and_contact_list_are_available_to_mapping(self):
+        available=context_schema()
+        self.assertTrue({'station.name','station.name_genitive','station.contact_persons',
+                         'station.contact_names[0]'} <= available)
+
     def test_loop_index_aliases_and_assignments_resolve_to_the_same_field(self):
         visitor = References()
         visitor.visit(Environment().parse(

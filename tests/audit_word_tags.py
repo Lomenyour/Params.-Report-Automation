@@ -87,7 +87,7 @@ def context_schema():
     context = build_report_data(source_data=data, rh_data=data, periods_df=periods,
         boundary_table=None, delta_table=None, vna_results=[], economics_result={'table': pd.DataFrame()},
         nominal_hours={}, gas_tariff=0., electricity_tariff=0., electricity_cost=0.,
-        manual_periods=[(data.date.min(), data.date.max())])
+        manual_periods=[(data.date.min(), data.date.max())], station={'contact_names':['']})
     context['current_date'] = ''
     return fields(context)
 

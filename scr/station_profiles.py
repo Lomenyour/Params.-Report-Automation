@@ -19,6 +19,7 @@ class Station:
     name: str
     filename_aliases: tuple[str, ...]
     company_id: str = ""
+    name_genitive: str = ""
 
 
 @dataclass(frozen=True)
@@ -161,7 +162,10 @@ class JsonStationRepository:
         self.companies = {row["id"]: row["name"] for row in raw.get("companies", [])}
         station_names: set[str] = set()
         for row in raw["stations"]:
-            station = Station(row["id"], row["name"], tuple(row["filename_aliases"]), row.get("company_id", ""))
+            station = Station(row["id"], row["name"], tuple(row["filename_aliases"]),
+                              row.get("company_id", ""), row.get("name_genitive", ""))
+            if not isinstance(station.name_genitive, str):
+                raise ValueError("Название ТЭЦ в родительном падеже должно быть строкой.")
             if station.company_id and station.company_id not in self.companies:
                 raise ValueError("Не найдена компания станции.")
             name_key = _normalized_name(station.name)

@@ -331,6 +331,22 @@ def _economics_total(table: pd.DataFrame | None) -> Any:
     return table.iloc[-1]
 
 
+def _station_context(record=None) -> dict[str, Any]:
+    """Keep station text in the snapshot; old JSON needs no live catalog lookup."""
+    values = dict(record or {})
+    names = values.get("contact_names", [])
+    if not isinstance(names, (list, tuple)) or any(not isinstance(name, str) for name in names):
+        raise ValueError("Поле station.contact_names должно быть списком имён.")
+    names = list(names)
+    return {
+        "id": values.get("id") or "",
+        "name": values.get("name") or "",
+        "name_genitive": values.get("name_genitive") or "",
+        "contact_names": names,
+        "contact_persons": "; ".join(names) if names else values.get("contact_persons") or "",
+    }
+
+
 def build_report_data(
     *,
     source_data: pd.DataFrame | None,
@@ -347,6 +363,7 @@ def build_report_data(
     source_file: str | Path | None = None,
     turbine: dict[str, str] | None = None,
     manual_periods=None,
+    station: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Собирает JSON-контекст после финального выбора периодов."""
 
@@ -422,6 +439,7 @@ def build_report_data(
 
     return {
         "schema_version": "1.1",
+        "station": _station_context(station),
         "turbine": dict(turbine or {"name": "", "number": "", "model": ""}),
         "source": {
             "file_name": Path(source_file).name if source_file else "",
@@ -501,6 +519,7 @@ def load_report_data(json_path: str | Path) -> dict[str, Any]:
         data = json.load(stream)
     if not isinstance(data, dict):
         raise ValueError("Корень JSON с данными отчёта должен быть объектом.")
+    data["station"] = _station_context(data.get("station"))
     periods = data.get("periods", [])
     if not isinstance(periods, list):
         raise ValueError("Поле periods в JSON должно быть массивом.")
@@ -560,6 +579,7 @@ def generate_report(
         keep_trailing_newline=True,
     )
     context = dict(report_data)
+    context["station"] = _station_context(context.get("station"))
     context.setdefault("turbine", {"name": "", "number": "", "model": ""})
     # Дата относится к моменту формирования Word, а не к запуску расчёта.
     context["current_date"] = datetime.now().strftime("%d.%m.%Y")

@@ -77,6 +77,8 @@ class FormulaParser:
                 left = ['number', float(token.value.upper() == 'TRUE')]
             elif token.subtype == 'RANGE':
                 left = self.reference(token.value)
+            elif token.subtype == 'ERROR' and token.value.upper() == '#REF!':
+                raise ValueError('Повреждённая ссылка #REF! в формуле. Исправьте её в исходной книге.')
             else:
                 raise ValueError('Не поддерживается операнд ' + token.value)
         else:
@@ -103,6 +105,8 @@ class FormulaParser:
         self.pos += 1
 
     def reference(self, value):
+        if '#REF!' in value.upper():
+            raise ValueError('Повреждённая ссылка #REF! в формуле: '+value+'. Исправьте её в исходной книге.')
         sheet, address = value.rsplit('!', 1) if '!' in value else (self.sheet, value)
         sheet = sheet.strip("'").replace("''", "'")
         if '[' in sheet or ']' in sheet:

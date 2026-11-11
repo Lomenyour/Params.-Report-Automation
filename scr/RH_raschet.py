@@ -23,7 +23,10 @@ from periods import (
     print_period_overrides_template,
     make_periods_display_table,
 )
-from data_loader import RECORD_HOURS, load_source_data, prepare_rh_data
+from data_loader import (
+    RECORD_HOURS, load_source_data, prepare_rh_data,
+    PRESSURE_KEYS, available_pressure_channels,
+)
 
 
 # Windows-консоль по умолчанию работает в cp1251 и падает
@@ -142,7 +145,7 @@ OPTIONAL_TITLES = {
 }
 
 # На графике перепадов рисуем ТОЛЬКО перепады — не ВНА и не мощность.
-PRESSURE_SERIES = ["vlo", "fgo", "fso", "fto", "fgo_fto"]
+PRESSURE_SERIES = list(PRESSURE_KEYS)
 
 
 def find_column(columns, aliases, parameter_name):
@@ -473,8 +476,7 @@ def plot_pressure_drops(df, periods_df, show=True):
 
     series = [
         (key, OPTIONAL_TITLES[key])
-        for key in PRESSURE_SERIES
-        if key in df.columns and np.isfinite(pd.to_numeric(df[key], errors="coerce")).any()
+        for key in available_pressure_channels(df)
     ]
 
     has_power_n = "power_n" in df.columns
@@ -830,7 +832,7 @@ def format_boundary_value(value):
     if value is None:
         return "—"
 
-    if pd.isna(value):
+    if pd.isna(value) or not np.isfinite(value):
         return "—"
 
     return f"{value:.1f}"
@@ -844,6 +846,7 @@ def build_boundary_table(df, periods_df):
     rows = []
     summaries = {}
     pressure_deltas = {}
+    available_pressures = set(available_pressure_channels(df))
 
     for row in periods_df.itertuples(index=False):
 
@@ -872,8 +875,8 @@ def build_boundary_table(df, periods_df):
 
                 record["дата"] = "—"
 
-                for _, title in BOUNDARY_PARAMETERS:
-                    record[title] = "—"
+                for key, title in BOUNDARY_PARAMETERS:
+                    record[title] = "" if key in PRESSURE_SERIES and key not in available_pressures else "—"
 
             else:
 
@@ -881,9 +884,8 @@ def build_boundary_table(df, periods_df):
 
                 for key, title in BOUNDARY_PARAMETERS:
                     record[title] = (
-                        format_boundary_value(boundary[key])
-                        if key in df.columns
-                        else "—"
+                        "" if key in PRESSURE_SERIES and key not in available_pressures
+                        else format_boundary_value(boundary[key]) if key in df.columns else "—"
                     )
 
             rows.append(record)

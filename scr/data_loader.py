@@ -83,6 +83,15 @@ SHORT_NAMES = {
 }
 
 
+PRESSURE_KEYS = ("vlo", "fgo", "fso", "fto", "fgo_fto")
+
+
+def available_pressure_channels(frame):
+    """Independent pressure channels with at least one finite reading."""
+    return [key for key in PRESSURE_KEYS if key in frame
+            and np.isfinite(pd.to_numeric(frame[key], errors="coerce")).any()]
+
+
 REQUIRED_NAMES = [
     "date", "t", "vna", "tkk", "p_atm_pa", "p_nk_pa", "p_kk_mpa",
     "power", "fuel",

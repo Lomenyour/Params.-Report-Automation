@@ -86,6 +86,11 @@ class FormulaTests(unittest.TestCase):
                                    [22000.,0.,0.])
         self.assertEqual(evaluator.errors['IFERROR: использована подстановка из формулы'],2)
 
+    def test_broken_references_are_explicit_parse_errors(self):
+        for text in ('#REF!','A2+Поправки!#REF!'):
+            with self.subTest(text=text),self.assertRaisesRegex(ValueError,'Повреждённая ссылка #REF!'):
+                FormulaParser(text,2).parse()
+
 
 class WorkbookProfileTests(unittest.TestCase):
     def setUp(self):
@@ -111,6 +116,23 @@ class WorkbookProfileTests(unittest.TestCase):
         np.testing.assert_allclose(canonical.p_nk_pa,100000)
         np.testing.assert_allclose(canonical.p_kk_mpa,1)
         self.assertNotIn('O',setup.recipes);self.assertNotIn('P',setup.recipes)
+
+    def test_unparseable_formula_tie_reports_broken_reference(self):
+        book=load_workbook(self.path)
+        for row in (2,3,4):book['Данные'][f'I{row}']=f'=Данные!H{row}+Поправки!#REF!'
+        book.save(self.path);self.layout=wp.read_layout(self.path)
+        setup=self.setup_book()
+        with self.assertRaisesRegex(ValueError,'Колонка I: Повреждённая ссылка #REF!'):
+            wp.validate_recalculation(setup)
+        self.assertFalse(self.store.exists())
+
+    def test_valid_formula_tie_still_requires_clarification(self):
+        book=load_workbook(self.path)
+        for row in (2,3,4):book['Данные'][f'I{row}']=f'=H{row}/(N{row}+{row})'
+        book.save(self.path);self.layout=wp.read_layout(self.path)
+        setup=self.setup_book()
+        with self.assertRaisesRegex(ValueError,'Колонка I: разные формулы'):
+            wp.validate_recalculation(setup)
 
     def test_confirmation_only_saves_mappings_not_coefficients(self):
         rows=wp.suggestions(self.layout,'station','1')

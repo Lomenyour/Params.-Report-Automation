@@ -475,6 +475,9 @@ def calculation_recipes(layout, columns):
                 if '3600.0' in json.dumps(node[2]) and info and info['dimension']=='normal_volume_flow':
                     recipes[col]['gas_density_conversion']=True
         row.update(recipe=selected['id'] if selected else '',formula_conflict=bool(variants and selected is None))
+        row.pop('formula_error',None)
+        if variants and all(item.get('error') for item in variants):
+            row['formula_error']=variants[0]['error']
         row.pop('excluded_calculation',None)
     excluded={col for col,h in layout.headers.items() if any(word in clean(h) for word in ('недовыработка','перерасход'))}
     service={row['column'] for row in columns if row['role'] in ('date','hours_input')}
@@ -560,6 +563,8 @@ def validate_recalculation(setup):
     for row in setup.columns:
         if row['column'] not in needed: continue
         if row.get('formula_conflict') and row['kind']=='computed':
+            if row.get('formula_error'):
+                raise ValueError(f"Колонка {row['column']}: {row['formula_error']}")
             raise ValueError('Колонка '+row['column']+': разные формулы встречаются одинаково часто. Уточните основную зависимость в исходной книге.')
         if row['role'] in CORRECTION_ROLES and row['column'] not in setup.recipes:
             raise ValueError('Для поправки '+ROLES[row['role']][0]+' ('+row['column']+') нет формулы или подтверждённой полной постоянной колонки.')

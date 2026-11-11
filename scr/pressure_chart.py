@@ -25,7 +25,7 @@ from openpyxl.utils import get_column_letter
 from openpyxl.utils.datetime import to_excel
 from openpyxl.worksheet.worksheet import Worksheet
 
-from data_loader import SHORT_NAMES, _map_headers
+from data_loader import SHORT_NAMES, _map_headers, available_pressure_channels
 from chart_events import ChartEvent
 from chart_text import FONT_SIZE, LABEL_SIZE, RichDataLabel, rich_text
 from degradation_chart import (
@@ -77,17 +77,8 @@ def _number(frame, key):
 
 
 def pressure_channels(frame):
-    """Совмещённый ФГО+ФТО или отдельные фильтры; ВЛО/ФСО независимы."""
-    available = {
-        key for key in PRESSURE_CHANNELS
-        if np.isfinite(_number(frame, key)).any()
-    }
-    keys = ["vlo"] if "vlo" in available else []
-    if "fgo_fto" in available:
-        keys.extend(key for key in ("fso", "fgo_fto") if key in available)
-    else:
-        keys.extend(key for key in ("fgo", "fso", "fto") if key in available)
-    return keys
+    """Тот же независимый набор перепадов, что на графике приложения."""
+    return available_pressure_channels(frame)
 
 
 def _source_columns(headers):
@@ -275,6 +266,8 @@ def _table_cell(sheet, value, kind="body"):
 
 
 def _boundary_value(value, is_date=False):
+    if isinstance(value, str) and not value.strip():
+        return None
     if value is None or pd.isna(value) or str(value).strip() == "—":
         return "—"
     if is_date:
@@ -426,12 +419,18 @@ def write_pressure_sheet(book, headers, header_row, row_count, source: PressureC
     chart.legend.position = "b"
     chart.legend.overlay = False
     chart.legend.txPr = _text()
+    multiple_legend_rows = len(series_keys) > 3
     chart.legend.layout = Layout(manualLayout=ManualLayout(
-        xMode="edge", yMode="edge", x=0.15, y=0.93, w=0.7, h=0.05,
+        xMode="edge", yMode="edge",
+        x=0.08 if multiple_legend_rows else 0.15,
+        y=0.89 if multiple_legend_rows else 0.93,
+        w=0.84 if multiple_legend_rows else 0.7,
+        h=0.10 if multiple_legend_rows else 0.05,
     ))
     chart.layout = Layout(manualLayout=ManualLayout(
         layoutTarget="inner", xMode="edge", yMode="edge",
-        x=0.075, y=0.035, w=0.845, h=0.80,
+        x=0.075, y=0.035, w=0.82 if multiple_legend_rows else 0.845,
+        h=0.74 if multiple_legend_rows else 0.80,
     ))
     chart.visible_cells_only = False
     chart.display_blanks = "gap"

@@ -18,7 +18,7 @@ NS = {"c": "http://schemas.openxmlformats.org/drawingml/2006/chart",
 
 
 class PressureChartTypographyTest(unittest.TestCase):
-    def build(self):
+    def build(self, include_fso=False):
         dates = pd.date_range("2025-11-08", periods=3, freq="30min")
         values = pd.DataFrame({"date": dates, "period": 1, "hours": [0., .5, 1.],
             "vlo": [194.1, 195., 196.], "fgo_fto": [275., 276., 277.],
@@ -31,6 +31,10 @@ class PressureChartTypographyTest(unittest.TestCase):
             for tag, date in (("нач", dates[0]), ("кон", dates[-1]))])
         book = Workbook(write_only=True)
         headers = ["Дата", "ВЛО, Па", "ФГО+ФТО, Па", "N, МВт"]
+        if include_fso:
+            values['fso']=[10.,20.,30.]
+            boundaries['ФСО']=[10.,30.]
+            headers.append('ФСО, Па')
         book.create_sheet("Данные").append(headers)
         write_pressure_sheet(book, headers, 0, len(values) + 1,
             PressureChartData(values, periods, boundaries,
@@ -39,6 +43,39 @@ class PressureChartTypographyTest(unittest.TestCase):
         book.save(buffer)
         buffer.seek(0)
         return buffer
+
+    def test_fso_is_independent_of_combined_filter_with_its_own_excel_values_and_labels(self):
+        with ZipFile(self.build(include_fso=True)) as archive:
+            chart=ET.fromstring(archive.read('xl/charts/chart1.xml'))
+            series=chart.findall('.//c:scatterChart/c:ser',NS)
+            fso=next(item for item in series if item.find('c:tx/c:v',NS).text=='Перепад давления на ФСО')
+            self.assertEqual(fso.find('c:marker/c:spPr/a:solidFill/a:srgbClr',NS).get('val'),'17BECF')
+            self.assertEqual([float(item.text) for item in fso.findall('c:yVal/c:numRef/c:numCache/c:pt/c:v',NS)],
+                             [10.,20.,30.])
+            formula=fso.find('c:yVal/c:numRef/c:f',NS).text
+            self.assertIn('$AZ$',formula)
+            labels=[''.join(item.itertext()) for item in chart.findall('.//c:dLbl/c:tx/c:rich',NS)]
+            self.assertTrue(any('ΔPФСО = 10,0 Па' in text for text in labels))
+            self.assertTrue(any('ΔPФСО = 30,0 Па' in text for text in labels))
+            combined=next(item for item in series if item.find('c:tx/c:v',NS).text=='Перепад давления на ФГО+ФТО')
+            self.assertEqual([float(item.text) for item in combined.findall('c:yVal/c:numRef/c:numCache/c:pt/c:v',NS)],
+                             [275.,276.,277.])
+
+    def test_gui_fso_does_not_change_existing_curve_colors_or_input_values(self):
+        from RH_raschet import plot_pressure_drops
+        import matplotlib.pyplot as plt
+        values=pd.DataFrame({'date':pd.date_range('2026-01-01',periods=2,freq='30min'),
+                             'fgo':[10.,11.],'fto':[20.,21.]})
+        periods=pd.DataFrame(columns=['period','date_start','date_end'])
+        previous=plot_pressure_drops(values,periods,show=False)
+        values['fso']=[30.,31.];before=values.copy(deep=True)
+        updated=plot_pressure_drops(values,periods,show=False)
+        old={line.get_label():line.get_color() for line in previous.axes[0].lines}
+        new={line.get_label():line.get_color() for line in updated.axes[0].lines}
+        for title,color in old.items():self.assertEqual(new[title],color)
+        self.assertEqual(new['Перепад ФСО, Па'],'#17BECF')
+        pd.testing.assert_frame_equal(values,before)
+        plt.close(previous);plt.close(updated)
 
     def test_axes_are_16pt_and_parameter_labels_10pt_with_small_subscripts(self):
         with ZipFile(self.build()) as archive:

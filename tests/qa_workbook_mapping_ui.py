@@ -54,11 +54,12 @@ try:
     c=window.controller;c.messages.showerror=Mock()
     with tempfile.TemporaryDirectory() as temporary,patch('workbook_profile.profile_path',return_value=Path(temporary)/'profiles.json'):
         path=Path(temporary)/'book.xlsx';fixture(path)
-        book=load_workbook(path);sheet=book['Данные'];sheet['N1']='kTN';sheet['R1']='Дополнительный датчик';sheet['S1']='kPη';sheet['T1']='Посторонний итог'
+        book=load_workbook(path);sheet=book['Данные'];sheet['N1']='kTN';sheet['R1']='Дополнительный датчик';sheet['S1']='kPη';sheet['T1']='Посторонний итог';sheet['U1']='ФСО, Па'
         for col,label in (('V','kφN'),('W','kPN'),('X','kΔPвхN'),('Y','kΔPвыхN')):sheet[f'{col}1']=label
         for row in (2,3,4):
             sheet[f'Q{row}']=f'=H{row}+1';sheet[f'R{row}']=0;sheet[f'S{row}']=1
             sheet[f'M{row}']=f'=84+Q{row}*0';sheet[f'T{row}']=f'=H{row}*2'
+            sheet[f'U{row}']=10+row
             for col in ('V','W','X','Y'):sheet[f'{col}{row}']=1
             sheet[f'I{row}']=f'=H{row}/(V{row}*W{row}*X{row}*N{row}*Y{row})'
         book.save(path)
@@ -73,6 +74,9 @@ try:
             assert js("document.querySelector('.gtu-book-table thead tr').cells.length===4")
             assert js("document.querySelectorAll('.gtu-book-table td small').length===0")
             assert js("document.querySelector('[aria-label=\"Тип C\"]').value==='Служебный'")
+            assert js("document.querySelector('[aria-label=\"Параметр U\"]').value==='Перепад ФСО'")
+            choose('Параметр U','Вспомогательная колонка')
+            choose('Параметр U','Перепад ФСО')
             assert js("""[...document.querySelectorAll('.gtu-book-table tbody tr')].every(row=>{
               const controls=[...row.querySelectorAll('.gtu-choice')].map(x=>x.getBoundingClientRect());
               return controls.length===3&&Math.max(...controls.map(x=>x.top))-Math.min(...controls.map(x=>x.top))<1;
@@ -111,6 +115,7 @@ try:
             assert c.dialog is None and dialog.result is not None,c.messages.showerror.call_args
             assert dialog.result.bindings['date']['column']=='C'
             assert dialog.result.bindings['t']['column']=='A'
+            assert dialog.result.bindings['fso']['column']=='U'
             assert 'Q' in dialog.result.recipes
             assert 'T' not in dialog.result.recipes
             assert not (Path(temporary)/'profiles.json').exists()

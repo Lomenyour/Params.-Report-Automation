@@ -96,6 +96,32 @@ class WorkbookProfileTests(unittest.TestCase):
         self.assertNotIn('coefficients',saved['profiles']['station|1']['current'])
         self.assertTrue(wp.suggestions(self.layout,'station','1'))
 
+    def test_fso_mapping_survives_import_unit_conversion_and_explicit_helper_choice(self):
+        from data_loader import prepare_rh_data
+        book=load_workbook(self.path);sheet=book['Данные'];sheet['Q1']='ФСО, кПа'
+        for row in (2,3,4):sheet[f'Q{row}']=.1
+        book.save(self.path);self.layout=wp.read_layout(self.path)
+        setup=self.setup_book(save=True)
+        self.assertEqual(setup.sensor_columns['fso'],'Q')
+        self.assertEqual(setup.bindings['fso']['unit'],'кПа')
+        np.testing.assert_allclose(prepare_rh_data(setup.canonical(self.layout.values)).fso,100.)
+        raw=pd.DataFrame({'FILTER':[250.]},index=pd.to_datetime(['2026-01-01 00:30']))
+        mapping=SensorMapping('FILTER','Q',.001,parameter='fso',source_unit='Па',target_unit='кПа')
+        with patch('data_assembly._read_sensor_sheet',return_value=raw),patch('data_assembly.source_selection_info',return_value={}):
+            merged=assemble_sensor_data(self.path,self.path,'Sheet1',[mapping],station_id='syz_tec',
+                unit='10',book_setup=setup)
+        self.assertEqual(merged.values.loc[pd.Timestamp('2026-01-01 00:30'),'Q'],.25)
+        np.testing.assert_allclose(setup.canonical(merged.values).fso,[100.,250.,100.])
+        saved=json.loads(self.store.read_text(encoding='utf-8'))
+        old=next(row for row in saved['profiles']['station|1']['current']['columns'] if row['column']=='Q')
+        old.update(role='',mapping_version=2)
+        self.store.write_text(json.dumps(saved),encoding='utf-8')
+        rows=wp.suggestions(self.layout,'station','1')
+        self.assertEqual(next(row for row in rows if row['column']=='Q')['role'],'fso')
+        next(row for row in rows if row['column']=='Q')['role']=''
+        wp.confirm(self.layout,'station','1',rows,save=True)
+        self.assertEqual(next(row for row in wp.suggestions(self.layout,'station','1') if row['column']=='Q')['role'],'')
+
     def test_ready_book_temperature_and_inch_pressure_use_shared_converter(self):
         from unit_conversions import convert_units
         for unit in ('K','°F'):

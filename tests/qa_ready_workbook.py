@@ -23,7 +23,7 @@ import matplotlib.pyplot as plt
 import pandas as pd
 import app
 import workbook_profile as wp
-from data_assembly import source_mapping_info, load_saved_mappings
+from data_assembly import SensorMapping, source_mapping_info, load_saved_mappings
 from result_export import save_result_workbook
 from reporting import generate_report
 
@@ -52,18 +52,30 @@ def main():
     parser.add_argument('--raw', type=Path)
     parser.add_argument('--sheet', default='')
     parser.add_argument('--baseline-vna', type=Path)
+    parser.add_argument('--station-id', help='Explicit catalogue station when the filename is ambiguous')
+    parser.add_argument('--unit', help='Explicit catalogue turbine number')
+    parser.add_argument('--mappings', type=Path, help='Audited SensorMapping list, used in memory only')
+    parser.add_argument('--column-overrides', type=Path, help='Audited column-to-field overrides, in memory only')
+    parser.add_argument('--zero-tariffs', action='store_true', help='Technical trial without monetary conclusions')
+    parser.add_argument('--skip-word', action='store_true', help='Do not render the user Word template')
     args = parser.parse_args()
     args.output.mkdir(parents=True, exist_ok=True)
     repository = app.get_station_repository()
-    station = repository.detect_station(args.book)
+    station = repository.get_station(args.station_id) if args.station_id else repository.detect_station(args.book)
     if station is None:
         raise ValueError('Станция не распознана; этот QA не подставляет чужой профиль.')
-    turbine = repository.detect_turbine(args.book, station.id)
+    turbine = repository.get_turbine(station.id, args.unit) if args.unit else repository.detect_turbine(args.book, station.id)
     if turbine is None:
         raise ValueError('ГТУ не распознана.')
     layout = wp.read_layout(args.book)
-    setup = wp.confirm(layout, station.id, turbine.number,
-                       wp.suggestions(layout, station.id, turbine.number), save=False)
+    rows = wp.suggestions(layout, station.id, turbine.number)
+    if args.column_overrides:
+        overrides = json.loads(args.column_overrides.read_text(encoding='utf-8'))
+        if set(overrides) - set(layout.headers):
+            raise ValueError('В уточнении указана неизвестная колонка.')
+        for row in rows:
+            row.update(overrides.get(row['column'], {}))
+    setup = wp.confirm(layout, station.id, turbine.number, rows, save=False)
     source = setup.canonical(layout.values)
     audit = setup.audit(source)
     dates = source.date.dropna()
@@ -79,12 +91,15 @@ def main():
     mappings = None
     if args.raw:
         headers, duplicates = source_mapping_info(args.raw, args.sheet, station_id=station.id)
-        mappings = load_saved_mappings(args.book, headers, station_id=station.id,
-            unit=turbine.number, target_headers=setup.import_headers(layout.headers),
-            parameter_columns=setup.sensor_columns)
+        mappings = ([SensorMapping(**item) for item in json.loads(args.mappings.read_text(encoding='utf-8'))]
+            if args.mappings else load_saved_mappings(args.book, headers, station_id=station.id,
+                unit=turbine.number, target_headers=setup.import_headers(layout.headers),
+                parameter_columns=setup.sensor_columns))
         if not mappings:
             raise ValueError('Нет сохранённого маппинга датчиков; QA не назначает каналы сам.')
         mappings = [item for item in mappings if item.source not in duplicates]
+
+    tariffs = (0., 0., 0.) if args.zero_tariffs else (7.773, 2253.66, 1200.)
 
     def calculate(label, run_vna):
         with (args.output / f'{label}.log').open('w', encoding='utf-8') as log:
@@ -95,7 +110,7 @@ def main():
             with patch.object(app, 'run_vna', run_vna):
                 # Tariffs here are explicit QA inputs, identical for both runs.
                 app.CalculationApp._calculation_worker(runner, args.book, args.raw,
-                    args.sheet, mappings, 7.773, 2253.66, 1200., (), station.id, turbine.number, setup)
+                    args.sheet, mappings, *tariffs, (), station.id, turbine.number, setup)
             if capture.error or capture.result is None:
                 raise AssertionError(capture.error or 'Нет результата расчёта')
             plt.close('all')
@@ -127,9 +142,12 @@ def main():
         pressure_chart=snapshot.pressure_chart, correction_sheet=snapshot.correction_sheet,
         gas_passport=snapshot.gas_passport, correction_profile=snapshot.correction_profile,
         book_profile=snapshot.book_profile)
-    generate_report(snapshot.report_data, output_path=args.output / 'report.docx')
+    if not args.skip_word:
+        generate_report(snapshot.report_data, output_path=args.output / 'report.docx')
+    if result.get('pressure_figure') is not None:
+        result['pressure_figure'].savefig(args.output / 'pressure.png', dpi=130)
     report = dict(audit=audit, seconds=seconds, baseline_equal=True if baseline else None,
-                  qa_tariffs=[7.773, 2253.66, 1200.],
+                  qa_tariffs=list(tariffs),
                   periods=len(result['vna_periods']), top10_rows=[len(t) for t in result['vna_results']])
     (args.output / 'qa.json').write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding='utf-8')
     print(json.dumps(report, ensure_ascii=False))

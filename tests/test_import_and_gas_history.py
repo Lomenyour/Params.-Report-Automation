@@ -190,6 +190,39 @@ class ReaderTests(unittest.TestCase):
                      [['Время','A'],['2026-01-01',1],['2026-01-01',2]]):
             with self.assertRaises(ValueError):_horizontal(pd.DataFrame(rows))
 
+    def test_emb_internal_tag_matches_header_and_metadata_warning_is_explicit(self):
+        table=pd.DataFrame([
+            ['[17] SPEED_ZQ02 _SPEED_ZQ03 [CPU]',None,None,None,'Частота вращения, об./мин.'],
+            ['[5] _CALC_12_200 [CPU]',None,None,None,'Барометрическое давление, кПа'],
+            ['[14] FLOW FLOW [CPU]',None,None,None,'Расход газа, нм3/ч'],
+            ['Время','[17] _SPEED_ZQ03.1','[5] _CALC_12_200.1','[14] _FLOW.1'],
+            ['20.06.26 00:00:00:000',3000.,100.,40000.],
+            ['20.06.26 00:30:00:000',2999.,101.,41000.],
+        ])
+        result=_horizontal(table)
+        self.assertEqual(result.columns.tolist(),['date','SPEED_ZQ03','CALC_12_200','FLOW'])
+        self.assertEqual(result['SPEED_ZQ03'].tolist(),[3000.,2999.])
+        info=result.attrs['channel_info']
+        self.assertEqual(info['SPEED_ZQ03']['description'],'Частота вращения, об./мин.')
+        self.assertEqual(info['SPEED_ZQ03']['display_code'],'SPEED_ZQ02')
+        self.assertEqual(info['SPEED_ZQ03']['source_code'],'SPEED_ZQ03')
+        self.assertEqual(info['CALC_12_200']['unit'],'кПа')
+        self.assertEqual(info['FLOW']['description'],'Расход газа, нм3/ч')
+        self.assertEqual(len(result.attrs['metadata_warnings']),1)
+        self.assertIn('SPEED_ZQ02',result.attrs['metadata_warnings'][0])
+        self.assertIn('SPEED_ZQ03',result.attrs['metadata_warnings'][0])
+        table.iat[3,1]='[17] _SPEED_ZQ02.1'
+        with self.assertRaisesRegex(ValueError,'противоречит внутреннему тегу'):
+            _horizontal(table)
+
+    def test_emb_diagnostics_are_carried_into_import_log(self):
+        from data_assembly import source_selection_info
+        frame=pd.DataFrame({'TAG':[1.]})
+        frame.attrs['metadata_warnings']=['Проверить отображаемое имя']
+        with patch('data_assembly._read_sensor_sheet',return_value=frame):
+            self.assertEqual(source_selection_info('test.xls','Sheet1')['metadata_warnings'],
+                             ['Проверить отображаемое имя'])
+
     def test_pressure_headers_normalize_without_modifying_inputs(self):
         original=pd.DataFrame([[pd.Timestamp('2026-01-01'),100.,990.,8.,20.,30.,90.,100.,25000.,85.]],
                               columns=['Дата','Pатм, кПа','Pнк, мбар','Ркк, бар','Тнк, °С','Ткк, °С','ВНА','Nприв, МВт','Bприв, нм3/ч','ηoi_cprop'])

@@ -54,7 +54,7 @@ ROLES = {
     'gas_density':('Плотность газа','кг/нм³'), 'gas_c_h':('Массовое отношение C/H',''),
     'power_factor':('Коэффициент мощности',''),
     'vlo':('Перепад ВЛО','Па'), 'fgo':('Перепад ФГО','Па'),
-    'fto':('Перепад ФТО','Па'), 'fgo_fto':('Перепад ФГО+ФТО','Па'),
+    'fso':('Перепад ФСО','Па'), 'fto':('Перепад ФТО','Па'), 'fgo_fto':('Перепад ФГО+ФТО','Па'),
     'exhaust_pressure':('Давление уходящих газов','кПа'),
     'exhaust_temperature':('Температура уходящих газов','°C'),
 }
@@ -64,7 +64,7 @@ SENSOR_ROLES = {'ambient_temperature':'ambient_temperature','relative_humidity':
     'inlet_temperature':'t','outlet_temperature':'tkk','outlet_pressure':'p_kk_mpa',
     'vna':'vna','rpm':'rpm','power':'power_n','fuel_flow':'fuel_flow',
     'fuel_pressure':'gas_pressure','fuel_temperature':'gas_temperature',
-    'vlo':'vlo','fgo':'fgo','fto':'fto','fgo_fto':'fgo_fto',
+    'vlo':'vlo','fgo':'fgo','fso':'fso','fto':'fto','fgo_fto':'fgo_fto',
     'exhaust_pressure':'exhaust_pressure','exhaust_temperature':'exhaust_temperature','power_factor':'power_factor'}
 REQUIRED = {'date','t','tkk','vna','p_atm_pa','p_kk_mpa','power','fuel','eta_compressor'}
 _CACHE = {}
@@ -294,6 +294,9 @@ def suggestions(layout,station,unit):
         previous=(old.get(clean(header)) or embedded.get(clean(header))) if header and counts[clean(header)]==1 else (
             by_position.get(col) or embedded_positions.get(col))
         role=previous.get('role','') if previous else suggested_role(header,station)
+        # FSO used to have no semantic role and was necessarily a helper.
+        # Offer its newly supported role for exact headers on confirmation.
+        if previous and previous.get('mapping_version',0)<3 and not role and suggested_role(header,station)=='fso': role='fso'
         # Upgrade old generic correction assignments once. New explicit helper
         # choices carry mapping_version and must remain user-owned thereafter.
         upgraded=bool(previous and not role and not previous.get('mapping_version') and correction_role(header))
@@ -389,7 +392,7 @@ class BookSetup:
         for key in ('power','fuel','fuel_specific','eta_compressor'):
             if key in source:
                 summary['пропуски '+ROLES[key][0]]=int(pd.to_numeric(source[key],errors='coerce').isna().sum())
-        for key in ('vlo','fgo','fto','fgo_fto'):
+        for key in ('vlo','fgo','fso','fto','fgo_fto'):
             if key in source: summary['отрицательные '+key]=int((working & (source[key]<0)).sum())
         return summary
 
@@ -529,7 +532,7 @@ def confirm(layout,station,unit,rows,*,save=True):
         if role in CORRECTION_ROLES and kind!='computed':
             raise ValueError('Поправка должна иметь расчётный тип: '+col)
         columns.append({'column':col,'header':layout.headers[col] or '', 'role':role,
-                        'unit':source_unit,'kind':kind,'mapping_version':2})
+                        'unit':source_unit,'kind':kind,'mapping_version':3})
     columns,recipes=calculation_recipes(layout,columns)
     missing=REQUIRED-assigned
     if not assigned.intersection({'p_nk_pa','inlet_pressure_drop'}): missing.add('p_nk_pa')

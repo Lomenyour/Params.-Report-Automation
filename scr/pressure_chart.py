@@ -42,6 +42,7 @@ from rh_chart import prepare_rh_plots, add_rh_charts
 PRESSURE_CHANNELS = {
     "vlo": ("ВЛО, Па", "0070C0"),
     "fgo": ("ФГО, Па", "00B050"),
+    "fso": ("ФСО, Па", "17BECF"),
     "fto": ("ФТО, Па", "00B0F0"),
     "fgo_fto": ("ФГО+ФТО, Па", "00B050"),
 }
@@ -76,16 +77,16 @@ def _number(frame, key):
 
 
 def pressure_channels(frame):
-    """Совмещённый канал или отдельные ФГО и ФТО, только при наличии данных."""
+    """Совмещённый ФГО+ФТО или отдельные фильтры; ВЛО/ФСО независимы."""
     available = {
         key for key in PRESSURE_CHANNELS
         if np.isfinite(_number(frame, key)).any()
     }
     keys = ["vlo"] if "vlo" in available else []
     if "fgo_fto" in available:
-        keys.append("fgo_fto")
+        keys.extend(key for key in ("fso", "fgo_fto") if key in available)
     else:
-        keys.extend(key for key in ("fgo", "fto") if key in available)
+        keys.extend(key for key in ("fgo", "fso", "fto") if key in available)
     return keys
 
 
@@ -315,7 +316,7 @@ def _boundary_tables(sheet, periods, boundaries):
                 merge(row, column, column + 1)
                 merge(row, column + 2, column + 4)
                 label = "Дата точки" if key == "дата" else (
-                    f"{key}, Па" if key in {"ВЛО", "ФГО", "ФТО", "ФГО+ФТО"}
+                    f"{key}, Па" if key in {"ВЛО", "ФГО", "ФСО", "ФТО", "ФГО+ФТО"}
                     else f"{key}, МВт" if key in {"N", "Nприв"} else key
                 )
                 put(row, column, label)

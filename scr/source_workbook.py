@@ -143,6 +143,8 @@ def save_source_workbook(book, source, sheet, mappings, destination, *, setup, s
     diagnostics = plan.get('diagnostics') or {}
     log(f"Пропущено строк выгрузки: {diagnostics.get('skipped_rows', 0)}, "
         f"из них без распознанной даты: {diagnostics.get('invalid_dates', 0)}.\n")
+    for warning in diagnostics.get('metadata_warnings', []):
+        log(f'Внимание: {warning}\n')
     for mapping in mappings:
         if mapping.status == 'mapped' and (mapping.factor != 1 or mapping.offset != 0):
             log(f'Единицы {mapping.source} → {mapping.target}: ×{mapping.factor:.12g}'

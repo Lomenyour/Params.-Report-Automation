@@ -313,8 +313,11 @@ def source_channel_info(path, sheet_name):
 
 def source_selection_info(path, sheet_name):
     frame = _read_sensor_sheet(path, sheet_name)
-    return {"format": frame.attrs.get("source_format", ""), "rows": len(frame),
-            "skipped_rows": frame.attrs.get("skipped_rows", 0), "invalid_dates": frame.attrs.get("invalid_dates", 0)}
+    result = {"format": frame.attrs.get("source_format", ""), "rows": len(frame),
+              "skipped_rows": frame.attrs.get("skipped_rows", 0), "invalid_dates": frame.attrs.get("invalid_dates", 0)}
+    if frame.attrs.get('metadata_warnings'):
+        result['metadata_warnings'] = frame.attrs['metadata_warnings']
+    return result
 
 
 def source_mapping_info(

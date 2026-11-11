@@ -207,6 +207,7 @@ Word», поэтому не зависит от даты расчёта или �
 | {{ period.boundary.start.date }} | дата | Дата начала |
 | {{ period.boundary.start.vlo_pa }} | ВЛО | Перепад ВЛО |
 | {{ period.boundary.start.fgo_pa }} | ФГО | Перепад ФГО |
+| {{ period.boundary.start.fso_pa }} | ФСО | Перепад ФСО |
 | {{ period.boundary.start.fto_pa }} | ФТО | Перепад ФТО |
 | {{ period.boundary.start.fgo_fto_pa }} | ФГО+ФТО | Совмещённый перепад |
 | {{ period.boundary.start.vna_percent }} | ВНА | Положение ВНА |
@@ -221,6 +222,7 @@ Word», поэтому не зависит от даты расчёта или �
 | {{ period.boundary.end.date }} | дата | Дата конца |
 | {{ period.boundary.end.vlo_pa }} | ВЛО | Перепад ВЛО |
 | {{ period.boundary.end.fgo_pa }} | ФГО | Перепад ФГО |
+| {{ period.boundary.end.fso_pa }} | ФСО | Перепад ФСО |
 | {{ period.boundary.end.fto_pa }} | ФТО | Перепад ФТО |
 | {{ period.boundary.end.fgo_fto_pa }} | ФГО+ФТО | Совмещённый перепад |
 | {{ period.boundary.end.vna_percent }} | ВНА | Положение ВНА |
@@ -247,6 +249,7 @@ Word», поэтому не зависит от даты расчёта или �
 |---|---|
 | `{{ period.boundary.delta.vlo_pa }}` | ΔP ВЛО, конец − начало |
 | `{{ period.boundary.delta.fgo_pa }}` | ΔP ФГО, конец − начало |
+| `{{ period.boundary.delta.fso_pa }}` | ΔP ФСО, конец − начало |
 | `{{ period.boundary.delta.fto_pa }}` | ΔP ФТО, конец − начало |
 | `{{ period.boundary.delta.fgo_fto_pa }}` | ΔP ФГО+ФТО, конец − начало |
 

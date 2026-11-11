@@ -124,6 +124,7 @@ COLUMN_ALIASES = {
 OPTIONAL_ALIASES = {
     "vlo": ["ВЛО"],
     "fgo": ["ФГО"],
+    "fso": ["ФСО"],
     "fto": ["ФТО"],
     "fgo_fto": ["ФГО+ФТО"],
     "vna": ["ВНА"],
@@ -133,6 +134,7 @@ OPTIONAL_ALIASES = {
 OPTIONAL_TITLES = {
     "vlo": "ВЛО",
     "fgo": "ФГО",
+    "fso": "ФСО",
     "fto": "ФТО",
     "fgo_fto": "ФГО+ФТО",
     "vna": "ВНА",
@@ -140,7 +142,7 @@ OPTIONAL_TITLES = {
 }
 
 # На графике перепадов рисуем ТОЛЬКО перепады — не ВНА и не мощность.
-PRESSURE_SERIES = ["vlo", "fgo", "fto", "fgo_fto"]
+PRESSURE_SERIES = ["vlo", "fgo", "fso", "fto", "fgo_fto"]
 
 
 def find_column(columns, aliases, parameter_name):
@@ -463,7 +465,7 @@ POWER_COLOR = "#d62728"
 
 
 def plot_pressure_drops(df, periods_df, show=True):
-    """Перепады давления (ВЛО / ФГО / ФТО / ФГО+ФТО) и мощность N.
+    """Перепады давления (ВЛО / ФГО / ФСО / ФТО / ФГО+ФТО) и мощность N.
 
     Рисуются только те кривые, колонки для которых есть в книге.
     Вертикальные линии — границы найденных периодов работы.
@@ -486,7 +488,10 @@ def plot_pressure_drops(df, periods_df, show=True):
 
     fig, ax = plt.subplots(figsize=(20, 9))
 
-    for index, (key, title) in enumerate(series):
+    legacy_index = 0
+    for key, title in series:
+        color = "#17BECF" if key == "fso" else PRESSURE_COLORS[legacy_index % len(PRESSURE_COLORS)]
+        if key != "fso": legacy_index += 1
 
         ax.plot(
             df["date"],
@@ -494,7 +499,7 @@ def plot_pressure_drops(df, periods_df, show=True):
             ".",
             markersize=3,
             alpha=0.7,
-            color=PRESSURE_COLORS[index % len(PRESSURE_COLORS)],
+            color=color,
             label=f"Перепад {title}, Па"
         )
 
@@ -634,6 +639,7 @@ NOMINAL_POWER_TIME_SHARE = 0.80
 BOUNDARY_PARAMETERS = [
     ("vlo", "ВЛО"),
     ("fgo", "ФГО"),
+    ("fso", "ФСО"),
     ("fto", "ФТО"),
     ("fgo_fto", "ФГО+ФТО"),
     ("vna", "ВНА"),
@@ -848,7 +854,7 @@ def build_boundary_table(df, periods_df):
         start_row = None if selected.empty else selected.iloc[0]
         end_row = None if selected.empty else selected.iloc[-1]
         pressure_deltas[number] = {}
-        for key, _ in BOUNDARY_PARAMETERS[:4]:
+        for key in PRESSURE_SERIES:
             first = pd.to_numeric(start_row.get(key, np.nan), errors="coerce") if start_row is not None else np.nan
             last = pd.to_numeric(end_row.get(key, np.nan), errors="coerce") if end_row is not None else np.nan
             pressure_deltas[number][f"{key}_pa"] = (

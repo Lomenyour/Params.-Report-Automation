@@ -19,7 +19,7 @@ from openpyxl.drawing.text import (
 FONT_SIZE = 1600  # DrawingML: сотые доли пункта, то есть 16 пт.
 LABEL_SIZE = 1000
 _PARAMETERS = re.compile(
-    r"ΔP(?:ВЛО|ФГО\+ФТО|ФГО|ФТО)|αВНА|NГТУ|Nгту|Nприв|bприв|ηГТУ|Nакт|tнк|Pнк|ηoi|πк|Bчист|Bзагр"
+    r"ΔP(?:ВЛО|ФГО\+ФТО|ФГО|ФСО|ФТО)|αВНА|NГТУ|Nгту|Nприв|bприв|ηГТУ|Nакт|tнк|Pнк|ηoi|πк|Bчист|Bзагр"
 )
 
 

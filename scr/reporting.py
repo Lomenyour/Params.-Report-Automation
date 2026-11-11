@@ -178,6 +178,7 @@ def _boundary_context(row: Any) -> dict[str, str]:
         "date_short": _date_value(_get(row, "дата"), short=True),
         "vlo_pa": _number(_get(row, "ВЛО"), 1),
         "fgo_pa": _number(_get(row, "ФГО"), 1),
+        "fso_pa": _number(_get(row, "ФСО"), 1),
         "fto_pa": _number(_get(row, "ФТО"), 1),
         "fgo_fto_pa": _number(_get(row, "ФГО+ФТО"), 1),
         "vna_percent": _number(_get(row, "ВНА"), 1),
@@ -190,7 +191,7 @@ def _boundary_context(row: Any) -> dict[str, str]:
 def _pressure_delta_context(values: dict | None) -> dict[str, str]:
     """Разности перепадов в Па; пропуски не превращаются в нули."""
     return {key: _number(_get(values, key), 1)
-            for key in ("vlo_pa", "fgo_pa", "fto_pa", "fgo_fto_pa")}
+            for key in ("vlo_pa", "fgo_pa", "fso_pa", "fto_pa", "fgo_fto_pa")}
 
 
 def _delta_context(row: Any) -> dict[str, Any]:
@@ -588,6 +589,8 @@ def generate_report(
         context["periods"] = PeriodCollection(periods)
     for period in context["periods"]:
         period.setdefault("boundary", {}).setdefault("delta", _pressure_delta_context(None))
+        for point in ('start','end','delta'):
+            period['boundary'].setdefault(point,{}).setdefault('fso_pa','—')
         deltas = period.get("deltas", {})
         if "show_no_degradation_text" not in deltas:
             values = (deltas.get("n_priv"), deltas.get("b_priv"))

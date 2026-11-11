@@ -47,6 +47,7 @@ COLUMN_MAP = {
     "qнр": "Qнр", "qнр, мдж/м3": "Qнр", "qнр, мдж/м³": "Qнр",
     "вло": "ВЛО", "вло, па": "ВЛО",
     "фго": "ФГО", "фго, па": "ФГО",
+    "фсо": "ФСО", "фсо, па": "ФСО",
     "фто": "ФТО", "фто, па": "ФТО",
     "фго+фто": "ФГО+ФТО", "фго+фто, па": "ФГО+ФТО",
     # Для графика нужна именно мощность N, МВт. В книге есть и другие
@@ -75,6 +76,7 @@ SHORT_NAMES = {
     "q_lower": ["Qнр"],
     "vlo": ["ВЛО"],
     "fgo": ["ФГО"],
+    "fso": ["ФСО"],
     "fto": ["ФТО"],
     "fgo_fto": ["ФГО+ФТО"],
     "power_n": ["N"],
@@ -242,7 +244,7 @@ def prepare_rh_data(source: pd.DataFrame) -> pd.DataFrame:
         name for name in [
             "fuel_specific", "gas_pressure", "gas_temperature", "q_lower",
             "ambient_temperature",
-            "hours", "hours_input", "excel_row", "vlo", "fgo", "fto", "fgo_fto", "vna",
+            "hours", "hours_input", "excel_row", "vlo", "fgo", "fso", "fto", "fgo_fto", "vna",
             "power_n"
         ]
         if name in source.columns

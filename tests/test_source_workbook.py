@@ -103,12 +103,15 @@ class SourceWorkbookTests(unittest.TestCase):
     def test_excel_failure_does_not_replace_existing_destination(self):
         destination = self.root/'result.xlsm'
         destination.write_bytes(b'previous result')
+        self.assembled.source_diagnostics['metadata_warnings']=['Отображаемый тег отличается от внутреннего']
+        messages=[]
         with patch('source_workbook.prepare_source_update', return_value=self.prepare()), \
              patch('source_workbook.subprocess.run', return_value=SimpleNamespace(returncode=1)), \
              patch('source_workbook.subprocess.CREATE_NO_WINDOW', 0, create=True):
             with self.assertRaisesRegex(RuntimeError, 'Excel'):
                 save_source_workbook(self.book, self.source, 'CSV', self.mappings, destination,
-                    setup=self.setup, station_id='izhevsk_tec', unit='1', repository=object())
+                    setup=self.setup, station_id='izhevsk_tec', unit='1', repository=object(),log=messages.append)
+        self.assertIn('Внимание: Отображаемый тег отличается от внутреннего',''.join(messages))
         self.assertEqual(destination.read_bytes(), b'previous result')
         self.assertEqual(self.book.read_bytes(), b'original')
         self.assertFalse(list(self.root.glob('.gtu-source-*')))

@@ -16,7 +16,7 @@ PARAMETER_SYMBOLS = {
     'fuel_specific':'bприв', 'eta_compressor':'ηк', 'pi_k':'πк',
     'gas_pressure':'Pгаз', 'gas_temperature':'Tгаз', 'q_lower':'Qнр_об',
     'gas_q_mass':'Qнр_масс', 'gas_density':'ρгаз', 'gas_c_h':'(C/H)',
-    'power_factor':'cosφ', 'vlo':'ΔPВЛО', 'fgo':'ΔPФГО', 'fto':'ΔPФТО',
+    'power_factor':'cosφ', 'vlo':'ΔPВЛО', 'fgo':'ΔPФГО', 'fso':'ΔPФСО', 'fto':'ΔPФТО',
     'fgo_fto':'ΔP(ФГО+ФТО)', 'exhaust_pressure':'Pух', 'exhaust_temperature':'Tух',
 }
 for key, symbol in (

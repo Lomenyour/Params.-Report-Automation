@@ -67,6 +67,7 @@ def _finish(frame, timestamp, info, layout):
 
 def _horizontal(table):
     definitions = {}
+    metadata_warnings = []
     header = None
     mode = None
     for index, row in table.head(100).iterrows():
@@ -79,9 +80,20 @@ def _horizontal(table):
             header, mode = index, "single timestamp"
             break
         if labels:
-            match = re.match(r"^\[(\d+)\]\s+(\S+)\s+_\S+\s+(.*)$", labels[0])
+            match = re.match(r"^\[(\d+)\]\s+(?:(\S+)\s+)?_(\S+)(?:\s+(.*))?$", labels[0])
             if match:
-                definitions[int(match[1])] = (match[2], match[3])
+                number, display, source, suffix = int(match[1]), match[2], match[3], match[4]
+            else:
+                # Some EMB exports repeat a plain source code without an underscore.
+                match = re.match(r"^\[(\d+)\]\s+(\S+)\s+(\S+)(?:\s+(.*))?$", labels[0])
+                if not match or match[2] != match[3]:
+                    continue
+                number, display, source, suffix = int(match[1]), match[2], match[3], match[4]
+            description = labels[4] if len(labels) > 4 and labels[4] else (suffix or "")
+            definition = (source, description, display or source)
+            if number in definitions and definitions[number] != definition:
+                raise ValueError(f"В выгрузке противоречивые описания канала [{number}].")
+            definitions[number] = definition
     if header is None:
         raise ValueError("Не найдена таблица датчиков: нужны date/time либо колонка «Время»/«Дата и время».")
     labels = list(table.loc[header])
@@ -99,13 +111,19 @@ def _horizontal(table):
             definition = definitions.get(int(match[1])) if match else None
             name = normalize_tag(original)
             if definition:
-                expected, description = definition
+                expected, description, display = definition
                 if name != expected and not re.fullmatch(re.escape(expected) + r"\.\d+", name):
-                    raise ValueError(f"Тег в заголовке {original} противоречит описанию {expected}.")
+                    raise ValueError(f"Тег в заголовке {original} противоречит внутреннему тегу описания {expected}.")
                 name = expected
+                if display != expected:
+                    metadata_warnings.append(
+                        f"Канал [{match[1]}]: отображаемый тег {display} отличается от внутреннего "
+                        f"{expected}; использован внутренний тег, совпадающий с заголовком {original}.")
             else:
                 description = ""
             info[name] = {"code": name, "description": description, "unit": extract_unit(description), "source_header": original}
+            if definition:
+                info[name].update(display_code=display, source_code=expected)
         if name in names:
             raise ValueError(f"В выгрузке повторяется тег/поле {name}.")
         names.append(name)
@@ -121,7 +139,10 @@ def _horizontal(table):
             timestamp += pd.to_timedelta(pd.to_numeric(frame["milliseconds"], errors="coerce"), unit="ms")
     else:
         timestamp = _timestamps(frame["date"])
-    return _finish(frame, timestamp, info, mode)
+    selected = _finish(frame, timestamp, info, mode)
+    if metadata_warnings:
+        selected.attrs['metadata_warnings'] = metadata_warnings
+    return selected
 
 
 def _csv(path):

@@ -17,6 +17,14 @@ FUNCTIONS = {'IF', 'IFERROR', 'SUM', 'AVERAGE', 'AND', 'OR', 'ABS', 'MIN', 'MAX'
              'SQRT', 'POWER', 'ROUND', 'EXP', 'LN', 'LOG10', 'PROPSSI', 'HAPROPSSI'}
 
 
+def _finite_math(value, *operands):
+    # Excel errors propagate through arithmetic; inf must not become 0 or 1
+    # in a parent division/power. IFERROR can still replace the resulting NaN.
+    valid=np.isfinite(value)
+    for operand in operands: valid=valid & np.isfinite(operand)
+    return np.where(valid, value, np.nan)
+
+
 def node_id(node):
     return hashlib.sha256(json.dumps(node, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
 
@@ -239,9 +247,10 @@ class FormulaEvaluator:
         if kind == 'binary':
             a,b = self.evaluate(node[2]),self.evaluate(node[3])
             with np.errstate(all='ignore'):
-                return {'+':np.add,'-':np.subtract,'*':np.multiply,'/':np.divide,'^':np.power,
+                result={'+':np.add,'-':np.subtract,'*':np.multiply,'/':np.divide,'^':np.power,
                         '=':np.equal,'<>':np.not_equal,'<':np.less,'>':np.greater,
                         '<=':np.less_equal,'>=':np.greater_equal}[node[1]](a,b)
+                return _finite_math(result,a,b) if node[1] in ('+','-','*','/','^') else result
         name, arguments = node[1], node[2]
         args = [self.evaluate(child) for child in arguments]
         if name == 'IF':
@@ -285,13 +294,13 @@ class FormulaEvaluator:
                 output[i] = memo[key]
             return output
         with np.errstate(all='ignore'):
-            if name == 'ABS': return np.abs(args[0])
-            if name == 'SQRT': return np.sqrt(args[0])
-            if name == 'POWER': return np.power(*args)
+            if name == 'ABS': return _finite_math(np.abs(args[0]))
+            if name == 'SQRT': return _finite_math(np.sqrt(args[0]))
+            if name == 'POWER': return _finite_math(np.power(*args),*args)
             if name == 'ROUND':
                 scale=10.**int(args[1]); value=np.asarray(args[0])
-                return np.sign(value)*np.floor(np.abs(value)*scale+.5)/scale
-            if name == 'EXP': return np.exp(args[0])
-            if name == 'LN': return np.log(args[0])
-            if name == 'LOG10': return np.log10(args[0])
+                return _finite_math(np.sign(value)*np.floor(np.abs(value)*scale+.5)/scale)
+            if name == 'EXP': return _finite_math(np.exp(args[0]))
+            if name == 'LN': return _finite_math(np.log(args[0]))
+            if name == 'LOG10': return _finite_math(np.log10(args[0]))
         raise ValueError('Не поддерживается функция ' + name)

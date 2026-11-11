@@ -61,6 +61,31 @@ class FormulaTests(unittest.TestCase):
         self.assertTrue(np.isnan(self.run_formula('SUM(A2:B2)',recipes=recipes)).all())
         np.testing.assert_allclose(self.run_formula('ROUND(A2,0)',frame=pd.DataFrame({'A':[.5,-.5,2.5]})),[1,-1,3])
 
+    def test_intermediate_arithmetic_error_is_not_a_finite_result(self):
+        for expression in ('1/(A2/0)','(A2/0)^0','0*(A2/0)'):
+            with self.subTest(expression=expression):
+                self.assertTrue(np.isnan(self.run_formula(expression)).all())
+        np.testing.assert_allclose(self.run_formula('IFERROR(1/(A2/0),7)'),[7.,7.,7.])
+
+    def test_intermediate_math_function_error_is_not_zero(self):
+        frame=pd.DataFrame({'A':[1000.,0.,1.]})
+        np.testing.assert_allclose(self.run_formula('1/EXP(A2)',frame=frame),
+                                   [np.nan,1.,np.exp(-1.)],equal_nan=True)
+        self.assertTrue(np.isnan(self.run_formula('1/POWER(10,1000)')).all())
+        self.assertTrue(np.isnan(self.run_formula('1/LN(0)')).all())
+
+    def test_fuel_ratio_propagates_zero_divisor_and_keeps_unchanged_history(self):
+        frame=pd.DataFrame({'A':[100.,100.,0.],'B':[20000.,0.,0.],
+                            'C':[110.,110.,0.],'D':[1.,1.,1.],'E':[99.,99.,123.]})
+        formula='C2/((A2/B2)/D2)'
+        evaluator=FormulaEvaluator(frame,{'E':{'node':FormulaParser(formula,2).parse()}},{},
+                                   active_mask=[True,True,False])
+        np.testing.assert_allclose(evaluator.column('E'),[22000.,np.nan,123.],equal_nan=True)
+        evaluator=FormulaEvaluator(frame,{}, {})
+        np.testing.assert_allclose(evaluator.evaluate(FormulaParser(f'IFERROR({formula},0)',2).parse()),
+                                   [22000.,0.,0.])
+        self.assertEqual(evaluator.errors['IFERROR: использована подстановка из формулы'],2)
+
 
 class WorkbookProfileTests(unittest.TestCase):
     def setUp(self):

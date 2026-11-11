@@ -28,6 +28,7 @@ class PeriodConsistencyTest(unittest.TestCase):
             "vna": [86.5] * 13,
             "excel_row": np.arange(2, 15),
         })
+        data['power_n'] = data['power']
 
         for name, path in (
             ("source_periods", ROOT / "scr" / "periods.py"),

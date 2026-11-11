@@ -139,7 +139,7 @@ def main() -> int:
         print(LINE)
         print("### Расчёт ВНА (КПД компрессора)")
         print(LINE)
-        vna_df, _, _, _ = run_vna(data=vna_data)
+        vna_df, _, _, _ = run_vna(data=vna_data, period_source=rh_data)
 
         print()
         print(LINE)

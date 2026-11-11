@@ -12,12 +12,13 @@ from CoolProp.CoolProp import PropsSI
 # Разбивка на периоды — общая логика, живёт в scr/periods.py.
 import periods as periods_mod
 from periods import (
+    apply_period_summary,
     build_periods,
     make_periods_display_table,
     parse_periods_arg,
     print_period_overrides_template,
 )
-from data_loader import load_source_data, prepare_vna_data
+from data_loader import load_source_data, prepare_rh_data, prepare_vna_data
 
 
 # Windows-консоль по умолчанию работает в cp1251 и падает на символах
@@ -166,10 +167,14 @@ def load_data(file_path, sheet_name="Данные"):
     return prepare_vna_data(load_source_data(file_path, sheet_name))
 
 
-def run_vna(data, show_plots=True):
+def run_vna(data, show_plots=True, *, period_source=None):
     """Считает ВНА по уже загруженному DataFrame."""
     data = add_gtu_efficiency(data)
-    df, periods_df = build_periods(data)
+    if period_source is None:
+        df, periods_df = build_periods(data)
+    else:
+        _, periods_df = build_periods(period_source)
+        df = apply_period_summary(data, periods_df)
 
     print()
     print("=" * 80)
@@ -572,12 +577,15 @@ def analyze_period(df, period_number, show_plot=True):
 # ПРОГОН ПО КАЖДОМУ ПЕРИОДУ
 # ============================================================
 
-def main(file_path=None, sheet_name="Данные", data=None):
+def main(file_path=None, sheet_name="Данные", data=None, *, period_source=None):
     if data is None:
         if file_path is None:
             raise ValueError("Не задан файл данных для ВНА.")
-        data = load_data(file_path, sheet_name)
-    return run_vna(data)
+        source = load_source_data(file_path, sheet_name)
+        data = prepare_vna_data(source)
+        if period_source is None:
+            period_source = prepare_rh_data(source)
+    return run_vna(data, period_source=period_source)
 
 
 if __name__ == "__main__":

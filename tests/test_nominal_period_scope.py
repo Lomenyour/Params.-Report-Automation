@@ -19,6 +19,7 @@ class NominalPeriodScopeTest(unittest.TestCase):
         source = pd.DataFrame({
             "date": dates,
             "power": [100.0] * 4 + [80.0] * 4 + [100.0] * 4,
+            "power_n": [100.0] * 4 + [80.0] * 4 + [100.0] * 4,
             "fuel": [1000.0] * 12,
             "vna": [90.0] * 4 + [85.0] * 4 + [90.0] * 4,
             "hours": [index * 0.5 for index in range(12)],

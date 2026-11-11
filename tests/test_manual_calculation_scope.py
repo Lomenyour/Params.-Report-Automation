@@ -47,7 +47,7 @@ class DateScopeTests(unittest.TestCase):
 
     def test_overlapping_intervals_do_not_duplicate_and_first_label_wins(self):
         dates=pd.date_range('2026-01-01',periods=5,freq='30min')
-        frame=pd.DataFrame({'date':dates,'power':[90]*5})
+        frame=pd.DataFrame({'date':dates,'power':[90]*5,'power_n':[90]*5})
         intervals=[('01-01-2026 00:00','01-01-2026 01:00'),('01-01-2026 00:30','01-01-2026 02:00')]
         selected=periods.select_period_data(frame,intervals)
         self.assertEqual(len(selected),5)

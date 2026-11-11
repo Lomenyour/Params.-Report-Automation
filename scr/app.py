@@ -1009,6 +1009,9 @@ class CalculationApp(tk.Tk):
                 print("=" * 78)
                 print("ПРЕДПРОСМОТР АВТОМАТИЧЕСКОЙ РАЗБИВКИ ПЕРИОДОВ")
                 print("=" * 78)
+                print(f"Периоды: измеренная мощность N > {periods_mod.LOW_POWER:g} МВт; "
+                      f"долгий останов — {periods_mod.GAP_SIZE} получасовых записей, "
+                      f"подтверждение пуска — {periods_mod.WORK_CONFIRM_SIZE}.")
                 # В предпросмотре нужны только даты и график. Полный RH
                 # печатает таблицы границ, которые после ручной правки
                 # остаются в логе рядом с окончательными и путают их.
@@ -1079,6 +1082,7 @@ class CalculationApp(tk.Tk):
                 vna_df, vna_periods, vna_results, vna_figures = run_vna(
                     data=vna_data,
                     show_plots=False,
+                    period_source=rh_data,
                 )
                 vna_figure = self._build_vna_overview(vna_figures, vna_periods)
                 for figure in vna_figures:

@@ -101,7 +101,7 @@ class RHToleranceStepsTest(unittest.TestCase):
             dates = pd.date_range(start,periods=96,freq='30min')
             power = np.tile(np.linspace(65.,85.,48),2)
             fuel = np.r_[200.*power[:48]+6500.,k*power[48:]+6400.]
-            parts.append(pd.DataFrame(dict(date=dates,power=power,fuel=fuel,vna=90.,
+            parts.append(pd.DataFrame(dict(date=dates,power=power,power_n=power,fuel=fuel,vna=90.,
                                           hours=np.arange(96)*.5)))
             intervals.append((dates[0],dates[-1]))
         source = pd.concat(parts,ignore_index=True)

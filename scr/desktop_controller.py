@@ -333,7 +333,7 @@ class DesktopController(QObject):
         self.electricity_tariff_var = Value("0", self.changed)
         self.electricity_cost_var = Value("0", self.changed)
         names = ("station_combo", "unit_combo", "unit_model_label", "events_button", "choose_button", "raw_button", "mapping_button", "book_mapping_button", "gas_passport_button", "corrections_button",
-                 "clear_raw_button", "raw_sheet_combo", "run_button", "excel_button", "report_button", "source_book_button",
+                 "clear_raw_button", "raw_sheet_combo", "run_button", "excel_button", "report_button", "source_book_button", "add_station_button",
                  "raw_label", "file_label", "station_hint", "import_controls", "status_label", "progress")
         self.controls = {name: Control(self.changed) for name in names}
         for name, control in self.controls.items():
@@ -647,13 +647,13 @@ class DesktopController(QObject):
                    "clearRaw": self.clear_raw_file, "mapping": self.review_mapping,
                    "events": self.review_chart_events, "run": self.start_calculation,
                    "excel": self.generate_excel_report, "word": self.generate_word_report,
-                   "sourceBook": self.generate_source_book}
+                   "sourceBook": self.generate_source_book, "addStation": self.add_station}
         guards = {"file": "choose_button", "raw": "raw_button", "clearRaw": "clear_raw_button",
                   "bookMapping": "book_mapping_button",
                   "gasPassport": "gas_passport_button",
                   "corrections": "corrections_button",
                   "mapping": "mapping_button", "events": "events_button", "run": "run_button",
-                  "excel": "excel_button", "word": "report_button", "sourceBook": "source_book_button"}
+                  "excel": "excel_button", "word": "report_button", "sourceBook": "source_book_button", "addStation": "add_station_button"}
         if name in actions:
             if self.controls[guards[name]].attributes.get("state") != "disabled":
                 actions[name]()
@@ -680,6 +680,24 @@ class DesktopController(QObject):
         self.log_viewer.show()
         self.log_viewer.raise_()
         self.log_viewer.activateWindow()
+
+    def add_station(self):
+        if self.calculation_running or self.export_running:
+            return
+        from station_creation_ui import StationCreationDialog
+        dialog = StationCreationDialog(self.window,self.station_repository,
+            alias=self.selected_file.stem if self.selected_file else '',
+            number=unit_number(self.selected_file) or '' if self.selected_file else '')
+        if not dialog.exec() or dialog.created is None:
+            return
+        station,turbine = dialog.created
+        self.stations_by_name = {item.name:item for item in self.station_repository.list_stations()}
+        self.station_combo.configure(values=list(self.stations_by_name))
+        self._apply_station(station,automatic=False)
+        self.unit_var.set(turbine.name)
+        self._on_unit_changed()
+        self._update_input_controls()
+        self._append_log(f'Добавлена ТЭЦ: {station.name}; {turbine.name}, {turbine.model}.\n')
 
     def generate_source_book(self):
         if self.calculation_running or self.export_running or self.calculation_mode.get() != 'import':

@@ -439,6 +439,8 @@ class CalculationApp(tk.Tk):
         has_station = self.station_var.get() in self.stations_by_name
         has_unit = self._selected_turbine() is not None
         self.station_combo.configure(state="readonly" if idle else "disabled")
+        if hasattr(self, "add_station_button"):
+            self.add_station_button.configure(state="normal" if idle else "disabled")
         self.unit_combo.configure(state="readonly" if idle and has_station else "disabled")
         self.events_button.configure(
             state="normal" if idle and has_book else "disabled",

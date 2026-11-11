@@ -120,8 +120,21 @@ try:
     assert viewer.text.verticalScrollBar().value()==0
     viewer.search.setText('Строка 4321:');viewer.find_next()
     assert viewer.text.textCursor().selectedText()=='Строка 4321:'
-    viewer.copy_all()
-    assert application.clipboard().text()==c.logs
+    clipboard_available=True
+    if sys.platform=='win32':
+        import ctypes
+        clipboard_available=bool(ctypes.windll.user32.OpenClipboard(None))
+        if clipboard_available:ctypes.windll.user32.CloseClipboard()
+    clipboard=Mock()
+    with patch('log_viewer.QApplication.clipboard',return_value=clipboard):
+        viewer.copy_all()
+    clipboard.setText.assert_called_once_with(c.logs)
+    if clipboard_available:
+        viewer.copy_all();pump(.05)
+        copied=application.clipboard().text()
+        assert copied.replace('\r\n','\n')==c.logs.replace('\r\n','\n'),(len(copied),len(c.logs))
+    else:
+        print('SKIP: Windows clipboard readback denied; full copy payload verified with setText.')
     # Full log remains accessible while the period-selection dialog is active.
     viewer.close();c.period_request={'event':Mock()}
     c.dispatch('fullLog','{}');assert c.log_viewer is viewer and viewer.isVisible()

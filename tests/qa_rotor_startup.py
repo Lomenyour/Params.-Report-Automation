@@ -51,7 +51,7 @@ def main():
                 with closing(websocket.create_connection(page['webSocketDebuggerUrl'], timeout=2,
                         origin=f'http://127.0.0.1:{port}')) as connection:
                     connection.send(json.dumps({'id': 1, 'method': 'Runtime.evaluate', 'params': {
-                        'expression': "JSON.stringify({page:document.readyState,stations:document.querySelector('#station')?.options.length||0,chooseEnabled:!document.querySelector('[data-action=\"file\"]')?.disabled,tabs:document.querySelectorAll('[data-tab]').length,sourceBook:!!document.querySelector('[data-action=\"sourceBook\"]'),fullLog:!!document.querySelector('[data-action=\"fullLog\"]')})",
+                        'expression': "JSON.stringify({page:document.readyState,stations:document.querySelector('#station')?.options.length||0,chooseEnabled:!document.querySelector('[data-action=\"file\"]')?.disabled,tabs:document.querySelectorAll('[data-tab]').length,sourceBook:!!document.querySelector('[data-action=\"sourceBook\"]'),fullLog:!!document.querySelector('[data-action=\"fullLog\"]'),addStation:!!document.querySelector('[data-action=\"addStation\"]')})",
                         'returnByValue': True}}))
                     while True:
                         result = json.loads(connection.recv())
@@ -66,7 +66,7 @@ def main():
         else:
             raise AssertionError(f'Packaged WebChannel did not become ready: {ready}')
         assert ready['tabs'] == 7, ready
-        assert ready['sourceBook'] and ready['fullLog'], ready
+        assert ready['sourceBook'] and ready['fullLog'] and ready['addStation'], ready
         ready['seconds'] = round(time.monotonic()-started, 3)
         args.output.write_text(json.dumps(ready, ensure_ascii=False, indent=2), encoding='utf-8')
         print(json.dumps(ready, ensure_ascii=False))

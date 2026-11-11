@@ -35,7 +35,7 @@ def main():
         assert normalized(actual) == normalized(compile(source.read_bytes(), str(source), 'exec')), source
         modules.append(source.stem)
     assert {'degradation_chart', 'pressure_chart', 'reporting', 'RH_raschet', 'rh_display',
-            'source_workbook', 'log_viewer'} <= set(modules)
+            'source_workbook', 'log_viewer', 'station_creation_ui'} <= set(modules)
     assert (root/'scr/native_source_excel.ps1').read_bytes() == (bundle/'_internal/native_source_excel.ps1').read_bytes()
     for source in (root/'scr/desktop_ui').iterdir():
         if source.is_file():

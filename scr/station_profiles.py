@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
+import copy
 from functools import lru_cache
 import json
 import math
@@ -11,6 +12,7 @@ from pathlib import Path
 import re
 import sys
 from typing import Protocol
+import uuid
 
 
 @dataclass(frozen=True)
@@ -69,6 +71,9 @@ class StationRepository(Protocol):
     """Контракт хранилища: GUI и импорт не зависят от формата JSON/БД."""
 
     def list_stations(self) -> tuple[Station, ...]: ...
+    def list_companies(self) -> tuple[tuple[str, str], ...]: ...
+    def create_station(self, name: str, turbine_number: str, turbine_model: str, *,
+                       filename_aliases=(), company_id: str = '', name_genitive: str = '') -> tuple[Station, Turbine]: ...
     def get_station(self, station_id: str) -> Station: ...
     def detect_station(self, filename: str | Path) -> Station | None: ...
     def get_tariffs(self, station_id: str) -> StationTariffs | None: ...
@@ -84,6 +89,11 @@ class StationRepository(Protocol):
 
 def _normalized_name(text: str) -> str:
     return re.sub(r"[\W_]+", "", text.casefold().replace("ё", "е"))
+
+
+def station_sort_key(name: str):
+    return tuple(int(part) if part.isdecimal() else part.casefold().replace('ё','е')
+                 for part in re.split(r'(\d+)', name))
 
 
 def unit_number(filename: str | Path) -> str | None:
@@ -118,6 +128,10 @@ def information_store_path() -> Path:
     return Path(os.environ.get('LOCALAPPDATA') or Path.home()/'.config')/'GTU_Report/station_information.json'
 
 
+def user_catalog_path() -> Path:
+    return Path(os.environ.get('LOCALAPPDATA') or Path.home()/'.config')/'GTU_Report/user_stations.json'
+
+
 def _validated_tariffs(record) -> StationTariffs:
     names = ('gas_rub_per_nm3', 'electricity_rub_per_mwh', 'electricity_cost_rub_per_mwh')
     try:
@@ -145,15 +159,79 @@ def _read_tariff_store(path):
 
 class JsonStationRepository:
     def __init__(self, path: str | Path, *, tariff_store: str | Path | None = None,
-                 information_store: str | Path | None = None):
+                 information_store: str | Path | None = None, catalog_store: str | Path | None = None):
         self.path = Path(path)
         self.tariff_store = Path(tariff_store) if tariff_store is not None else None
         self.information_store = Path(information_store) if information_store is not None else None
+        self.catalog_store = Path(catalog_store) if catalog_store is not None else None
         try:
             raw = json.loads(self.path.read_text(encoding="utf-8-sig"))
-            self._load(raw)
+            self._base_catalog = copy.deepcopy(raw)
+            self._load(self._merge_catalog(self._read_user_catalog()))
         except (OSError, ValueError, KeyError, TypeError) as error:
             raise ValueError(f"Не удалось прочитать справочник ТЭЦ {self.path}: {error}") from error
+
+    def _read_user_catalog(self):
+        from json_store import read_json
+        empty = {'schema_version':1, 'stations':[], 'turbines':[]}
+        data = read_json(self.catalog_store, empty) if self.catalog_store is not None else empty
+        if (type(data.get('schema_version')) is not int or data['schema_version'] != 1 or
+                any(not isinstance(data.get(key),list) or any(not isinstance(row,dict) for row in data[key])
+                    for key in ('stations','turbines'))):
+            raise ValueError('Повреждён пользовательский справочник ТЭЦ; файл не изменён.')
+        for row in data['stations']:
+            if (not all(isinstance(row.get(key),str) for key in ('id','name')) or
+                    not isinstance(row.get('filename_aliases'),list) or
+                    any(not isinstance(item,str) for item in row['filename_aliases'])):
+                raise ValueError('Повреждена запись добавленной ТЭЦ; файл не изменён.')
+        for row in data['turbines']:
+            if not all(isinstance(row.get(key),str) for key in ('station_id','name','model')):
+                raise ValueError('Повреждена запись ГТУ добавленной ТЭЦ; файл не изменён.')
+        return data
+
+    def _merge_catalog(self, additions):
+        result = copy.deepcopy(self._base_catalog)
+        result.setdefault('stations',[]).extend(copy.deepcopy(additions['stations']))
+        result.setdefault('turbines',[]).extend(copy.deepcopy(additions['turbines']))
+        return result
+
+    def create_station(self, name, turbine_number, turbine_model, *, filename_aliases=(),
+                       company_id='', name_genitive=''):
+        """Validate the complete merged catalogue before one atomic user-file write."""
+        from json_store import transaction, write_json
+        if self.catalog_store is None:
+            raise ValueError('Хранилище добавленных ТЭЦ не настроено.')
+        if not all(isinstance(value,str) for value in (name,turbine_model,company_id,name_genitive)):
+            raise ValueError('Название, модель и компания должны быть строками.')
+        name = ' '.join(name.split())
+        number = str(turbine_number).strip().upper()
+        model = turbine_model.strip()
+        if not _normalized_name(name):
+            raise ValueError('Введите название ТЭЦ.')
+        if not valid_unit_number(number):
+            raise ValueError('Введите номер ГТУ: например 1, 10 или 11Б.')
+        if not model:
+            raise ValueError('Введите модель ГТУ.')
+        if not isinstance(filename_aliases,(list,tuple)) or any(not isinstance(item,str) for item in filename_aliases):
+            raise ValueError('Варианты названия должны быть списком строк.')
+        aliases = list(dict.fromkeys(item.strip() for item in filename_aliases if item.strip()))
+        with transaction():
+            additions = self._read_user_catalog()
+            candidate = object.__new__(JsonStationRepository)
+            candidate._load(self._merge_catalog(additions))
+            occupied = {_normalized_name(label): station.name for station in candidate.list_stations()
+                        for label in (station.name,*station.filename_aliases)}
+            for label in (name,*aliases):
+                if _normalized_name(label) in occupied:
+                    raise ValueError('Название уже есть в справочнике: '+occupied[_normalized_name(label)]+'.')
+            station_id = 'custom_'+uuid.uuid4().hex
+            additions['stations'].append(dict(id=station_id,name=name,name_genitive=name_genitive.strip() or name,
+                                              company_id=company_id,filename_aliases=aliases))
+            additions['turbines'].append(dict(station_id=station_id,number=number,name='ГТУ-'+number,model=model))
+            candidate._load(self._merge_catalog(additions))
+            write_json(self.catalog_store,additions)
+            self.__dict__.update(candidate.__dict__)
+        return self.get_station(station_id), self.get_turbine(station_id,number)
 
     def _load(self, raw: dict) -> None:
         if raw["schema_version"] != 1:
@@ -235,7 +313,10 @@ class JsonStationRepository:
             ))
 
     def list_stations(self) -> tuple[Station, ...]:
-        return tuple(self._stations.values())
+        return tuple(sorted(self._stations.values(),key=lambda row:station_sort_key(row.name)))
+
+    def list_companies(self) -> tuple[tuple[str, str], ...]:
+        return tuple(sorted(self.companies.items(),key=lambda row:station_sort_key(row[1])))
 
     def get_station(self, station_id: str) -> Station:
         try:
@@ -320,7 +401,7 @@ class JsonStationRepository:
 @lru_cache(maxsize=1)
 def get_station_repository() -> StationRepository:
     return JsonStationRepository(catalog_path(), tariff_store=tariff_store_path(),
-                                 information_store=information_store_path())
+                                 information_store=information_store_path(), catalog_store=user_catalog_path())
 
 
 def resolve_station(book_path: str | Path, station_id: str | None = None,

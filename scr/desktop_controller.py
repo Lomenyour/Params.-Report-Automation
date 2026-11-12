@@ -8,6 +8,7 @@ import json
 from pathlib import Path
 import queue
 import threading
+import time
 import traceback
 import types
 
@@ -284,6 +285,11 @@ class PreviewEvents(QObject):
     completed = Signal(object)
 
 
+class AlgorithmEvents(QObject):
+    progress = Signal(str)
+    completed = Signal(object)
+
+
 class DesktopController(QObject):
     state_changed = Signal(str)
     view_changed = Signal(str)
@@ -300,6 +306,10 @@ class DesktopController(QObject):
         self._compressor_point_counts, self._compressor_point_counts_key = {}, None
         self._preview_events = PreviewEvents(self)
         self._preview_events.completed.connect(self._finish_compressor_previews)
+        self._algorithm_events = AlgorithmEvents(self)
+        self._compressor_algorithm_job = None
+        self._algorithm_events.progress.connect(self._algorithm_progress)
+        self._algorithm_events.completed.connect(self._finish_compressor_algorithm)
         self.dialog, self.period_request = None, None
         self.messages, self.files = Messages(window), FileDialogs(window)
         replacements = {"filedialog": self.files, "messagebox": self.messages,
@@ -440,6 +450,11 @@ class DesktopController(QObject):
             self.log_changed.emit(json.dumps({"replace": ""}))
 
     def _clear_charts(self):
+        if self._compressor_algorithm_job is not None:
+            self._compressor_algorithm_job = None
+            self.calculation_running = False
+            self.progress.stop()
+            self._update_input_controls()
         self._top10_results, self._top10_mode = [], "table"
         self._compressor_preview_cache.clear()
         self._compressor_point_counts.clear()
@@ -511,7 +526,81 @@ class DesktopController(QObject):
             tables.append({"title": f"Период {period} · ТОП-10 ВНА", "period": period,
                            "selected_rank": rank, "pairs": pairs, "preview": preview,
                            **self._table(display)})
-        self.set_view("top10", {"type": "vna_top10", "mode": self._top10_mode, "tables": tables})
+        messages = []
+        if chart is not None and chart.compressor_algorithm == 2:
+            messages = [{'period': int(table.attrs['period_number']),
+                         'text': table.attrs.get('empty_reason') or 'Нет подходящих пар.'}
+                        for table in chart.vna_top10 if table is not None and table.empty]
+        self.set_view("top10", {"type": "vna_top10", "mode": self._top10_mode,
+            "algorithm": chart.compressor_algorithm if chart is not None else 1,
+            "tables": tables, "messages": messages})
+
+    @Slot(str)
+    def _algorithm_progress(self, text):
+        if not self.closed and self._compressor_algorithm_job is not None:
+            self._append_log(text+'\n')
+            self.status_label.configure(text=text)
+
+    def select_compressor_algorithm(self, algorithm):
+        if self.calculation_running or self.export_running or self.last_result is None:
+            return
+        if isinstance(algorithm, bool) or not isinstance(algorithm, int) or algorithm not in (1, 2):
+            self.messages.showerror('ТОП-10 ВНА', 'Номер алгоритма должен быть 1 или 2.')
+            return
+        snapshot = self.last_result
+        chart = snapshot.pressure_chart
+        if chart is None or algorithm == chart.compressor_algorithm:
+            return
+        available = chart.vna_top10_algorithms or {chart.compressor_algorithm: chart.vna_top10}
+        if algorithm in available:
+            self.last_result = snapshot.with_compressor_algorithm(algorithm)
+            self._compressor_preview_cache.clear()
+            self._show_top10_tables(self.last_result.pressure_chart.vna_top10)
+            self._request_compressor_previews()
+            return
+        self.calculation_running = True
+        job = self._compressor_algorithm_job = object()
+        self.progress.start(10)
+        self.status_label.configure(text='ВНА: подбор пар алгоритмом 2…')
+        self._update_input_controls()
+        self._refresh_top10_view()
+
+        def calculate():
+            started = time.perf_counter()
+            result = {'snapshot': snapshot, 'job': job}
+            try:
+                from vna_density import calculate_density_top10
+                result['tables'] = calculate_density_top10(
+                    chart.degradation_values, chart.periods, self._algorithm_events.progress.emit)
+            except Exception as error:
+                result['error'] = str(error)
+            result['seconds'] = time.perf_counter()-started
+            try:
+                self._algorithm_events.completed.emit(result)
+            except RuntimeError:
+                pass
+        threading.Thread(target=calculate, daemon=True).start()
+
+    @Slot(object)
+    def _finish_compressor_algorithm(self, result):
+        if self.closed or result.get('job') is not self._compressor_algorithm_job or self._compressor_algorithm_job is None:
+            return
+        self._compressor_algorithm_job = None
+        self.calculation_running = False
+        self.progress.stop()
+        if result['snapshot'] is self.last_result:
+            if 'error' in result:
+                self.messages.showerror('Алгоритм 2 ТОП-10 ВНА', result['error'])
+            else:
+                self.last_result = self.last_result.with_compressor_algorithm(2, result['tables'])
+                self._compressor_preview_cache.clear()
+                self._show_top10_tables(self.last_result.pressure_chart.vna_top10)
+                self._request_compressor_previews()
+                self._append_log(f'ВНА: алгоритм 2 рассчитан за {result["seconds"]:.3f} с.\n')
+        self.status_label.configure(text='Завершён' if self.last_result else 'Выберите исходную книгу')
+        self._update_input_controls()
+        if self.last_result is not None:
+            self._refresh_top10_view()
 
     def _request_compressor_previews(self):
         if self.closed or self._compressor_preview_busy or self._top10_mode != "graphs" or self.last_result is None:
@@ -660,6 +749,9 @@ class DesktopController(QObject):
             return
         if name == "compressorPair":
             self.select_compressor_pair(payload.get("period"), payload.get("rank"))
+            return
+        if name == 'compressorAlgorithm':
+            self.select_compressor_algorithm(payload.get('algorithm'))
             return
         actions = {"file": self.choose_file, "raw": self.choose_raw_file,
                    "bookMapping": self.review_book_mapping,

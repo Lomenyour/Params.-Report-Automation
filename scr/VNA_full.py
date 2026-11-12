@@ -259,9 +259,9 @@ def _build_pair_result(dates, temperatures, pressures,
 
 
 def _find_flexible_vna_intervals(df):
-    """Находит пары для всех окон ВНА на сетке 0,1°.
+    """Находит пары для всех окон ВНА на сетке 0,1 п.п.
 
-    Окна имеют ширину от 0,1° до 1,0°. Для каждого окна сохраняется
+    Окна имеют ширину от 0,1 до 1,0 п.п. Для каждого окна сохраняется
     наиболее удалённая по времени допустимая пара. Перекрывающиеся окна
     с разными наборами строк сохраняются, а полностью эквивалентные окна
     объединяются.
@@ -273,7 +273,8 @@ def _find_flexible_vna_intervals(df):
     повторного полного O(n²) поиска для каждого из тысяч окон.
     """
 
-    interval_df = df.sort_values("date").reset_index(drop=True)
+    # 100 belongs to no [lower, upper) window ending at 100.
+    interval_df = df.loc[df["vna"].ge(0) & df["vna"].lt(100)].sort_values("date").reset_index(drop=True)
 
     dates = interval_df["date"].to_numpy(dtype="datetime64[ns]")
     date_ns = dates.astype("int64")
@@ -289,11 +290,12 @@ def _find_flexible_vna_intervals(df):
     if len(interval_df) < 2:
         return []
 
-    # Каждая точка попадает в десятую долю градуса. Правая граница
+    # Каждая точка попадает в десятую долю процентного пункта. Правая граница
     # интервала открыта, как и в прежнем поиске по гистограмме.
-    vna_cells = np.floor(
-        np.clip(vna_values, 0, 100 - 1e-9) / VNA_INTERVAL_STEP
-    ).astype(int)
+    # Decimal edges must match the actual [lower, upper) graph selection.
+    # floor(86.1 / 0.1) may otherwise put 86.1 into the excluded right edge.
+    vna_edges = np.arange(1001, dtype=float) / 10.0
+    vna_cells = np.searchsorted(vna_edges, vna_values, side="right") - 1
     vna_cells = np.clip(vna_cells, 0, 1000 - 1)
     groups = [np.flatnonzero(vna_cells == cell) for cell in range(1000)]
 
@@ -329,8 +331,8 @@ def _find_flexible_vna_intervals(df):
             others = np.asarray([index for part in parts for index in part], dtype=int)
             valid = (
                 (others != anchor)
-                & (np.abs(temperatures[others] - temperatures[anchor]) <= MAX_DELTA_T)
-                & (np.abs(pressures[others] - pressures[anchor]) <= MAX_DELTA_P)
+                & (np.round(np.abs(temperatures[others] - temperatures[anchor]), 12) <= MAX_DELTA_T)
+                & (np.round(np.abs(pressures[others] - pressures[anchor]), 12) <= MAX_DELTA_P)
                 & np.isfinite(eta_values[others])
                 # Числа вида 80,8 − 80 не должны обходить строгую границу
                 # 0,8 из-за погрешности двоичного представления float.
@@ -391,8 +393,8 @@ def _find_flexible_vna_intervals(df):
 
             if pair_heap:
                 _, best_i, best_j, _ = pair_heap[0]
-                start_value = current_start * VNA_INTERVAL_STEP
-                end_value = (current_start + width_cells) * VNA_INTERVAL_STEP
+                start_value = current_start / 10.0
+                end_value = (current_start + width_cells) / 10.0
                 pair = _build_pair_result(
                     dates,
                     temperatures,
@@ -409,7 +411,7 @@ def _find_flexible_vna_intervals(df):
                     "vna_to": end_value,
                     "vna_interval": f"{start_value:.1f}-{end_value:.1f}",
                     "count": int(active_count),
-                    "share_percent": active_count / len(interval_df) * 100,
+                    "share_percent": active_count / len(df) * 100,
                 })
                 row_signature = tuple(np.flatnonzero(active_flags).tolist())
                 candidate_key = (width_cells, current_start)
@@ -449,7 +451,7 @@ def analyze_period(df, period_number, show_plot=True):
     print(f"Минимум VNA: {df['vna'].min():.3f}")
     print(f"Максимум VNA: {df['vna'].max():.3f}")
 
-    # Обзорная гистограмма остаётся с шагом 1°.
+    # Обзорная гистограмма остаётся с шагом 1 п.п.
     bins = np.arange(0, 101, 1)
     counts, edges = np.histogram(df["vna"], bins=bins)
     distribution = pd.DataFrame({

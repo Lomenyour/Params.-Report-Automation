@@ -4,6 +4,7 @@ import re
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (QComboBox, QDialog, QDialogButtonBox, QFormLayout,
                                QLabel, QLineEdit, QMessageBox, QVBoxLayout)
+from qt_theme import apply_theme
 
 
 class StationCreationDialog(QDialog):
@@ -13,14 +14,7 @@ class StationCreationDialog(QDialog):
         self.created = None
         self.setWindowTitle('Добавить ТЭЦ')
         self.resize(620, 430)
-        self.setStyleSheet('''QDialog { background: #252525; color: #eeeeee; }
-            QLabel { color: #eeeeee; font-size: 14px; }
-            QLineEdit, QComboBox { background: #2b2b2b; color: #eeeeee;
-                border: 1px solid #424242; border-radius: 6px; padding: 7px; }
-            QComboBox QAbstractItemView { background: #2b2b2b; color: #eeeeee; }
-            QPushButton { background: #333333; color: #eeeeee; border: 1px solid #424242;
-                border-radius: 6px; padding: 7px 14px; }
-            QPushButton:hover { background: #424242; }''')
+        apply_theme(self)
         layout = QVBoxLayout(self)
         note = QLabel('Укажите станцию и её ГТУ. Паспорт газа можно заполнить после сохранения.',self)
         note.setWordWrap(True)

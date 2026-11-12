@@ -5,6 +5,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QFontDatabase, QTextCursor
 from PySide6.QtWidgets import (QApplication, QDialog, QHBoxLayout, QLabel,
                                QLineEdit, QPlainTextEdit, QPushButton, QVBoxLayout)
+from qt_theme import apply_theme
 
 
 class LogViewer(QDialog):
@@ -15,13 +16,7 @@ class LogViewer(QDialog):
         self.setMinimumSize(640, 420)
         screen = self.screen().availableGeometry()
         self.resize(min(1000, screen.width()-32), min(700, screen.height()-40))
-        self.setStyleSheet('''QDialog { background: #252525; color: #eeeeee; }
-            QPlainTextEdit, QLineEdit { background: #202020; color: #eeeeee;
-                border: 1px solid #424242; padding: 6px; }
-            QLabel { color: #eeeeee; }
-            QPushButton { background: #333333; color: #eeeeee; border: 1px solid #424242;
-                border-radius: 6px; padding: 7px 12px; }
-            QPushButton:hover { background: #424242; }''')
+        apply_theme(self)
         layout = QVBoxLayout(self)
         toolbar = QHBoxLayout()
         self.search = QLineEdit(self)

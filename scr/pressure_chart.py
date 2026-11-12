@@ -68,6 +68,9 @@ class PressureChartData:
     rh_values: pd.DataFrame | None = None
     rh_results: list[dict] | None = None
     compressor_pair_ranks: dict[int, int] | None = None
+    compressor_algorithm: int = 1
+    vna_top10_algorithms: dict[int, list[pd.DataFrame]] | None = None
+    compressor_pair_ranks_by_algorithm: dict[int, dict[int, int]] | None = None
 
 
 def _number(frame, key):

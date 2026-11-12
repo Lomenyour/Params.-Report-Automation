@@ -33,7 +33,7 @@ def fixture():
             eta = 84.+rank*.1
             for offset, day in enumerate((left, right)):
                 records.append(dict(period=number, date=start+pd.Timedelta(days=day),
-                    vna=vna, t=temperature, p=pressure, eta_compressor=eta-offset*.02,
+                    vna=vna, t=temperature, p=pressure, tkk=370., eta_compressor=eta-offset*.02,
                     pi_k=14.+rank*.1-offset*.01, excel_row=len(records)+2,
                     vlo=200., power_n=90.))
             pairs.append(dict(rank=rank, vna_interval=f'{86+rank*.2:.1f}-{86+rank*.2+.1:.1f}',
@@ -60,6 +60,78 @@ def fixture():
 
 
 class PairSelectionTest(unittest.TestCase):
+    def test_algorithm_switch_remembers_choices_and_changes_only_compressor_exports(self):
+        original=fixture().with_compressor_pair(2,3)
+        tables=[table.copy(deep=True) for table in original.pressure_chart.vna_top10]
+        for table in tables:
+            table['plot_points']=2
+        second=original.with_compressor_algorithm(2,tables).with_compressor_pair(1,2)
+        self.assertEqual(second.pressure_chart.compressor_algorithm,2)
+        self.assertEqual(second.pressure_chart.compressor_pair_ranks,{1:2})
+        self.assertEqual(second.report_data['periods'][0]['vna_top1']['rank'],'2')
+        self.assertEqual(second.report_data['periods'][1]['vna_top1']['rank'],'1')
+        self.assertTrue(all('Алгоритм 2' in title for title,_ in second.sections[1:]))
+        self.assertTrue(all('plot_points' in table for _,table in second.sections[1:]))
+        self.assertIs(second.sections[0],original.sections[0])
+        for name in ('data','book_profile','input_files'):
+            self.assertIs(getattr(second,name),getattr(original,name))
+        for name in ('values','periods','degradation_values','rh_values','rh_results'):
+            self.assertIs(getattr(second.pressure_chart,name),getattr(original.pressure_chart,name))
+        self.assertEqual(second.report_data['economics'],original.report_data['economics'])
+        restored=second.with_compressor_algorithm(1)
+        self.assertIs(restored.pressure_chart.vna_top10,original.pressure_chart.vna_top10)
+        self.assertEqual(restored.pressure_chart.compressor_pair_ranks,{2:3})
+        self.assertEqual(restored.report_data['periods'],original.report_data['periods'])
+        self.assertEqual([title for title,_ in restored.sections],[title for title,_ in original.sections])
+        again=restored.with_compressor_algorithm(2)
+        self.assertEqual(again.pressure_chart.compressor_pair_ranks,{1:2})
+        self.assertEqual(again.report_data['periods'],second.report_data['periods'])
+        self.assertNotIn('compressor_algorithm',original.report_data)
+
+    def test_empty_second_algorithm_has_no_word_or_chart_fallback(self):
+        from vna_density import calculate_density_top10
+        original=fixture()
+        values=original.pressure_chart.degradation_values.copy()
+        values['t']=np.arange(len(values))*10.
+        tables=calculate_density_top10(values,original.pressure_chart.periods)
+        second=original.with_compressor_algorithm(2,tables)
+        self.assertTrue(all(table.empty for table in tables))
+        self.assertFalse(prepare_compressor_plots(second.pressure_chart.degradation_values,
+            second.pressure_chart.periods,second.pressure_chart.vna_top10))
+        self.assertTrue(all(period['vna_top1']['rank']=='—' for period in second.report_data['periods']))
+        self.assertTrue(all('2/3' in table.iloc[0,0] for _,table in second.sections[1:]))
+        self.assertEqual(second.with_compressor_algorithm(1).report_data['periods'],original.report_data['periods'])
+
+    def test_second_algorithm_excel_charts_match_word_and_actual_point_counts(self):
+        from vna_density import calculate_density_top10
+        from tempfile import TemporaryDirectory
+        original=fixture()
+        chart=original.pressure_chart
+        tables=calculate_density_top10(chart.degradation_values,chart.periods)
+        snapshot=original.with_compressor_algorithm(2,tables)
+        with TemporaryDirectory() as directory:
+            path=Path(directory)/'second.xlsx'
+            save_result_workbook(snapshot.data,snapshot.sections,path,pressure_chart=snapshot.pressure_chart)
+            book=load_workbook(path)
+            self.addCleanup(book.close)
+            charts=book['Графики']._charts[-3:]
+            plots=prepare_compressor_plots(chart.degradation_values,chart.periods,tables)
+            for index,(table,plot,graph) in enumerate(zip(tables,plots,charts)):
+                self.assertEqual(table.iloc[0].plot_points,len(plot.points))
+                actual=[point.v for point in graph.series[0].yVal.numRef.numCache.pt]
+                np.testing.assert_allclose(actual,plot.points.eta)
+                self.assertEqual(snapshot.report_data['periods'][index]['vna_top1']['point_1']['date'],
+                                 table.iloc[0].date_1.strftime('%d-%m-%Y %H:%M'))
+
+    def test_invalid_algorithm_and_uncalculated_second_variant(self):
+        original=fixture()
+        for value in (True,1.,'2',None,0,3):
+            with self.subTest(value=value),self.assertRaises(ValueError):
+                original.with_compressor_algorithm(value)
+        with self.assertRaisesRegex(ValueError,'ещё не рассчитан'):
+            original.with_compressor_algorithm(2)
+        self.assertIs(original.with_compressor_algorithm(1),original)
+
     def test_candidate_counts_are_filtered_plot_points_not_window_counts(self):
         chart = fixture().pressure_chart
         for table in chart.vna_top10:
@@ -206,6 +278,54 @@ class DesktopPairSelectionTest(unittest.TestCase):
         c.dispatch('compressorPair', json.dumps(dict(period=1, rank=99)))
         self.assertIs(c.last_result, snapshot)
         c.messages.showerror.assert_called_once()
+
+    def test_real_second_algorithm_background_and_cached_return(self):
+        c=self.controller
+        before=c.last_result.with_compressor_pair(2,3)
+        c.last_result=before
+        c.dispatch('compressorAlgorithm',json.dumps(dict(algorithm=2)))
+        self.assertTrue(c.calculation_running)
+        deadline=time.monotonic()+10
+        while c.calculation_running and time.monotonic()<deadline:
+            _application.processEvents()
+            time.sleep(.005)
+        self.assertFalse(c.calculation_running)
+        self.assertEqual(c.views['top10']['algorithm'],2)
+        self.assertTrue(all(len(table)==1 for table in c.last_result.pressure_chart.vna_top10))
+        self.assertTrue(all(table.iloc[0].plot_points==2 for table in c.last_result.pressure_chart.vna_top10))
+        self.assertIsNone(c._compressor_algorithm_job)
+        with patch('desktop_controller.threading.Thread') as thread:
+            c.select_compressor_algorithm(1)
+            self.assertEqual(c.last_result.pressure_chart.compressor_pair_ranks,{2:3})
+            c.select_compressor_algorithm(2)
+            thread.assert_not_called()
+        c.messages.showerror.assert_not_called()
+
+    def test_algorithm_guards_and_stale_completion_do_not_replace_new_results(self):
+        c=self.controller
+        before=c.last_result
+        for flag in ('calculation_running','export_running'):
+            setattr(c,flag,True)
+            c.select_compressor_algorithm(2)
+            self.assertIs(c.last_result,before)
+            setattr(c,flag,False)
+        with patch('desktop_controller.threading.Thread'):
+            c.select_compressor_algorithm(2)
+            old_job=c._compressor_algorithm_job
+            self.assertTrue(c.calculation_running)
+            c._invalidate_results()
+            self.assertFalse(c.calculation_running)
+            c.last_result=fixture()
+            new=c.last_result
+            c.select_compressor_algorithm(2)
+            c._finish_compressor_algorithm(dict(snapshot=before,job=old_job,tables=[],seconds=0))
+            self.assertIs(c.last_result,new)
+            self.assertTrue(c.calculation_running)
+            c._finish_compressor_algorithm(dict(snapshot=new,job=c._compressor_algorithm_job,error='QA failure',seconds=0))
+            self.assertFalse(c.calculation_running)
+            self.assertIs(c.last_result,new)
+            self.assertEqual(c.last_result.pressure_chart.compressor_algorithm,1)
+            c.messages.showerror.assert_called_once()
 
     def test_all_dropdown_counts_are_ready_before_preview_and_cached(self):
         c = self.controller

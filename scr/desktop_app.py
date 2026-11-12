@@ -13,6 +13,7 @@ from PySide6.QtWebEngineWidgets import QWebEngineView
 from PySide6.QtWidgets import QApplication, QMainWindow
 
 from desktop_resources import UI_DIR, APP_ICON
+from qt_theme import apply_theme
 
 
 class LocalResources(QWebEngineUrlRequestInterceptor):
@@ -41,19 +42,7 @@ class DesktopWindow(QMainWindow):
         self.setMinimumSize(900, 600)
         available = QApplication.primaryScreen().availableGeometry()
         self.resize(min(1200, available.width() - 32), min(800, available.height() - 40))
-        self.setStyleSheet("""
-            QMainWindow, QMessageBox, QFileDialog { background: #252525; color: #eeeeee; }
-            QLabel { color: #eeeeee; font-size: 14px; }
-            QMessageBox QPushButton, QFileDialog QPushButton {
-                background: #333333; color: #eeeeee; border: 1px solid #424242;
-                border-radius: 8px; min-height: 24px; min-width: 70px; padding: 6px 12px;
-            }
-            QMessageBox QPushButton:hover, QFileDialog QPushButton:hover { background: #424242; }
-            QLineEdit, QComboBox, QListView, QTreeView {
-                background: #2b2b2b; color: #eeeeee; border: 1px solid #424242;
-                border-radius: 6px; padding: 6px;
-            }
-        """)
+        apply_theme(self)
         self.view = QWebEngineView(self)
         self.page = LocalPage(self.view)
         self.page.setBackgroundColor(QColor("#252525"))

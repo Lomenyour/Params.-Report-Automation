@@ -238,9 +238,11 @@
     return wrap;
   }
   function renderView(keepScroll = true) {
+    GtuChoiceField.close();
     const focus = panel.contains(document.activeElement) ? {
       mode:document.activeElement.dataset.top10Mode,
-      period:document.activeElement.dataset.compressorPair,
+      algorithm:document.activeElement.dataset.compressorAlgorithm,
+      period:document.activeElement.dataset.compressorPair || document.activeElement.dataset.compressorChoice,
       value:document.activeElement.value, tag:document.activeElement.tagName
     } : null;
     if (keepScroll) rememberScroll();
@@ -253,10 +255,23 @@
     title.append(element('h3', '', titles[selected]));
     heading.append(title);
     const viewport = element('div', 'gtu-view-viewport');
-    viewport.dataset.scrollKey = selected === 'top10' ? `top10:${data.mode || 'table'}` : selected;
+    viewport.dataset.scrollKey = selected === 'top10' ? `top10:${data.algorithm || 1}:${data.mode || 'table'}` : selected;
     panel.replaceChildren(heading, viewport);
     if (data.type === 'vna_top10') {
       title.append(element('p', '', 'Пара выбирается отдельно для каждого периода. Выбор используется в графиках Excel и условиях Word.'));
+      const algorithm = data.algorithm || 1;
+      const algorithms = element('div', 'gtu-algorithms');
+      algorithms.setAttribute('role','group'); algorithms.setAttribute('aria-label','Алгоритм ТОП-10 ВНА');
+      for (const [number, text] of [[1,'Алгоритм 1 · Размах дат'], [2,'Алгоритм 2 · Число точек']]) {
+        const button = element('button','gtu-action',text); button.type='button';
+        button.dataset.compressorAlgorithm=String(number);
+        button.setAttribute('aria-pressed',String(number===algorithm));
+        button.disabled=Boolean(model?.running || model?.exporting);
+        button.onclick=()=>send('compressorAlgorithm',{algorithm:number}); algorithms.append(button);
+      }
+      viewport.append(algorithms, element('p','gtu-caption gtu-algorithm-description',algorithm===2 ?
+        'Больше точек после всех фильтров. Размах пары ≥ 2/3 периода; Δt ≤ 0,5 °C, Δp ≤ 5 мбар, Δη < 0,8 п.п.' :
+        'Максимальный размах дат сопоставимой пары. Δt ≤ 0,5 °C, Δp ≤ 5 мбар, Δη < 0,8 п.п.'));
       const tabs = element('div', 'gtu-top10-tabs'); tabs.setAttribute('role', 'tablist');
       tabs.setAttribute('aria-label', 'Представление ТОП-10 ВНА');
       for (const [mode, label] of [['table','Таблица'], ['graphs','Графики']]) {
@@ -293,9 +308,10 @@
           select.value = String(item.selected_rank);
           select.disabled = Boolean(model?.running || model?.exporting);
           select.onchange = () => send('compressorPair', {period:item.period, rank:Number(select.value)});
-          controls.append(select);
+          const choice = GtuChoiceField.enhanceSelect(select,{root});
+          choice.input.dataset.compressorChoice=String(item.period); controls.append(choice);
           if (item.preview?.src) {
-            const zoomKey = `compressor:${item.period}:${item.selected_rank}`;
+            const zoomKey = `compressor:${algorithm}:${item.period}:${item.selected_rank}`;
             zoom[zoomKey] = zoom[zoomKey] || 1;
             const tools = element('div','gtu-row');
             const label = element('span','gtu-caption');
@@ -303,10 +319,15 @@
             image.alt = `Деградация компрессора, период ${item.period}, пара №${item.selected_rank}`;
             const area = element('div','gtu-compressor-image');
             const stage = element('div','gtu-figure-stage'); stage.append(image); area.append(stage);
-            const resize = () => { stage.style.width = `${area.clientWidth * zoom[zoomKey]}px`; label.textContent = `${Math.round(zoom[zoomKey]*100)} % · ${item.preview.points} точек`; };
-            for (const [text, scale] of [['−',1/1.2],['100 %',0],['+',1.2]]) {
+            const resize = () => {
+              const ratio=image.naturalWidth && image.naturalHeight ? image.naturalWidth/image.naturalHeight : 1.6;
+              const fitted=Math.min(area.clientWidth,1000,360*ratio);
+              stage.style.width=`${Math.max(1,fitted)*zoom[zoomKey]}px`;
+              label.textContent=`${zoom[zoomKey]===1 ? 'Вписано' : `${Math.round(zoom[zoomKey]*100)} %`} · ${item.preview.points} точек`;
+            };
+            for (const [text, scale] of [['−',1/1.2],['Вписать',0],['+',1.2]]) {
               const button = element('button','gtu-action',text); button.type = 'button';
-              button.setAttribute('aria-label',`${text === '−' ? 'Уменьшить' : text === '+' ? 'Увеличить' : 'По ширине'} график периода ${item.period}`);
+              button.setAttribute('aria-label',`${text === '−' ? 'Уменьшить' : text === '+' ? 'Увеличить' : 'Вписать'} график периода ${item.period}`);
               button.onclick = () => { zoom[zoomKey] = scale ? Math.min(2.5,Math.max(.5,zoom[zoomKey]*scale)) : 1; resize(); };
               tools.append(button);
             }
@@ -320,7 +341,8 @@
         viewport.append(section);
       });
       viewport._resizeFigure = () => resizePlots.forEach(resize => resize());
-      if (!data.tables.length) viewport.append(element('p','gtu-caption','Нет подходящих пар ТОП-10 ВНА.'));
+      (data.messages || []).forEach(item => viewport.append(element('p','gtu-caption gtu-compressor-message',`Период ${item.period}: ${item.text}`)));
+      if (!data.tables.length && !data.messages?.length) viewport.append(element('p','gtu-caption','Нет подходящих пар ТОП-10 ВНА.'));
     } else if (data.type === 'figure') {
       const hasProbe = selected === 'pressure' && data.probe;
       if (hasProbe) heading.classList.add('gtu-pressure-head');
@@ -366,14 +388,19 @@
     if (data.type !== 'figure') requestAnimationFrame(() => {
       viewport.scrollTo(...(scrolls[viewport.dataset.scrollKey] || [0, 0]));
       if (focus?.mode) byId(`top10-${data.mode}`)?.focus({preventScroll:true});
-      else if (focus?.period) [...panel.querySelectorAll('[data-compressor-pair]')]
-        .find(node => node.tagName === focus.tag && node.dataset.compressorPair === focus.period &&
-          (node.tagName === 'SELECT' || node.value === focus.value))?.focus({preventScroll:true});
+      else if (focus?.algorithm) panel.querySelector(`[data-compressor-algorithm="${focus.algorithm}"]`)?.focus({preventScroll:true});
+      else if (focus?.period) {
+        const target = focus.tag==='INPUT' && !panel.querySelector(`input[type="radio"][data-compressor-pair="${focus.period}"]:checked`) ?
+          panel.querySelector(`[data-compressor-choice="${focus.period}"]`) :
+          [...panel.querySelectorAll('[data-compressor-pair]')].find(node=>node.dataset.compressorPair===focus.period && (node.tagName==='SELECT' || node.value===focus.value));
+        (target?.hidden ? target.parentElement.input : target)?.focus({preventScroll:true});
+      }
     });
   }
   function applyState(next) {
     model = next;
     root.querySelectorAll('[data-compressor-pair]').forEach(node => { node.disabled = Boolean(model.running || model.exporting); });
+    root.querySelectorAll('[data-compressor-algorithm]').forEach(node=>{node.disabled=Boolean(model.running || model.exporting);});
     root.querySelectorAll('[data-control]').forEach(node => {
       const control = model.controls[node.dataset.control];
       node.disabled = control?.state === 'disabled';
@@ -402,6 +429,7 @@
     byId('workspace-subtitle').textContent = model.filename || 'Графики, таблицы и отчёты';
     if (selected !== model.tab) { rememberScroll(); selected = model.tab; renderView(false); }
     else if (!views[selected]) emptyState();
+    GtuChoiceField.sync(root);
   }
   function closeDialogLocally() {
     GtuChoiceField.close();

@@ -1,0 +1,813 @@
+'use strict';
+(() => {
+  const root = document.getElementById('desktop');
+  const byId = id => document.getElementById(id);
+  const panel = byId('result-panel');
+  const layer = byId('dialog-layer');
+  const keys = ['pressure', 'vna', 'boundary', 'top10', 'delta', 'rh', 'economics'];
+  const titles = {pressure:'Перепады давления', vna:'ВНА', boundary:'Параметры на границах периодов', top10:'ТОП-10 ВНА', delta:'Деградация', rh:'Расходная характеристика', economics:'Экономика'};
+  const icons = {
+    activity:'<path d="M2 12h4l3-8 6 16 3-8h4"/>',
+    'file-sheet':'<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M8 13h8M8 17h8M12 13v8"/>',
+    'file-text':'<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M8 13h8M8 17h6"/>',
+    folder:'<path d="M3 7V5a2 2 0 0 1 2-2h5l2 3h7a2 2 0 0 1 2 2v2M3 7h17l-3 13H4a2 2 0 0 1-2-2z"/>',
+    play:'<path d="m8 5 11 7-11 7z"/>',
+    terminal:'<path d="m4 6 6 6-6 6M13 18h7"/>',
+    chevron:'<path d="m6 9 6 6 6-6"/>',
+    flag:'<path d="M4 22V3c5-4 10 4 16 0v12c-6 4-11-4-16 0"/>',
+    chart:'<path d="M3 3v18h18M7 15l4-5 4 3 6-8"/>',
+    close:'<path d="m6 6 12 12M6 18 18 6"/>',
+  };
+  function fillIcons(scope = root) {
+    scope.querySelectorAll('[data-icon]').forEach(node => {
+      const shape = icons[node.dataset.icon];
+      if (shape) node.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${shape}</svg>`;
+    });
+  }
+  const views = {}, zoom = {}, scrolls = {};
+  let backend = null, model = null, selected = 'pressure', dialogPayload = null;
+  let pressureProbeX = null;
+
+  function initializePressureProbe(stage, readoutHost, probe) {
+    if (!probe?.points?.length) return;
+    const points = probe.points;
+    const area = element('div', 'gtu-pressure-probe');
+    const line = element('div', 'gtu-probe-line');
+    line.append(element('span', 'gtu-probe-handle'));
+    const readout = element('output', 'gtu-probe-readout');
+    const [left, top, width, height] = probe.bounds;
+    Object.assign(area.style, {left:`${left*100}%`, top:`${top*100}%`,
+      width:`${width*100}%`, height:`${height*100}%`});
+    area.tabIndex = 0; area.setAttribute('role', 'slider');
+    area.setAttribute('aria-label', 'Обзорная линия: дата, мощность N и ВНА');
+    area.setAttribute('aria-orientation', 'horizontal');
+    area.setAttribute('aria-valuemin', '0');
+    area.setAttribute('aria-valuemax', String(points.length-1));
+    area.title = 'Щелчок или перетаскивание — выбрать дату; ←/→ — соседняя запись';
+    area.append(line); stage.append(area); readoutHost.append(readout);
+    const format = new Intl.NumberFormat('ru-RU', {maximumFractionDigits:3});
+    const number = (value, unit) => Number.isFinite(value) ? `${format.format(value)} ${unit}` : 'нет данных';
+    let index = 0, dragging = null;
+    function lowerBound(x) {
+      let lower = 0, upper = points.length;
+      while (lower < upper) {
+        const middle = (lower+upper) >>> 1;
+        if (points[middle][0] < x) lower = middle+1; else upper = middle;
+      }
+      return lower;
+    }
+    function closest(x) {
+      const right = lowerBound(x);
+      if (!right) return 0;
+      if (right === points.length) return points.length-1;
+      return x-points[right-1][0] <= points[right][0]-x ? right-1 : right;
+    }
+    function select(position) {
+      index = Math.max(0, Math.min(points.length-1, position));
+      index = lowerBound(points[index][0]);
+      const [x, date, power, vna] = points[index];
+      pressureProbeX = x;
+      line.style.left = `${100*(x-probe.x_min)/(probe.x_max-probe.x_min)}%`;
+      readout.textContent = `Дата: ${date} · N: ${number(power, 'МВт')} · ВНА: ${number(vna, '%')}`;
+      readout.dataset.index = String(index);
+      area.setAttribute('aria-valuenow', String(index));
+      area.setAttribute('aria-valuetext', readout.textContent);
+    }
+    function move(event) {
+      const bounds = area.getBoundingClientRect();
+      if (!bounds.width) return;
+      const fraction = Math.max(0, Math.min(1, (event.clientX-bounds.left)/bounds.width));
+      select(closest(probe.x_min+fraction*(probe.x_max-probe.x_min)));
+    }
+    area.onpointerdown = event => {
+      if (event.button !== 0 || dragging !== null) return;
+      event.preventDefault(); area.focus({preventScroll:true});
+      dragging = event.pointerId;
+      try { area.setPointerCapture(event.pointerId); } catch (_error) { /* Synthetic pointer. */ }
+      move(event);
+    };
+    area.onpointermove = event => { if (dragging === event.pointerId) move(event); };
+    area.onpointerup = event => {
+      if (dragging !== event.pointerId) return;
+      move(event); dragging = null;
+      if (area.hasPointerCapture(event.pointerId)) area.releasePointerCapture(event.pointerId);
+    };
+    area.onpointercancel = area.onlostpointercapture = () => { dragging = null; };
+    area.onkeydown = event => {
+      let next = index;
+      if (event.key === 'ArrowLeft') next--;
+      else if (event.key === 'ArrowRight') {
+        do { next++; } while (next < points.length && points[next][0] === points[index][0]);
+      } else if (event.key === 'Home') next = 0;
+      else if (event.key === 'End') next = points.length-1;
+      else return;
+      event.preventDefault(); select(next);
+    };
+    select(closest(pressureProbeX ?? (probe.x_min+probe.x_max)/2));
+  }
+  function initializeSidebarResize() {
+    const layout = root.querySelector('.gtu-layout');
+    const sidebar = byId('settings-panel');
+    const separator = byId('sidebar-resizer');
+    const defaults = {width:324, min:280, max:560, workspace:500, divider:8, step:16};
+    const storageKey = 'gtu.sidebar.width.v1';
+    let preferred = defaults.width;
+    try {
+      const saved = Number(localStorage.getItem(storageKey));
+      if (Number.isFinite(saved) && saved >= defaults.min && saved <= defaults.max) preferred = saved;
+    } catch (_error) { /* Сохранение UI-настроек может быть запрещено профилем. */ }
+    function maximum() { return Math.max(defaults.min, Math.min(defaults.max, layout.clientWidth - defaults.workspace - defaults.divider)); }
+    function applyWidth(width, remember = false) {
+      const actual = Math.round(Math.max(defaults.min, Math.min(maximum(), width)));
+      layout.style.setProperty('--gtu-sidebar-width', `${actual}px`);
+      separator.setAttribute('aria-valuenow', String(actual));
+      separator.setAttribute('aria-valuemax', String(maximum()));
+      separator.setAttribute('aria-valuetext', `${actual} пикселей`);
+      if (remember) {
+        preferred = actual;
+        try { localStorage.setItem(storageKey, String(preferred)); } catch (_error) {}
+      }
+    }
+    let drag = null;
+    separator.addEventListener('pointerdown', event => {
+      if (event.button !== 0) return;
+      event.preventDefault();
+      drag = {x:event.clientX, width:sidebar.getBoundingClientRect().width, pointer:event.pointerId};
+      separator.setPointerCapture(event.pointerId);
+      separator.classList.add('dragging');
+      document.body.classList.add('gtu-resizing');
+    });
+    separator.addEventListener('pointermove', event => {
+      if (drag && event.pointerId === drag.pointer) applyWidth(drag.width + event.clientX - drag.x);
+    });
+    function endDrag(event) {
+      if (!drag || event.pointerId !== drag.pointer) return;
+      applyWidth(sidebar.getBoundingClientRect().width, true);
+      if (separator.hasPointerCapture(event.pointerId)) separator.releasePointerCapture(event.pointerId);
+      drag = null;
+      separator.classList.remove('dragging');
+      document.body.classList.remove('gtu-resizing');
+    }
+    separator.addEventListener('pointerup', endDrag);
+    separator.addEventListener('pointercancel', endDrag);
+    separator.addEventListener('lostpointercapture', endDrag);
+    separator.addEventListener('dblclick', () => applyWidth(defaults.width, true));
+    separator.addEventListener('keydown', event => {
+      const current = sidebar.getBoundingClientRect().width;
+      const width = event.key === 'ArrowLeft' ? current - defaults.step : event.key === 'ArrowRight' ? current + defaults.step : event.key === 'Home' ? defaults.width : event.key === 'End' ? maximum() : null;
+      if (width !== null) { event.preventDefault(); applyWidth(width, true); }
+    });
+    applyWidth(preferred);
+    new ResizeObserver(() => applyWidth(preferred)).observe(layout);
+  }
+  function send(name, data = {}) { if (backend) backend.action(name, JSON.stringify(data)); }
+  function element(tag, className, text) {
+    const node = document.createElement(tag);
+    if (className) node.className = className;
+    if (text !== undefined) node.textContent = text;
+    return node;
+  }
+  function setOptions(select, values, chosen, placeholder = '') {
+    const expected = JSON.stringify([values, placeholder]);
+    if (select.dataset.options !== expected) {
+      select.replaceChildren();
+      if (placeholder) select.append(new Option(placeholder, ''));
+      values.forEach(value => select.append(new Option(value, value)));
+      select.dataset.options = expected;
+    }
+    if (select.value !== chosen) select.value = chosen;
+  }
+  function rememberScroll() {
+    const viewport = panel.querySelector('.gtu-view-viewport');
+    if (viewport) scrolls[viewport.dataset.scrollKey || selected] = [viewport.scrollLeft, viewport.scrollTop];
+  }
+  function emptyState() {
+    // Сохраняем DOM между обновлениями состояния: вращение не начинается заново.
+    let empty = panel.querySelector('.gtu-empty');
+    if (!empty) {
+      panel.replaceChildren(byId('empty-template').content.cloneNode(true));
+      empty = panel.querySelector('.gtu-empty');
+      fillIcons(empty);
+    }
+    const running = Boolean(model?.running);
+    if (empty.classList.contains('gtu-calculating') !== running) {
+      empty.classList.toggle('gtu-calculating', running);
+      if (running) {
+        empty.firstElementChild.replaceWith(byId('calculation-turbine-template').content.cloneNode(true));
+      } else {
+        const icon = element('span');
+        icon.dataset.icon = 'chart'; icon.setAttribute('aria-hidden', 'true');
+        empty.firstElementChild.replaceWith(icon);
+        fillIcons(empty);
+      }
+    }
+    const missing = model?.file && (!model.station ? 'ТЭЦ' : !model.unit ? 'ГТУ' : '');
+    empty.querySelector('#empty-title').textContent = running ? 'Расчёт выполняется' : model?.file ? 'Всё готово к расчету' : 'Начните с исходных данных';
+    empty.querySelector('#empty-description').textContent = running ? 'Подготавливаем графики и таблицы. Ход расчёта — в журнале ниже.' : model?.file ? 'Нажмите «Расчет» в панели подготовки. Перед вычислением можно проверить и изменить периоды.' : 'Выберите Excel-книгу и ТЭЦ в панели подготовки. Здесь появятся графики и таблицы расчёта.';
+    if (!running && missing) {
+      empty.querySelector('#empty-title').textContent = `Выберите ${missing}`;
+      empty.querySelector('#empty-description').textContent = 'Укажите станцию и ГТУ в панели подготовки. Название модели появится после выбора агрегата.';
+    }
+  }
+  function makeTable(data, selectable = false) {
+    if (!data.rows.length) return element('p', 'gtu-caption', 'Нет данных для отображения');
+    const wrap = element('div', 'gtu-table-wrap');
+    const table = element('table', 'gtu-data-table');
+    table.setAttribute('aria-label', titles[selected]);
+    const row = table.createTHead().insertRow();
+    if (selectable) row.append(element('th', '', 'Для графика'));
+    data.columns.forEach(name => { const th = element('th', '', name); th.scope = 'col'; row.append(th); });
+    const body = table.createTBody();
+    data.rows.forEach((values, index) => {
+      const row = body.insertRow();
+      if (selectable) {
+        const rank = data.pairs[index].rank;
+        const radio = element('input'); radio.type = 'radio';
+        radio.name = `compressor-pair-${data.period}`; radio.value = String(rank);
+        radio.dataset.compressorPair = String(data.period);
+        radio.setAttribute('aria-label', `Период ${data.period}: пара №${rank} для графика`);
+        radio.checked = rank === data.selected_rank;
+        radio.disabled = Boolean(model?.running || model?.exporting);
+        radio.onchange = () => send('compressorPair', {period:data.period, rank});
+        row.insertCell().append(radio);
+        row.classList.toggle('gtu-selected-pair', radio.checked);
+      }
+      values.forEach(value => { row.insertCell().textContent = value; });
+    });
+    wrap.append(table);
+    return wrap;
+  }
+  function renderView(keepScroll = true) {
+    GtuChoiceField.close();
+    const focus = panel.contains(document.activeElement) ? {
+      mode:document.activeElement.dataset.top10Mode,
+      algorithm:document.activeElement.dataset.compressorAlgorithm,
+      period:document.activeElement.dataset.compressorPair || document.activeElement.dataset.compressorChoice,
+      value:document.activeElement.value, tag:document.activeElement.tagName
+    } : null;
+    if (keepScroll) rememberScroll();
+    panel.setAttribute('aria-labelledby', `tab-${selected}`);
+    root.querySelectorAll('[data-tab]').forEach(button => button.setAttribute('aria-selected', String(button.dataset.tab === selected)));
+    const data = views[selected];
+    if (!data) { emptyState(); return; }
+    const heading = element('div', 'gtu-chart-head');
+    const title = element('div');
+    title.append(element('h3', '', titles[selected]));
+    heading.append(title);
+    const viewport = element('div', 'gtu-view-viewport');
+    viewport.dataset.scrollKey = selected === 'top10' ? `top10:${data.algorithm || 1}:${data.mode || 'table'}` : selected;
+    panel.replaceChildren(heading, viewport);
+    if (data.type === 'vna_top10') {
+      title.append(element('p', '', 'Пара выбирается отдельно для каждого периода. Выбор используется в графиках Excel и условиях Word.'));
+      const algorithm = data.algorithm || 1;
+      const algorithms = element('div', 'gtu-algorithms');
+      algorithms.setAttribute('role','group'); algorithms.setAttribute('aria-label','Алгоритм ТОП-10 ВНА');
+      for (const [number, text] of [[1,'Алгоритм 1 · Размах дат'], [2,'Алгоритм 2 · Число точек']]) {
+        const button = element('button','gtu-action',text); button.type='button';
+        button.dataset.compressorAlgorithm=String(number);
+        button.setAttribute('aria-pressed',String(number===algorithm));
+        button.disabled=Boolean(model?.running || model?.exporting);
+        button.onclick=()=>send('compressorAlgorithm',{algorithm:number}); algorithms.append(button);
+      }
+      viewport.append(algorithms, element('p','gtu-caption gtu-algorithm-description',algorithm===2 ?
+        'Больше точек после всех фильтров. Размах пары ≥ 2/3 периода; Δt ≤ 0,5 °C, Δp ≤ 5 мбар, Δη < 0,8 п.п.' :
+        'Максимальный размах дат сопоставимой пары. Δt ≤ 0,5 °C, Δp ≤ 5 мбар, Δη < 0,8 п.п.'));
+      const tabs = element('div', 'gtu-top10-tabs'); tabs.setAttribute('role', 'tablist');
+      tabs.setAttribute('aria-label', 'Представление ТОП-10 ВНА');
+      for (const [mode, label] of [['table','Таблица'], ['graphs','Графики']]) {
+        const button = element('button', 'gtu-action', label); button.type = 'button';
+        button.dataset.top10Mode = mode; button.setAttribute('role','tab');
+        button.id = `top10-${mode}`;
+        button.setAttribute('aria-controls','top10-content');
+        button.setAttribute('aria-selected',String(mode === data.mode));
+        button.onclick = () => send('top10Mode', {mode});
+        tabs.append(button);
+      }
+      tabs.onkeydown = event => {
+        if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
+        event.preventDefault();
+        const mode = data.mode === 'table' ? 'graphs' : 'table';
+        send('top10Mode', {mode});
+      };
+      heading.append(tabs);
+      viewport.id = 'top10-content'; viewport.setAttribute('role','tabpanel');
+      viewport.setAttribute('aria-labelledby',`top10-${data.mode}`);
+      const resizePlots = [];
+      data.tables.forEach(item => {
+        const section = element('section', 'gtu-table-section gtu-compressor-period');
+        const controls = element('div', 'gtu-compressor-controls');
+        controls.append(element('h4', '', data.mode === 'table' ? `Период ${item.period} · ТОП-10 ВНА · для графика пара №${item.selected_rank}` : `Период ${item.period} · пара №${item.selected_rank}`));
+        section.append(controls);
+        if (data.mode === 'table') {
+          section.append(makeTable(item, true));
+        } else {
+          const select = element('select', 'gtu-field gtu-compressor-select');
+          select.dataset.compressorPair = String(item.period);
+          select.setAttribute('aria-label',`Пара графика, период ${item.period}`);
+          item.pairs.forEach(pair => select.append(new Option(pair.label, String(pair.rank))));
+          select.value = String(item.selected_rank);
+          select.disabled = Boolean(model?.running || model?.exporting);
+          select.onchange = () => send('compressorPair', {period:item.period, rank:Number(select.value)});
+          const choice = GtuChoiceField.enhanceSelect(select,{root});
+          choice.input.dataset.compressorChoice=String(item.period); controls.append(choice);
+          if (item.preview?.src) {
+            const zoomKey = `compressor:${algorithm}:${item.period}:${item.selected_rank}`;
+            zoom[zoomKey] = zoom[zoomKey] || 1;
+            const tools = element('div','gtu-row');
+            const label = element('span','gtu-caption');
+            const image = element('img','gtu-figure'); image.draggable = false;
+            image.alt = `Деградация компрессора, период ${item.period}, пара №${item.selected_rank}`;
+            const area = element('div','gtu-compressor-image');
+            const stage = element('div','gtu-figure-stage'); stage.append(image); area.append(stage);
+            const resize = () => {
+              const ratio=image.naturalWidth && image.naturalHeight ? image.naturalWidth/image.naturalHeight : 1.6;
+              const fitted=Math.min(area.clientWidth,1000,360*ratio);
+              stage.style.width=`${Math.max(1,fitted)*zoom[zoomKey]}px`;
+              label.textContent=`${zoom[zoomKey]===1 ? 'Вписано' : `${Math.round(zoom[zoomKey]*100)} %`} · ${item.preview.points} точек`;
+            };
+            for (const [text, scale] of [['−',1/1.2],['Вписать',0],['+',1.2]]) {
+              const button = element('button','gtu-action',text); button.type = 'button';
+              button.setAttribute('aria-label',`${text === '−' ? 'Уменьшить' : text === '+' ? 'Увеличить' : 'Вписать'} график периода ${item.period}`);
+              button.onclick = () => { zoom[zoomKey] = scale ? Math.min(2.5,Math.max(.5,zoom[zoomKey]*scale)) : 1; resize(); };
+              tools.append(button);
+            }
+            tools.append(label); section.append(tools,area);
+            image.onload = resize; image.src = item.preview.src; resizePlots.push(resize);
+          } else {
+            const message = element('p','gtu-caption gtu-compressor-message', item.preview?.message || 'Подготовка графика…');
+            message.setAttribute('role','status'); section.append(message);
+          }
+        }
+        viewport.append(section);
+      });
+      viewport._resizeFigure = () => resizePlots.forEach(resize => resize());
+      (data.messages || []).forEach(item => viewport.append(element('p','gtu-caption gtu-compressor-message',`Период ${item.period}: ${item.text}`)));
+      if (!data.tables.length && !data.messages?.length) viewport.append(element('p','gtu-caption','Нет подходящих пар ТОП-10 ВНА.'));
+    } else if (data.type === 'figure') {
+      const hasProbe = selected === 'pressure' && data.probe;
+      if (hasProbe) heading.classList.add('gtu-pressure-head');
+      else title.append(element('p', '', 'Колесо мыши — масштаб · 100 % — по ширине'));
+      const controls = element('div', 'gtu-row');
+      const reset = element('button', 'gtu-action', '100 %');
+      reset.type = 'button'; reset.setAttribute('aria-label', 'Вернуть масштаб по ширине');
+      const label = element('span', 'gtu-caption');
+      controls.append(label, reset); heading.append(controls);
+      const stage = element('div', 'gtu-figure-stage');
+      const image = element('img', 'gtu-figure');
+      image.alt = titles[selected]; image.draggable = false;
+      stage.append(image); viewport.append(stage);
+      if (hasProbe) initializePressureProbe(stage, title, data.probe);
+      const key = selected;
+      zoom[key] = zoom[key] || 1;
+      function resize() { stage.style.width = `${viewport.clientWidth * zoom[key]}px`; label.textContent = `${Math.round(zoom[key] * 100)} %`; }
+      reset.onclick = () => { zoom[key] = 1; resize(); viewport.scrollTo(0, 0); };
+      viewport.addEventListener('wheel', event => {
+        event.preventDefault();
+        const bounds = viewport.getBoundingClientRect();
+        const x = event.clientX - bounds.left, y = event.clientY - bounds.top;
+        const old = zoom[key];
+        zoom[key] = Math.min(2.5, Math.max(.5, old * (event.deltaY < 0 ? 1.15 : 1 / 1.15)));
+        const contentX = (viewport.scrollLeft + x) / old;
+        const contentY = (viewport.scrollTop + y) / old;
+        resize(); viewport.scrollTo(contentX * zoom[key] - x, contentY * zoom[key] - y);
+      }, {passive:false});
+      image.onload = () => { resize(); const saved = scrolls[key] || [0, 0]; viewport.scrollTo(...saved); };
+      image.src = data.src;
+      viewport._resizeFigure = resize;
+    } else if (data.type === 'table') {
+      title.append(element('p', '', `${data.rows.length} строк`));
+      viewport.append(makeTable(data));
+    } else {
+      data.tables.forEach(data => {
+        const section = element('section', 'gtu-table-section');
+        section.append(element('h4', '', data.title), makeTable(data));
+        viewport.append(section);
+      });
+      if (!data.tables.length) viewport.append(element('p', 'gtu-caption', 'Нет таблиц ТОП-10 для отображения'));
+    }
+    if (data.type !== 'figure') requestAnimationFrame(() => {
+      viewport.scrollTo(...(scrolls[viewport.dataset.scrollKey] || [0, 0]));
+      if (focus?.mode) byId(`top10-${data.mode}`)?.focus({preventScroll:true});
+      else if (focus?.algorithm) panel.querySelector(`[data-compressor-algorithm="${focus.algorithm}"]`)?.focus({preventScroll:true});
+      else if (focus?.period) {
+        const target = focus.tag==='INPUT' && !panel.querySelector(`input[type="radio"][data-compressor-pair="${focus.period}"]:checked`) ?
+          panel.querySelector(`[data-compressor-choice="${focus.period}"]`) :
+          [...panel.querySelectorAll('[data-compressor-pair]')].find(node=>node.dataset.compressorPair===focus.period && (node.tagName==='SELECT' || node.value===focus.value));
+        (target?.hidden ? target.parentElement.input : target)?.focus({preventScroll:true});
+      }
+    });
+  }
+  function applyState(next) {
+    model = next;
+    root.querySelectorAll('[data-compressor-pair]').forEach(node => { node.disabled = Boolean(model.running || model.exporting); });
+    root.querySelectorAll('[data-compressor-algorithm]').forEach(node=>{node.disabled=Boolean(model.running || model.exporting);});
+    root.querySelectorAll('[data-control]').forEach(node => {
+      const control = model.controls[node.dataset.control];
+      node.disabled = control?.state === 'disabled';
+    });
+    const values = model.values;
+    setOptions(byId('station'), model.stations, values.station_var, 'Выберите ТЭЦ');
+    setOptions(byId('unit'), model.units, values.unit_var, 'Выберите ГТУ');
+    byId('unit-model').textContent = model.controls.unit_model_label.text || 'Выберите ГТУ.';
+    setOptions(byId('sheet'), model.controls.raw_sheet_combo.values || [], values.selected_raw_sheet);
+    const inputFields = {gas:'gas_tariff_var', electricity:'electricity_tariff_var', cost:'electricity_cost_var'};
+    Object.entries(inputFields).forEach(([id, key]) => { const input = byId(id); if (document.activeElement !== input) input.value = values[key]; input.disabled = model.tariffsDisabled; });
+    root.querySelectorAll('input[name="mode"]').forEach(input => { input.checked = input.value === values.calculation_mode; input.disabled = model.modeDisabled; });
+    byId('import-controls').hidden = values.calculation_mode !== 'import';
+    byId('filename').textContent = model.filename || 'Файл не выбран';
+    byId('filename').title = model.file || '';
+    byId('choose-label').textContent = model.file ? 'Изменить файл' : 'Выбрать Excel-файл';
+    byId('station-hint').textContent = model.controls.station_hint.text || '';
+    byId('raw-label').textContent = model.controls.raw_label.text || '';
+    byId('run-label').textContent = model.controls.run_button.text || 'Расчет';
+    byId('events-label').textContent = model.controls.events_button.text || 'События графика (0)';
+    byId('status').textContent = model.controls.status_label.text || '';
+    byId('status-dot').className = `gtu-dot ${model.running || model.exporting ? 'busy' : model.hasResult ? '' : 'waiting'}`;
+    byId('progress').hidden = !model.controls.progress.active;
+    byId('journal-status').textContent = model.running ? 'Выполняется' : model.exporting ? 'Экспорт' : model.hasResult ? 'Завершён' : 'Ожидание данных';
+    byId('workspace-title').textContent = model.file && model.station ? `${model.station}${model.unit ? ` · ${model.unit}` : ''}` : 'Рабочее пространство';
+    byId('workspace-subtitle').textContent = model.filename || 'Графики, таблицы и отчёты';
+    if (selected !== model.tab) { rememberScroll(); selected = model.tab; renderView(false); }
+    else if (!views[selected]) emptyState();
+    GtuChoiceField.sync(root);
+  }
+  function closeDialogLocally() {
+    GtuChoiceField.close();
+    layer.hidden = true; layer.replaceChildren(); layer.classList.remove('periods');
+    root.querySelector('.gtu-settings').inert = false;
+    root.querySelector('main').inert = false;
+    dialogPayload = null;
+  }
+  function showDialog(payload) {
+    GtuChoiceField.close();
+    if (!payload) { closeDialogLocally(); return; }
+    dialogPayload = payload;
+    const periods = payload.kind === 'periods';
+    layer.classList.toggle('periods', periods);
+    root.querySelector('.gtu-settings').inert = !periods;
+    root.querySelector('main').inert = !periods;
+    const dialog = element('section', 'gtu-dialog');
+    dialog.dataset.kind = payload.kind;
+    dialog.role = 'dialog'; dialog.setAttribute('aria-modal', String(!periods));
+    dialog.setAttribute('aria-label', payload.title);
+    const header = element('div', 'gtu-dialog-head');
+    header.append(element('h3', '', payload.title));
+    if (periods) {
+      const collapse = element('button', 'gtu-action', 'Свернуть'); collapse.type = 'button';
+      collapse.onclick = () => { const collapsed = dialog.classList.toggle('collapsed'); collapse.textContent = collapsed ? 'Развернуть' : 'Свернуть'; };
+      header.append(collapse);
+      header.onpointerdown = event => {
+        if (event.target.closest('button')) return;
+        const bounds = dialog.getBoundingClientRect(), container = layer.getBoundingClientRect();
+        const offsetX = event.clientX - bounds.left, offsetY = event.clientY - bounds.top;
+        dialog.style.position = 'absolute'; dialog.style.left = `${bounds.left - container.left}px`; dialog.style.top = `${bounds.top - container.top}px`;
+        header.setPointerCapture(event.pointerId);
+        header.onpointermove = e => { if (!header.hasPointerCapture(e.pointerId)) return; dialog.style.left = `${Math.max(0, Math.min(container.width - dialog.offsetWidth, e.clientX - container.left - offsetX))}px`; dialog.style.top = `${Math.max(0, Math.min(container.height - dialog.offsetHeight, e.clientY - container.top - offsetY))}px`; };
+        header.onpointerup = e => header.releasePointerCapture(e.pointerId);
+      };
+    }
+    const body = element('div', 'gtu-dialog-body');
+    const gasPassport = payload.kind === 'gasPassport';
+    const description = element(gasPassport ? 'li' : 'p');
+    description.textContent = periods ? 'Проверьте автоматическую разбивку. Одна строка — один период: дата начала; дата конца. График остаётся доступен.' : payload.kind === 'events' ? 'Каждая строка: дата; подпись события. Например: 01.05.2026; Замена ВЛО. Можно указать время.' : payload.kind === 'gasPassport' ? 'Значения относятся к указанным ТЭЦ и ГТ. Допустимы точка и запятая. Состав — молярные доли 0..1; пустые компоненты не сохраняются.' : 'Проверьте каналы, колонки листа «Данные» и коэффициенты перевода единиц. Колонку можно ввести вручную по букве.';
+    const introduction = gasPassport ? element('ul', 'gtu-passport-notes gtu-caption') : body;
+    introduction.append(description);
+    if (gasPassport) body.append(introduction);
+    if (payload.note) introduction.append(element(gasPassport ? 'li' : 'p','gtu-caption',payload.note));
+    if (payload.kind === 'corrections') {
+      description.textContent = '63 коэффициента выбранной ГТ. Точка, запятая и запись 1,23E-5 допустимы. Можно вставить диапазон значений из Excel начиная с выбранного поля.';
+    }
+    let editor = null;
+    const mappingInputs = [];
+    const gasInputs = [];
+    const gasEntries = [];
+    const coefficientInputs = [];
+    const bookInputs = [];
+    const bookRows=()=>bookInputs.map(item=>({column:item.data.column,role:payload.roles.find(role=>role.label===item.role.value)?.value||'',unit:item.unit.value,kind:({'Расчётный':'computed','Измеренный':'measured','Служебный':'service'})[item.kind.value],recipe:item.data.recipe}));
+    if (payload.kind === 'bookMapping') {
+      description.textContent='Проверьте сохранённый маппинг ТЭЦ/ГТ. Измеренные столбцы принимают данные датчиков, расчётные вычисляются по формулам, служебные содержат дату и наработку.';
+      const toolbar=element('div','gtu-book-toolbar'), formulasButton=element('button','gtu-action','Показать расчётные формулы');
+      formulasButton.type='button';formulasButton.dataset.bookFormulas='';formulasButton.setAttribute('aria-expanded','false');
+      const coefficientsButton=element('button','gtu-action','Показать коэффициенты');
+      coefficientsButton.type='button';coefficientsButton.dataset.bookCoefficients='';coefficientsButton.setAttribute('aria-expanded','false');
+      toolbar.append(formulasButton,coefficientsButton);body.append(toolbar);
+      const table=element('table','gtu-mapping-table gtu-book-table'), head=table.createTHead().insertRow();
+      ['Колонка книги','Параметр','Единицы','Тип'].forEach(title=>head.append(element('th','',title)));
+      const tbody=table.createTBody();
+      payload.rows.forEach(data=>{
+        const row=tbody.insertRow();row.insertCell().textContent=`${data.column} — ${data.header || 'Без заголовка'}`;
+        const selectedRole=payload.roles.find(role=>role.value===data.role)?.label || payload.roles[0].label;
+        const role=GtuChoiceField.create({root,choices:payload.roles.map(role=>role.label),value:selectedRole,label:`Параметр ${data.column}`});
+        const units=[...new Set(['',...(payload.unit_catalog||[]).map(unit=>unit.symbol),data.unit])];
+        const unit=GtuChoiceField.create({root,choices:units,value:data.unit,label:`Единицы ${data.column}`,editable:true});
+        const kinds={measured:'Измеренный',computed:'Расчётный',service:'Служебный'};
+        const kind=GtuChoiceField.create({root,choices:Object.values(kinds),value:kinds[data.kind],label:`Тип ${data.column}`});
+        row.insertCell().append(role);
+        const showRole=()=>{role.input.title=role.input.value;};
+        role.input.onchange=()=>{
+          showRole();
+          const id=payload.roles.find(item=>item.label===role.input.value)?.value;
+          if(['date','hours_input'].includes(id))kind.input.value='Служебный';
+          else if(id?.startsWith('correction_')){kind.input.value='Расчётный';if(!unit.input.value)unit.input.value='о.е.';}
+          else if(kind.input.value==='Служебный')kind.input.value=data.variants?.length?'Расчётный':'Измеренный';
+        };
+        showRole();unit.input.title=data.unit;
+        const unitCell=row.insertCell();unitCell.append(unit);
+        row.insertCell().append(kind);
+        bookInputs.push({data,role:role.input,unit:unit.input,kind:kind.input});
+      });
+      body.append(table);
+      const formulaPanel=element('div','gtu-book-formulas');formulaPanel.hidden=true;body.append(formulaPanel);
+      let detailView='mapping',previewVersion=0,previewCache=null;
+      const preview=render=>{
+        const version=++previewVersion,key=JSON.stringify(bookRows());
+        if(previewCache?.key===key){render(previewCache.data);return;}
+        formulaPanel.replaceChildren(element('p','gtu-caption','Подготовка формул…'));
+        backend.preview_workbook_formulas(key,json=>{
+          if(!dialog.isConnected||version!==previewVersion||dialogPayload!==payload)return;
+          const data=JSON.parse(json);
+          if(data.error){formulaPanel.replaceChildren(element('p','gtu-validation-error',data.error));return;}
+          previewCache={key,data};render(data);
+        });
+      };
+      const sourceDetails=item=>{
+        const details=element('details'),summary=element('summary','','Обозначения и исходная формула');details.append(summary);
+        item.dependencies.forEach(value=>details.append(element('div','gtu-caption',`${value.symbol} — ${value.label}; колонка ${value.source}${value.unit?'; '+value.unit:''}${value.offset?'; смещение '+value.offset+' строк':''}`)));
+        item.coefficients.forEach(value=>details.append(element('div','gtu-caption',`${value.symbol} — ${value.source} = ${value.missing?'Не прочитан':value.value}`)));
+        details.append(element('div','gtu-formula-text',`Excel: ${item.source_formula||'Нет формулы'}`));
+        item.alternatives.forEach(value=>details.append(element('div','gtu-caption',`Другой вариант (${value.count} строк): ${value.formula}`)));
+        return details;
+      };
+      formulasButton.onclick=()=>{
+        GtuChoiceField.close();const opened=detailView!=='formulas';
+        ++previewVersion;
+        if(opened)preview(data=>{
+          const formulaTable=element('table','gtu-mapping-table gtu-formula-table'),h=formulaTable.createTHead().insertRow();
+          ['Параметр','Используемое выражение'].forEach(title=>h.append(element('th','',title)));
+          const rows=formulaTable.createTBody();
+          data.rows.forEach(item=>{
+            const r=rows.insertRow(),label=r.insertCell();label.textContent=item.label;label.title=`Колонка ${item.column}`;
+            const cell=r.insertCell();
+            cell.append(element('div','gtu-caption',item.calculation_note));
+            if(!['application','preserved'].includes(item.calculation_status))cell.append(element('div','gtu-formula-text',item.display_formula||item.error||'В книге нет единственной поддерживаемой формулы.'));
+            if(!item.application_owned){
+              if(item.count)cell.append(element('div','gtu-caption',`Основная структура: ${item.count} из ${item.total} строк.`));
+              if(item.error&&item.calculation_status!=='preserved')cell.append(element('div','gtu-validation-error',item.error));
+              cell.append(sourceDetails(item));
+            }
+          });
+          formulaPanel.replaceChildren(element('p','gtu-caption','t — текущая строка данных; t+1 — следующая. c₁, c₂ и далее — коэффициенты отдельного выражения. Паспорт газа задаёт C/H, Qнр и плотность в связанных узлах.'),formulaTable);
+        });
+        table.hidden=opened;formulaPanel.hidden=!opened;formulasButton.textContent=opened?'Вернуться к маппингу':'Показать расчётные формулы';
+        formulasButton.setAttribute('aria-expanded',String(opened));
+        coefficientsButton.textContent='Показать коэффициенты';coefficientsButton.setAttribute('aria-expanded','false');
+        detailView=opened?'formulas':'mapping';body.scrollTop=0;
+      };
+      coefficientsButton.onclick=()=>{
+        GtuChoiceField.close();const opened=detailView!=='coefficients';
+        ++previewVersion;
+        if(opened)preview(data=>{
+          formulaPanel.replaceChildren(element('p','gtu-caption','Коэффициенты выбранных выражений прочитаны из текущей книги. Числа внутри выражений показаны в самих формулах.'));
+          let groups=0;
+          data.rows.filter(item=>['target','dependency'].includes(item.calculation_status)).forEach(item=>{
+            if(!item.coefficients.length&&!item.constant_value)return;
+            groups++;
+            const section=element('section','gtu-coefficient-group');
+            section.append(element('h4','',item.label),element('div','gtu-formula-text',item.display_formula));
+            if(item.coefficients.length){
+              const coefficients=element('table','gtu-mapping-table gtu-formula-table gtu-coefficients-table'),head=coefficients.createTHead().insertRow();
+              ['Обозначение','Источник коэффициента','Значение'].forEach(title=>head.append(element('th','',title)));
+              const rows=coefficients.createTBody();item.coefficients.forEach(value=>{const row=rows.insertRow();row.insertCell().textContent=value.symbol;row.insertCell().textContent=value.source;row.insertCell().textContent=value.missing?'Не прочитан':String(value.value);});
+              section.append(coefficients);
+            }
+            formulaPanel.append(section);
+          });
+          if(!groups)formulaPanel.append(element('p','','В выбранных выражениях нет отдельных коэффициентов.'));
+        });
+        table.hidden=opened;formulaPanel.hidden=!opened;coefficientsButton.textContent=opened?'Вернуться к маппингу':'Показать коэффициенты';
+        coefficientsButton.setAttribute('aria-expanded',String(opened));
+        formulasButton.textContent='Показать расчётные формулы';formulasButton.setAttribute('aria-expanded','false');
+        detailView=opened?'coefficients':'mapping';body.scrollTop=0;
+      };
+    } else if (payload.kind === 'bookCorrections') {
+      description.textContent=`Версия расчётной модели: ${payload.revision}`;
+      (payload.groups||[]).forEach(group=>{
+        const section=element('section','gtu-coefficient-group');section.append(element('h4','',`${group.label} (${group.column})`),element('div','gtu-formula-text',group.formula));
+        if(group.coefficients.length){
+          const table=element('table','gtu-mapping-table gtu-formula-table'),head=table.createTHead().insertRow();
+          ['Источник коэффициента','Значение'].forEach(title=>head.append(element('th','',title)));
+          const rows=table.createTBody();group.coefficients.forEach(item=>{const row=rows.insertRow();row.insertCell().textContent=item.source;row.insertCell().textContent=item.missing?'Не прочитан':String(item.value);});section.append(table);
+        } else section.append(element('p','gtu-caption','В выражении нет ссылок на отдельные ячейки коэффициентов.'));
+        body.append(section);
+      });
+      if(!payload.groups?.length)body.append(element('p','','В выбранных выражениях нет отдельных коэффициентов поправок.'));
+    } else if (payload.kind === 'mapping') {
+      const catalog = payload.unit_catalog || [];
+      const unitKey = value => value.trim().toLowerCase().replace(/\s+/g, '');
+      const unitInfo = value => catalog.find(unit => unit.aliases.includes(unitKey(value)));
+      const canonicalUnit = value => unitInfo(value)?.symbol || value;
+      const makeUnits = (value, label) => {
+        value = canonicalUnit(value);
+        const choices = [{value:'',label:'Не указаны'}, ...catalog.map(unit => ({value:unit.symbol,label:unit.symbol}))];
+        if (value && !unitInfo(value)) choices.push({value,label:`${value} (из файла)`});
+        return GtuChoiceField.create({root,choices,value,label});
+      };
+      const table = element('table', 'gtu-mapping-table');
+      const row = table.createTHead().insertRow();
+      ['Датчик и описание', 'Колонка «Данные»', 'Из единиц', 'В единицы', 'Коэффициент'].forEach(title => row.append(element('th', '', title)));
+      const tbody = table.createTBody();
+      payload.rows.forEach((data, index) => {
+        const row = tbody.insertRow(); const sourceCell = row.insertCell(); sourceCell.append(element('div','',data.source));
+        if (data.description) sourceCell.append(element('small','gtu-caption',data.description));
+        if (data.declared_unit) sourceCell.append(element('small','gtu-caption',`Единицы выгрузки: ${data.declared_unit}`));
+        const targetField = GtuChoiceField.create({root,choices:payload.choices,value:data.target,label:`Колонка для ${data.source}`,editable:true});
+        const target = targetField.input;
+        const factor = element('input', 'gtu-field'); factor.value = data.factor; factor.inputMode = 'decimal'; factor.setAttribute('aria-label', `Коэффициент для ${data.source}`);
+        const sourceField = makeUnits(data.source_unit || '', `Исходные единицы ${data.source}`), sourceUnit = sourceField.input;
+        const targetUnitsField = makeUnits(data.target_unit || '', `Единицы назначения ${data.source}`), targetUnit = targetUnitsField.input;
+        const conversion = element('output', 'gtu-unit-formula'); conversion.setAttribute('aria-label', `Преобразование для ${data.source}`);
+        const mappingInput = {target, factor, sourceUnit, targetUnit, offset:0};
+        const convert = () => {
+          mappingInput.offset=0; conversion.textContent='';
+          const ignored=target.value.trim().toLocaleUpperCase()==='НЕ УЧИТЫВАТЬ';
+          [sourceUnit,targetUnit].forEach(input=>{input.disabled=ignored;input.closest('.gtu-choice').querySelector('button').disabled=ignored;});
+          factor.disabled=ignored;
+          if(ignored){factor.value='1';factor.setCustomValidity('');factor.title='Канал не импортируется';return;}
+          const a=unitInfo(sourceUnit.value), b=unitInfo(targetUnit.value);
+          factor.setCustomValidity(''); factor.readOnly=Boolean(a && b && a.dimension===b.dimension);
+          if (a && b && a.dimension===b.dimension) {
+            const multiplier=a.factor/b.factor, offset=((a.offset||0)-(b.offset||0))/b.factor;
+            mappingInput.offset=offset; factor.value=String(Number(multiplier.toPrecision(12)));
+            const formula=`x × ${Number(multiplier.toPrecision(12))}${offset ? ` ${offset>0?'+':'−'} ${Number(Math.abs(offset).toPrecision(12))}`:''}`;
+            factor.title=`${sourceUnit.value} → ${targetUnit.value}: ${formula}`;
+            if(offset)conversion.textContent=formula;
+          }
+          else if (sourceUnit.value && targetUnit.value) {
+            factor.setCustomValidity('Несовместимые или неизвестные единицы. Проверьте назначение и единицы.');
+            factor.title=factor.validationMessage;
+          } else factor.title='При неизвестных единицах проверьте коэффициент вручную';
+        };
+        sourceUnit.onchange = targetUnit.onchange = convert;
+        convert();
+        target.onchange = () => { const choice=payload.choices.find(value=>value.split('—')[0].trim()===target.value.trim().toUpperCase()) || target.value;
+          const text=choice.split('—').slice(1).join('—').trim(), comma=text.indexOf(',');
+          targetUnit.value=canonicalUnit(comma>=0 ? text.slice(comma+1).trim() : ''); convert(); };
+        row.insertCell().append(targetField); row.insertCell().append(sourceField); row.insertCell().append(targetUnitsField); row.insertCell().append(factor, conversion);
+        mappingInputs.push(mappingInput);
+      });
+      body.append(table);
+    } else if (payload.kind === 'gasPassport') {
+      if (payload.warning) introduction.append(element('li', '', payload.warning));
+      introduction.append(element('li','','Один паспорт без дат действует на весь диапазон. Для нескольких укажите сроки. Время окончания не включается.'));
+      introduction.append(element('li','','C/H рассчитывается по молярному составу горючей части, включая H₂. CO₂, N₂, O₂ и He в него не входят.'));
+      const container = element('div'); body.append(container);
+      const addEntry = data => {
+        const section = element('details','gtu-coefficient-group'); section.open = gasEntries.length === 0;
+        const title = element('summary'); section.append(title);
+        const dates = element('div','gtu-passport-dates');
+        const from = element('input','gtu-field'), until = element('input','gtu-field');
+        from.type = until.type = 'datetime-local'; from.step = until.step = 'any';
+        [[from,data.valid_from],[until,data.valid_until]].forEach(([input,value])=>{input.value=value||'';if(value&&!input.value){input.type='text';input.value=value;}});
+        [['Действует с',from],['До (не включая)',until]].forEach(([text,input]) => { const label=element('label','',text); label.append(input); dates.append(label); });
+        section.append(dates);
+        const table=element('table','gtu-mapping-table'), head=table.createTHead().insertRow();
+        ['Параметр','Значение','Единицы'].forEach(text=>head.append(element('th','',text)));
+        const rows=table.createTBody(), fields=[];
+        data.fields.forEach(field=>{ const row=rows.insertRow(); row.insertCell().textContent=field.label;
+          const input=element('input','gtu-field'); input.value=field.value; input.inputMode='decimal'; input.dataset.gasKey=field.key; input.setAttribute('aria-label',field.label);
+          input.readOnly=Boolean(field.computed);
+          row.insertCell().append(input); row.insertCell().textContent=field.unit; fields.push({key:field.key,input}); });
+        section.append(table);
+        const status=element('p','gtu-caption');status.setAttribute('aria-live','polite');section.insertBefore(status,table);
+        const record={section,title,from,until,fields,status,chError:''}; gasEntries.push(record);
+        const updateCh=()=>{
+          const output=fields.find(field=>field.key==='carbon_hydrogen_ratio').input;
+          try {
+            let carbon=0,hydrogen=0;const composition=payload.ch_model;
+            fields.filter(field=>field.key.startsWith('component:')).forEach(({key,input})=>{
+              if(!input.value.trim())return;
+              const value=Number(input.value.trim().replace(',','.')),name=key.slice('component:'.length);
+              if(!Number.isFinite(value)||value<0||value>1)throw new Error(`Доля ${name} должна быть от 0 до 1.`);
+              if(!value)return;
+              const species=composition.species[name.toLowerCase()];
+              if(!species)throw new Error(`Для компонента ${name} неизвестна химическая формула.`);
+              if(species.combustible){carbon+=value*species.carbon;hydrogen+=value*species.hydrogen;}
+            });
+            if(hydrogen<=0)throw new Error('Для C/H укажите молярные доли углеводородов или H₂.');
+            const ratio=composition.carbon_mass*carbon/(composition.hydrogen_mass*hydrogen);
+            output.value=String(Number(ratio.toPrecision(10)));output.placeholder='';record.chError='';
+            status.textContent=data.previous_ch!=null && data.previous_ch_method!==composition.method ?
+              `Ранее сохранено C/H = ${data.previous_ch}. При сохранении паспорта будет записан расчёт по составу: ${output.value}.` :
+              'C/H рассчитано по указанным долям без нормализации состава.';
+          } catch(error) {output.value='';output.placeholder='Нужен состав';record.chError=error.message;status.textContent=error.message;}
+          status.classList.toggle('gtu-validation-error',Boolean(record.chError));
+        };
+        fields.filter(field=>field.key.startsWith('component:')).forEach(({input})=>input.addEventListener('input',updateCh));
+        updateCh();
+        const updateTitles=()=>gasEntries.forEach((item,index)=>{item.title.textContent=`Паспорт ${index+1}`;}); updateTitles();
+        const remove=element('button','gtu-action','Удалить паспорт'); remove.type='button'; remove.onclick=()=>{if(gasEntries.length>1){gasEntries.splice(gasEntries.indexOf(record),1);section.remove();updateTitles();}};
+        section.append(remove); container.append(section);
+      };
+      payload.entries.forEach(addEntry);
+      const add=element('button','gtu-action','+ Добавить паспорт'); add.type='button'; add.onclick=()=>addEntry({fields:payload.empty_fields,valid_from:'',valid_until:''}); body.insertBefore(add,container);
+    } else if (payload.kind === 'corrections') {
+      const pasteStatus = element('p', 'gtu-caption'); pasteStatus.setAttribute('aria-live','polite');
+      body.append(pasteStatus);
+      payload.groups.forEach((group, index) => {
+        const section = element('details', 'gtu-coefficient-group'); section.open = index === 0;
+        section.append(element('summary','',`${group.title} (${group.fields.length})`));
+        section.append(element('p','gtu-caption',group.formula));
+        const table = element('table','gtu-mapping-table');
+        const head = table.createTHead().insertRow();
+        ['Коэффициент','Значение','Подсказка'].forEach(text => head.append(element('th','',text)));
+        const rows = table.createTBody();
+        group.fields.forEach(field => {
+          const row = rows.insertRow(); row.insertCell().textContent = field.label;
+          const input = element('input','gtu-field'); input.value = field.value; input.inputMode = 'decimal';
+          input.dataset.coefficientKey = field.key; input.setAttribute('aria-label',`${group.title}: ${field.label}`);
+          row.insertCell().append(input); row.insertCell().textContent = field.hint;
+          const position = coefficientInputs.length; coefficientInputs.push({key:field.key,input});
+          input.addEventListener('paste', event => {
+            const text = event.clipboardData.getData('text');
+            if (!/[\t\r\n]/.test(text)) return;
+            event.preventDefault();
+            const values = text.split(/\r\n|\r|\n|\t/); while (values.length && !values[values.length-1].trim()) values.pop();
+            if (values.length > coefficientInputs.length-position) {
+              pasteStatus.textContent = 'В диапазоне больше значений, чем оставшихся полей. Вставка отменена.'; return;
+            }
+            values.forEach((value,i) => { coefficientInputs[position+i].input.value = value.trim(); });
+            pasteStatus.textContent = `Вставлено значений: ${values.length}. Проверьте порядок коэффициентов перед сохранением.`;
+          });
+        });
+        section.append(table); body.append(section);
+      });
+    } else {
+      editor = element('textarea'); editor.value = payload.text; editor.spellcheck = false; editor.setAttribute('aria-label', payload.kind === 'periods' ? 'Периоды расчёта' : 'События на графике'); body.append(editor);
+    }
+    const actions = element('div', 'gtu-dialog-actions');
+    if (payload.kind === 'events') {
+      const clear = element('button', 'gtu-action', 'Очистить'); clear.type = 'button'; clear.style.marginRight = 'auto'; clear.onclick = () => { editor.value = ''; editor.focus(); }; actions.append(clear);
+    }
+    const cancel = element('button', 'gtu-action', periods ? 'Автоматические периоды' : payload.kind==='bookCorrections'?'Закрыть':'Отмена'); cancel.type = 'button';
+    cancel.onclick = () => send('dialog', {action: periods ? 'auto' : 'cancel'});
+    const accept = element('button', 'gtu-action gtu-primary', periods ? 'Применить периоды' : payload.kind === 'bookMapping' ? 'Подтвердить книгу' : payload.kind === 'mapping' ? 'Подтвердить маппинг' : ['gasPassport','corrections'].includes(payload.kind) ? 'Сохранить' : 'Применить'); accept.type = 'button';
+    accept.onclick = () => { if (mappingInputs.some(({factor}) => !factor.reportValidity())) return;
+      if(payload.kind==='gasPassport') {
+        const invalid=gasEntries.find(entry=>entry.chError);
+        if(invalid){invalid.section.open=true;invalid.status.scrollIntoView({block:'center'});return;}
+      }
+      const result={action: periods ? 'manual' : 'accept', text: editor?.value || '', rows: mappingInputs.map(({target, factor, sourceUnit, targetUnit, offset}) => ({target:target.value, factor:factor.value,source_unit:sourceUnit.value,target_unit:targetUnit.value,offset})), values:Object.fromEntries([...gasInputs,...coefficientInputs].map(({key, input}) => [key, input.value]))};
+      if(payload.kind==='bookMapping')result.rows=bookRows();
+      if(payload.kind==='gasPassport') result.entries=gasEntries.map(item=>({valid_from:item.from.value,valid_until:item.until.value,values:Object.fromEntries(item.fields.map(({key,input})=>[key,input.value]))})); send('dialog',result); };
+    if(payload.kind==='bookCorrections')actions.append(cancel);else actions.append(cancel,accept);
+    dialog.append(header, body, actions); layer.replaceChildren(dialog); layer.hidden = false;
+    requestAnimationFrame(() => (editor || dialog.querySelector('input') || (payload.kind==='bookCorrections'?cancel:accept)).focus());
+    dialog.onkeydown = event => {
+      if (event.key === 'Escape') { event.preventDefault(); cancel.click(); }
+      if (event.ctrlKey && event.key === 'Enter') { event.preventDefault(); accept.click(); }
+      if (!periods && event.key === 'Tab') {
+        const controls = [...dialog.querySelectorAll('input, textarea, button')];
+        const first = controls[0], last = controls[controls.length - 1];
+        if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+        else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+      }
+    };
+  }
+  root.addEventListener('click', event => {
+    if (event.target.closest('#dialog-layer')) return;
+    const tab = event.target.closest('[data-tab]');
+    if (tab) send('tab', {key:tab.dataset.tab});
+    const button = event.target.closest('[data-action]');
+    if (button && !button.disabled) {
+      if (button.dataset.action === 'fullLog') event.preventDefault();
+      send(button.dataset.action);
+    }
+  });
+  root.addEventListener('change', event => {
+    if (event.target.matches('input[name="mode"]')) send('value', {key:'mode', value:event.target.value});
+    if (event.target.matches('select[data-field]')) send('value', {key:event.target.dataset.field, value:event.target.value});
+  });
+  root.addEventListener('input', event => { if (event.target.matches('input[data-field]')) send('value', {key:event.target.dataset.field, value:event.target.value}); });
+  root.querySelector('[role="tablist"]').addEventListener('keydown', event => {
+    const index = keys.indexOf(selected);
+    const step = event.key === 'ArrowRight' ? 1 : event.key === 'ArrowLeft' ? -1 : 0;
+    if (step) { event.preventDefault(); const key = keys[(index + step + keys.length) % keys.length]; byId(`tab-${key}`).focus(); send('tab', {key}); }
+  });
+  document.addEventListener('keydown', event => {
+    if (event.ctrlKey && event.key === 'Tab' && !dialogPayload) { event.preventDefault(); send('tab', {key:keys[(keys.indexOf(selected) + (event.shiftKey ? keys.length - 1 : 1)) % keys.length]}); }
+  });
+  new ResizeObserver(() => panel.querySelector('.gtu-view-viewport')?._resizeFigure?.()).observe(panel);
+  initializeSidebarResize(); fillIcons(); emptyState();
+  new QWebChannel(qt.webChannelTransport, channel => {
+    backend = channel.objects.backend;
+    backend.state_changed.connect(json => applyState(JSON.parse(json)));
+    backend.view_changed.connect(json => {
+      const event = JSON.parse(json);
+      if (event.clear) { pressureProbeX = null; Object.keys(views).forEach(key => delete views[key]); Object.keys(scrolls).forEach(key => delete scrolls[key]); renderView(false); }
+      else { views[event.key] = event.view; zoom[event.key] = 1; if (event.key === selected) renderView(); }
+    });
+    backend.log_changed.connect(json => { const data = JSON.parse(json), log = byId('log'); if ('replace' in data) log.textContent = data.replace; else log.textContent += data.append; log.scrollTop = log.scrollHeight; });
+    backend.dialog_changed.connect(json => showDialog(JSON.parse(json)));
+    backend.connect_ui();
+  });
+})();

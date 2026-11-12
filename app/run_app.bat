@@ -1,5 +1,5 @@
 @echo off
 setlocal
 cd /d "%~dp0"
-py "%~dp0src\app.py"
+py "%~dp0src\desktop_bootstrap.py"
 endlocal

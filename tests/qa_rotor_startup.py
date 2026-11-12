@@ -20,12 +20,17 @@ def main():
     root = Path(__file__).resolve().parents[1]
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--executable', type=Path)
+    parser.add_argument('--isolated-user-data', type=Path)
     args = parser.parse_args()
-    executable = root/'dist_test/GTU_Report_Rotor_Test/GTU_Report_Rotor_Test.exe'
+    executable = (args.executable or root/'dist_test/GTU_Report_Rotor_Test/GTU_Report_Rotor_Test.exe').resolve()
     with socket.socket() as probe:
         probe.bind(('127.0.0.1', 0))
         port = probe.getsockname()[1]
     env = os.environ.copy()
+    if args.isolated_user_data:
+        args.isolated_user_data.mkdir(parents=True, exist_ok=True)
+        env['LOCALAPPDATA'] = str(args.isolated_user_data.resolve())
     env['QT_QPA_PLATFORM'] = 'offscreen'
     env['QTWEBENGINE_REMOTE_DEBUGGING'] = f'127.0.0.1:{port}'
     env['QTWEBENGINE_CHROMIUM_FLAGS'] = f'--disable-gpu --remote-allow-origins=http://127.0.0.1:{port}'

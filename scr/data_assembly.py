@@ -686,18 +686,18 @@ def apply_economic_columns(data: AssembledData, economics_result: dict) -> None:
         source = source_for_header.get(header.strip().lower())
         if source is None:
             continue
-        rates = losses[source].reindex(frame.index).fillna(0.0)
+        rates = losses[source].reindex(frame.index)
+        rates.loc[~frame.index.isin(losses.index)] = 0.0
         frame[column] = rates.to_numpy(dtype=float)
         next_column = get_column_letter(column_index_from_string(column) + 1)
         if data.headers.get(next_column) not in (None, ""):
             continue
-        averaged = pd.Series(np.nan, index=frame.index, dtype=float)
-        for _, group in losses.groupby("period", sort=False):
-            dates = group.index.sort_values()
-            for index in range(0, len(dates) - 1, 2):
-                pair = rates.reindex(dates[index:index + 2]).to_numpy(dtype=float)
-                averaged.loc[dates[index + 1]] = float(pair.mean())
-        frame[next_column] = averaged.to_numpy()
+        # The neighbour contains the contribution of every half-hour row,
+        # including the last odd row. Missing calculated rates remain missing.
+        contribution = 'fuel_loss_nm3' if source == 'fuel_loss_rate' else 'power_loss_mwh'
+        from economics import DT_HOURS
+        values = losses[contribution] if contribution in losses else losses[source] * DT_HOURS
+        frame[next_column] = values.reindex(frame.index).to_numpy(dtype=float)
         data.headers.setdefault(next_column, None)
 
 

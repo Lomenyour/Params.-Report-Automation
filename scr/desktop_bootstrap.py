@@ -208,6 +208,9 @@ def run_splash(name):
 
 
 def main():
+    if len(sys.argv) > 1 and sys.argv[1] == '--check-word-report':
+        from package_check import check_word_report
+        return check_word_report(sys.argv[2:])
     if len(sys.argv) == 3 and sys.argv[1] == "--startup-splash":
         return run_splash(sys.argv[2])
     application = configure_application()

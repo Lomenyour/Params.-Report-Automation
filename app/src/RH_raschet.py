@@ -6,6 +6,7 @@
 
 import sys
 from pathlib import Path
+from decimal import Decimal, ROUND_FLOOR
 
 import pandas as pd
 import numpy as np
@@ -14,6 +15,7 @@ import matplotlib.pyplot as plt
 # Разбивка на периоды — общая логика, живёт в scr/periods.py,
 # потому что нужна и RH_raschet, и VNA_full.
 import periods as periods_mod
+from pressure_probe import attach_pressure_probe
 from periods import (
     LOW_POWER,
     build_periods,
@@ -22,7 +24,10 @@ from periods import (
     print_period_overrides_template,
     make_periods_display_table,
 )
-from data_loader import RECORD_HOURS, load_source_data, prepare_rh_data
+from data_loader import (
+    RECORD_HOURS, load_source_data, prepare_rh_data,
+    PRESSURE_KEYS, available_pressure_channels,
+)
 
 
 # Windows-консоль по умолчанию работает в cp1251 и падает
@@ -87,9 +92,11 @@ ZONE_SIZE = 48 * DAYS_ZONE # 480 записей
 
 # Допуски
 K_TOLERANCE = 0.05
+K_TOLERANCE_STEPS = (K_TOLERANCE, 0.06, 0.07)
 B_TOLERANCE = 0.05
 
-# Сколько лучших вариантов выгружать для каждого периода
+# Сколько ближайших/первых вариантов оставлять для диагностики поиска.
+# Пара для графика выбирается из полного списка допустимых, до этого лимита.
 TOP_N_EXPORT = 3
 
 
@@ -121,6 +128,7 @@ COLUMN_ALIASES = {
 OPTIONAL_ALIASES = {
     "vlo": ["ВЛО"],
     "fgo": ["ФГО"],
+    "fso": ["ФСО"],
     "fto": ["ФТО"],
     "fgo_fto": ["ФГО+ФТО"],
     "vna": ["ВНА"],
@@ -130,6 +138,7 @@ OPTIONAL_ALIASES = {
 OPTIONAL_TITLES = {
     "vlo": "ВЛО",
     "fgo": "ФГО",
+    "fso": "ФСО",
     "fto": "ФТО",
     "fgo_fto": "ФГО+ФТО",
     "vna": "ВНА",
@@ -137,7 +146,7 @@ OPTIONAL_TITLES = {
 }
 
 # На графике перепадов рисуем ТОЛЬКО перепады — не ВНА и не мощность.
-PRESSURE_SERIES = ["vlo", "fgo", "fto", "fgo_fto"]
+PRESSURE_SERIES = list(PRESSURE_KEYS)
 
 
 def find_column(columns, aliases, parameter_name):
@@ -263,6 +272,7 @@ def make_windows(period_df, zone_type, period_number, zone_size):
             continue
 
         k, b, r2 = metrics
+        power = pd.to_numeric(window["power"], errors="coerce")
 
         windows.append({
             "period": period_number,
@@ -273,6 +283,8 @@ def make_windows(period_df, zone_type, period_number, zone_size):
             "k": k,
             "b": b,
             "R2": r2,
+            "power_min": float(power.min()),
+            "power_max": float(power.max()),
         })
 
     return pd.DataFrame(windows)
@@ -282,7 +294,7 @@ def make_windows(period_df, zone_type, period_number, zone_size):
 # ПОИСК ПАР
 # ============================================================
 
-def find_pairs(start_windows, end_windows):
+def build_rh_pairs(start_windows, end_windows):
     pairs = []
 
     for _, start in start_windows.iterrows():
@@ -315,16 +327,21 @@ def find_pairs(start_windows, end_windows):
                 "delta_b_pct": delta_b_pct,
                 "R2_start": start["R2"],
                 "R2_end": end["R2"],
+                "power_min": min(start["power_min"], end["power_min"]),
+                "power_max": max(start["power_max"], end["power_max"]),
             })
 
-    pairs_df = pd.DataFrame(pairs)
+    return pd.DataFrame(pairs)
 
+
+def rank_rh_pairs(pairs_df, k_tolerance=K_TOLERANCE):
+    """Apply one k threshold, the unchanged b threshold and the original order."""
     if pairs_df.empty:
         return pd.DataFrame(), pd.DataFrame()
 
     pairs_k = pairs_df[
         np.isfinite(pairs_df["delta_k_pct"]) &
-        (pairs_df["delta_k_pct"] <= K_TOLERANCE * 100)
+        (pairs_df["delta_k_pct"] <= k_tolerance * 100)
     ].copy()
 
     pairs_b = pairs_k[
@@ -339,18 +356,64 @@ def find_pairs(start_windows, end_windows):
             kind="mergesort"
         ).reset_index(drop=True)
 
-        top3 = pairs_b.head(3).copy()
-        top3["status"] = "Прошла фильтры Δk ≤ 5% и Δb ≤ 5%"
+        top3 = pairs_b.head(TOP_N_EXPORT).copy()
+        top3["status"] = (f"Прошла фильтры Δk ≤ {k_tolerance*100:g}% "
+                          f"и Δb ≤ {B_TOLERANCE*100:g}%")
         return top3, pairs_b
 
     nearest = pairs_df.sort_values(
         ["delta_k_pct", "delta_b_pct"],
         na_position="last",
         kind="mergesort"
-    ).head(3).copy()
+    ).head(TOP_N_EXPORT).copy()
 
-    nearest["status"] = "Нет пары ≤5%; показаны ближайшие"
+    nearest["status"] = (f"Нет пары с Δk ≤ {k_tolerance*100:g}% "
+                         f"и Δb ≤ {B_TOLERANCE*100:g}%; показаны ближайшие")
     return nearest, pairs_b
+
+
+def find_pairs(start_windows, end_windows, k_tolerance=K_TOLERANCE):
+    return rank_rh_pairs(build_rh_pairs(start_windows, end_windows), k_tolerance)
+
+
+def select_rh_pair(top_candidates, admissible):
+    """Choose before truncation; retain the rank in the original sorted pool."""
+    from rh_display import dirty_above_clean
+
+    candidates = admissible if not admissible.empty else top_candidates
+    if candidates.empty:
+        return candidates.copy()
+    positions = np.array([], dtype=int)
+    if not admissible.empty:
+        positions = np.flatnonzero(dirty_above_clean(
+            admissible, (admissible["power_min"], admissible["power_max"])))
+    position = int(positions[0]) if len(positions) else 0
+    selected = candidates.iloc[[position]].copy()
+    selected["rank"] = position + 1
+    selected["candidate_count"] = len(admissible)
+    selected["preferred"] = bool(len(positions))
+    selected["status"] = top_candidates["status"].iloc[0]
+    return selected
+
+
+def select_rh_pair_steps(pairs_df):
+    """Try k=5/6/7%, stop at the first successful level, keep the old fallback."""
+    attempts = []
+    fallback = None
+    for k_tolerance in K_TOLERANCE_STEPS:
+        k_percent = int(round(k_tolerance * 100))
+        top, admissible = rank_rh_pairs(pairs_df, k_tolerance)
+        chosen = select_rh_pair(top, admissible)
+        chosen["k_tolerance_percent"] = k_percent
+        chosen["b_tolerance_percent"] = B_TOLERANCE * 100
+        preferred = not chosen.empty and bool(chosen.iloc[0]["preferred"])
+        attempts.append(dict(k_tolerance_percent=k_percent,
+                             candidate_count=len(admissible), preferred=preferred))
+        if fallback is None:
+            fallback = chosen.copy()
+        if preferred:
+            return chosen, tuple(attempts)
+    return fallback, tuple(attempts)
 
 
 # ============================================================
@@ -406,7 +469,7 @@ POWER_COLOR = "#d62728"
 
 
 def plot_pressure_drops(df, periods_df, show=True):
-    """Перепады давления (ВЛО / ФГО / ФТО / ФГО+ФТО) и мощность N.
+    """Перепады давления (ВЛО / ФГО / ФСО / ФТО / ФГО+ФТО) и мощность N.
 
     Рисуются только те кривые, колонки для которых есть в книге.
     Вертикальные линии — границы найденных периодов работы.
@@ -414,8 +477,7 @@ def plot_pressure_drops(df, periods_df, show=True):
 
     series = [
         (key, OPTIONAL_TITLES[key])
-        for key in PRESSURE_SERIES
-        if key in df.columns
+        for key in available_pressure_channels(df)
     ]
 
     has_power_n = "power_n" in df.columns
@@ -429,7 +491,10 @@ def plot_pressure_drops(df, periods_df, show=True):
 
     fig, ax = plt.subplots(figsize=(20, 9))
 
-    for index, (key, title) in enumerate(series):
+    legacy_index = 0
+    for key, title in series:
+        color = "#17BECF" if key == "fso" else PRESSURE_COLORS[legacy_index % len(PRESSURE_COLORS)]
+        if key != "fso": legacy_index += 1
 
         ax.plot(
             df["date"],
@@ -437,7 +502,7 @@ def plot_pressure_drops(df, periods_df, show=True):
             ".",
             markersize=3,
             alpha=0.7,
-            color=PRESSURE_COLORS[index % len(PRESSURE_COLORS)],
+            color=color,
             label=f"Перепад {title}, Па"
         )
 
@@ -523,6 +588,7 @@ def plot_pressure_drops(df, periods_df, show=True):
                 )
 
     fig.tight_layout()
+    attach_pressure_probe(fig, ax, df)
     if show:
         maximize_window()
     if show:
@@ -563,12 +629,10 @@ def build_pair_frames(period_df, zone_size, start_id, end_id):
 # ОСНОВНАЯ ПРОГРАММА
 # ============================================================
 
-# Порог «номинального режима» для выбора граничных точек и подсчёта
-# наработки по ВНА.
-# Значения на границах периода берём не в первом/последнем ряду
-# (там турбина ещё выходит на режим), а в первом и последнем ряду,
-# где ВНА выше 80 % — то есть когда турбина реально на номинале.
+# Прежний порог отдельного показателя часов по ВНА сохраняется.
 VNA_NOMINAL_PERCENT = 80.0
+# Только для таблицы граничных точек, без изменения расчётных периодов.
+BOUNDARY_VNA_COVERAGE = 0.80
 
 # Порог мощности определяется по распределению рабочих значений:
 # из него исключаются строки, которые уже считаются остановом, затем
@@ -579,6 +643,7 @@ NOMINAL_POWER_TIME_SHARE = 0.80
 BOUNDARY_PARAMETERS = [
     ("vlo", "ВЛО"),
     ("fgo", "ФГО"),
+    ("fso", "ФСО"),
     ("fto", "ФТО"),
     ("fgo_fto", "ФГО+ФТО"),
     ("vna", "ВНА"),
@@ -588,23 +653,38 @@ BOUNDARY_PARAMETERS = [
 ]
 
 
-def nominal_row(df, start, end, first):
-    """Первый/последний ряд в [start, end], где ВНА ≥ 80 %."""
+def boundary_vna_rows(df, start, end, period_number=None):
+    """Точки ВНА ≥ T: верхние ≥80% допустимых рабочих записей периода.
 
+    Возвращает выборку и диагностику. Исходные строки и метки периодов
+    не меняются; при пропусках покрытие относится к доступным показаниям.
+    """
     mask = (df["date"] >= start) & (df["date"] <= end)
+    if period_number is not None and "period" in df:
+        mask &= df["period"] == period_number
+    power = pd.to_numeric(df["power"], errors="coerce")
+    mask &= np.isfinite(power) & (power > LOW_POWER)
+    working = df.loc[mask].sort_values("date", kind="stable")
+    vna = pd.to_numeric(working.get("vna", pd.Series(np.nan, index=working.index)), errors="coerce")
+    valid = np.isfinite(vna) & vna.between(0, 100)
+    values = vna.loc[valid].sort_values(ascending=False, kind="stable")
+    summary = {"working_records": len(working), "valid_records": len(values),
+               "invalid_records": len(working) - len(values),
+               "threshold": np.nan, "coverage_percent": np.nan,
+               "availability_percent": 100. * len(values) / len(working) if len(working) else np.nan}
+    if values.empty:
+        return working.iloc[:0].copy(), summary
+    index = int(np.ceil(BOUNDARY_VNA_COVERAGE * len(values))) - 1
+    threshold = float(Decimal(str(float(values.iloc[index]))).quantize(
+        Decimal("0.1"), rounding=ROUND_FLOOR))
+    selected = working.loc[valid & (vna >= threshold)].copy()
+    summary.update(threshold=threshold, coverage_percent=100. * len(selected) / len(values))
+    return selected, summary
 
-    if "vna" in df.columns:
-        mask &= (
-            pd.to_numeric(df["vna"], errors="coerce")
-            >= VNA_NOMINAL_PERCENT
-        )
 
-    sub = df[mask]
-
-    if sub.empty:
-        return None
-
-    return sub.iloc[0] if first else sub.iloc[-1]
+def nominal_row(df, start, end, first):
+    selected, _ = boundary_vna_rows(df, start, end)
+    return None if selected.empty else selected.iloc[0 if first else -1]
 
 
 def build_power_distribution(
@@ -754,7 +834,7 @@ def format_boundary_value(value):
     if value is None:
         return "—"
 
-    if pd.isna(value):
+    if pd.isna(value) or not np.isfinite(value):
         return "—"
 
     return f"{value:.1f}"
@@ -763,27 +843,42 @@ def format_boundary_value(value):
 def build_boundary_table(df, periods_df):
     """Таблица параметров на номинале по границам периодов."""
 
-    columns = ["Период", "дата"] + [title for _, title in BOUNDARY_PARAMETERS]
+    columns = ["Период", "дата", "Порог ВНА, %", "Покрытие, %"] + [title for _, title in BOUNDARY_PARAMETERS]
 
     rows = []
+    summaries = {}
+    pressure_deltas = {}
+    available_pressures = set(available_pressure_channels(df))
 
     for row in periods_df.itertuples(index=False):
 
         number = int(row.period)
 
-        start_row = nominal_row(df, row.date_start, row.date_end, first=True)
-        end_row = nominal_row(df, row.date_start, row.date_end, first=False)
+        selected, summary = boundary_vna_rows(df, row.date_start, row.date_end, number)
+        summaries[number] = summary
+        start_row = None if selected.empty else selected.iloc[0]
+        end_row = None if selected.empty else selected.iloc[-1]
+        pressure_deltas[number] = {}
+        for key in PRESSURE_SERIES:
+            first = pd.to_numeric(start_row.get(key, np.nan), errors="coerce") if start_row is not None else np.nan
+            last = pd.to_numeric(end_row.get(key, np.nan), errors="coerce") if end_row is not None else np.nan
+            pressure_deltas[number][f"{key}_pa"] = (
+                float(last - first) if pd.notna(first) and pd.notna(last)
+                and np.isfinite(first) and np.isfinite(last) else np.nan
+            )
 
         for tag, boundary in (("нач", start_row), ("кон", end_row)):
 
-            record = {"Период": f"{number} {tag}"}
+            record = {"Период": f"{number} {tag}",
+                      "Порог ВНА, %": summary["threshold"],
+                      "Покрытие, %": round(summary["coverage_percent"], 2)}
 
             if boundary is None:
 
                 record["дата"] = "—"
 
-                for _, title in BOUNDARY_PARAMETERS:
-                    record[title] = "—"
+                for key, title in BOUNDARY_PARAMETERS:
+                    record[title] = "" if key in PRESSURE_SERIES and key not in available_pressures else "—"
 
             else:
 
@@ -791,14 +886,17 @@ def build_boundary_table(df, periods_df):
 
                 for key, title in BOUNDARY_PARAMETERS:
                     record[title] = (
-                        format_boundary_value(boundary[key])
-                        if key in df.columns
-                        else "—"
+                        "" if key in PRESSURE_SERIES and key not in available_pressures
+                        else format_boundary_value(boundary[key]) if key in df.columns else "—"
                     )
 
             rows.append(record)
 
-    return pd.DataFrame(rows, columns=columns)
+    table = pd.DataFrame(rows, columns=columns)
+    table.attrs["vna_boundary_summary"] = summaries
+    # Только метаданные для Word: разности до округления, без новых колонок.
+    table.attrs["pressure_deltas_pa"] = pressure_deltas
+    return table
 
 
 def _dominant_vna_interval(period_df):
@@ -920,6 +1018,10 @@ def build_boundary_delta_table(df, periods_df, vna_data=None):
         delta_eta, raw_eta = _regression_delta(
             regressions["eta"][0], hours_start, hours_end
         )
+        # В основных колонках только ухудшение; исходные знаки сохраняются
+        # отдельно. NaN остаётся признаком отсутствующего расчёта.
+        delta_n = min(raw_n, 0.0) if np.isfinite(raw_n) else raw_n
+        delta_b = max(raw_b, 0.0) if np.isfinite(raw_b) else raw_b
         start_n = _regression_value(
             regressions["N"][0], regressions["N"][1], hours_start
         )
@@ -1012,7 +1114,8 @@ def build_weighted_delta_summary(table):
     delta_b = pd.to_numeric(table.loc[valid, "Δbприв"], errors="coerce")
     delta_eta = pd.to_numeric(table.loc[valid, "Δη, п.п."], errors="coerce")
     # В сводке учитываем только ухудшение: потерю мощности и рост расхода.
-    # Таблица периодов выше сохраняет исходные знаковые дельты без изменений.
+    # Отсечка идемпотентна для новой таблицы и поддерживает прежние таблицы
+    # с исходными знаковыми дельтами в основных колонках.
     weighted_n = float((weights * (-delta_n).clip(lower=0)).sum() / total_hours)
     weighted_b = float((weights * delta_b.clip(lower=0)).sum() / total_hours)
     weighted_eta = float((weights * delta_eta).sum() / total_hours)
@@ -1040,8 +1143,9 @@ def print_boundary_delta_table(df, periods_df, vna_data=None):
 
     print()
     print("Дельты по регрессиям от часов наработки:")
-    print("Итоговая дельта = k × (часы конца − часы начала).")
-    print("Дельты знаковые: отрицательное значение означает снижение параметра.")
+    print("Исходная дельта = k × (часы конца − часы начала), показана в «до отсечки».")
+    print("Основные ΔNприв и Δbприв содержат только снижение мощности и рост расхода; улучшения = 0.")
+    print("Снижение мощности сохраняет знак минус. Дельта КПД остаётся знаковой.")
     print()
 
     table = build_boundary_delta_table(df, periods_df, vna_data=vna_data)
@@ -1127,11 +1231,18 @@ def main(data=None, periods_only=False, show_plots=True, vna_data=None,
         print()
         print(
             "Параметры на границах периодов "
-            f"(ВНА ≥ {VNA_NOMINAL_PERCENT:.0f} %):"
+            "(ВНА ≥ индивидуального порога покрытия 80 %):"
         )
         print()
 
         boundary_table = build_boundary_table(df, periods_df)
+        for number, summary in boundary_table.attrs["vna_boundary_summary"].items():
+            print(f"Период {number}: допустимых ВНА {summary['valid_records']} из "
+                  f"{summary['working_records']} рабочих записей; порог "
+                  f"{summary['threshold']:.1f} %, покрытие {summary['coverage_percent']:.2f} %.")
+            if summary["invalid_records"]:
+                print("WARNING: покрытие рассчитано по доступным показаниям ВНА; "
+                      f"пропусков/недопустимых значений: {summary['invalid_records']}.")
 
         print(boundary_table.to_string(index=False))
         delta_table = print_boundary_delta_table(
@@ -1162,7 +1273,6 @@ def main(data=None, periods_only=False, show_plots=True, vna_data=None,
         }])
 
     all_windows = []
-    all_pairs = []
     results = []
 
     for period_number, period_df in df.groupby("period"):
@@ -1204,23 +1314,38 @@ def main(data=None, periods_only=False, show_plots=True, vna_data=None,
         all_windows.append(start_windows)
         all_windows.append(end_windows)
 
-        top3, pairs_final = find_pairs(start_windows, end_windows)
+        selected, attempts = select_rh_pair_steps(build_rh_pairs(start_windows, end_windows))
 
-        if top3.empty:
+        if selected.empty:
             print("  Не удалось подобрать пару")
             continue
 
-        if not pairs_final.empty:
-            all_pairs.append(pairs_final.copy())
+        for attempt in attempts:
+            outcome = "подходящая пара найдена" if attempt['preferred'] else "подходящей пары нет"
+            print(f"  РХ: Δk ≤ {attempt['k_tolerance_percent']:g}%, "
+                  f"Δb ≤ {B_TOLERANCE*100:g}% — "
+                  f"допустимых пар {attempt['candidate_count']}; {outcome}.")
+        choice = selected.iloc[0]
+        if choice.preferred:
+            print(f"  РХ: при Δk ≤ {choice.k_tolerance_percent:g}% "
+                  f"из {int(choice.candidate_count)} допустимых пар выбрана №{int(choice['rank'])}: "
+                  "END не ниже START на всём нарисованном участке мощности.")
+        else:
+            print("  РХ: подходящей пары нет даже при Δk ≤ 7%; "
+                  "сохранён первый кандидат исходной ступени 5%"
+                  + (" (ближайший, вне допусков)." if choice.candidate_count == 0 else "."))
 
-        # Берём не более TOP_N_EXPORT вариантов
-        top_export = top3.head(TOP_N_EXPORT).copy()
-
-        for rank, row in enumerate(top_export.itertuples(index=False), start=1):
+        for row in selected.itertuples(index=False):
+            rank = int(row.rank)
             results.append({
                 "period": period_number,
                 "rank": rank,
                 "status": row.status,
+                "candidate_count": int(row.candidate_count),
+                "preferred": bool(row.preferred),
+                "k_tolerance_percent": float(row.k_tolerance_percent),
+                "b_tolerance_percent": float(row.b_tolerance_percent),
+                "selection_attempts": attempts,
 
                 "period_date_start": period_start,
                 "period_date_end": period_end,
@@ -1247,6 +1372,8 @@ def main(data=None, periods_only=False, show_plots=True, vna_data=None,
 
                 "R2_start": row.R2_start,
                 "R2_end": row.R2_end,
+                "power_min": float(row.power_min),
+                "power_max": float(row.power_max),
             })
 
             print()
@@ -1340,11 +1467,34 @@ X_LIMITS = {
 # ============================================================
 
 PLOT_COLS = 3          # колонок в сетке графиков
-PLOT_CELL_W = 6.0      # ширина одной ячейки, дюймов
-PLOT_CELL_H = 4.5      # высота одной ячейки, дюймов
+PLOT_CELL_W = 9.0      # ширина одной ячейки, дюймов, для осей 16 пт
+PLOT_CELL_H = 6.0      # высота одной ячейки, дюймов
+
+
+def select_rh_variants(results, values=None):
+    """Общий GUI/Excel выбор: END не ниже START на всём участке, иначе первый."""
+    from rh_display import dirty_above_clean, power_bounds
+    groups = {}
+    for result in results:
+        groups.setdefault(result["period"], []).append(result)
+    selected = []
+    for candidates in groups.values():
+        chosen = next((row for row in candidates
+                       if dirty_above_clean(row, power_bounds(values, row))), candidates[0])
+        selected.append(chosen)
+    return selected
+
+
+def rh_equation(name, slope, intercept):
+    k = f"{slope:.10f}".replace(".", ",")
+    b = f"{abs(intercept):.10f}".replace(".", ",")
+    return f"{name} = {k} · Nприв {'+' if intercept >= 0 else '−'} {b}"
 
 
 def plot_selected_windows(df, results, show=True):
+
+    from rh_display import window_points, power_bounds, dirty_above_clean, parallel_state_arrows
+    results = select_rh_variants(results, df)
 
     if not results:
         print("Нет найденных результатов.")
@@ -1368,6 +1518,7 @@ def plot_selected_windows(df, results, show=True):
     )
 
     flat_axes = axes.ravel()
+    annotations = []
 
     for position, result in enumerate(results):
 
@@ -1386,17 +1537,8 @@ def plot_selected_windows(df, results, show=True):
         end_begin = result["end_window_begin"]
         end_end = result["end_window_end"]
 
-        start_data = df[
-            (df["period"] == period) &
-            (df["date"] >= start_begin) &
-            (df["date"] <= start_end)
-        ].copy()
-
-        end_data = df[
-            (df["period"] == period) &
-            (df["date"] >= end_begin) &
-            (df["date"] <= end_end)
-        ].copy()
+        start_data = window_points(df, result, 'start')
+        end_data = window_points(df, result, 'end')
 
         if start_data.empty or end_data.empty:
             print(
@@ -1405,6 +1547,9 @@ def plot_selected_windows(df, results, show=True):
             )
             ax.axis("off")
             continue
+        if 'candidate_count' not in result and not dirty_above_clean(result, power_bounds(df, result)):
+            print(f"РХ, период {period}: среди переданных кандидатов END не ниже START "
+                  "на всём участке не найдено; показан первый кандидат.")
 
         # ====================================================
         # КОЭФФИЦИЕНТЫ РЕГРЕССИИ
@@ -1425,7 +1570,7 @@ def plot_selected_windows(df, results, show=True):
             start_data["fuel"],
             s=14,
             alpha=0.65,
-            label="START"
+            color="#4472C4", label="Условно-чистая"
         )
 
         ax.scatter(
@@ -1433,7 +1578,7 @@ def plot_selected_windows(df, results, show=True):
             end_data["fuel"],
             s=14,
             alpha=0.65,
-            label="END"
+            color="#C00000", label="Условно-загрязнённая"
         )
 
         # ====================================================
@@ -1455,14 +1600,14 @@ def plot_selected_windows(df, results, show=True):
             x_line,
             k_start * x_line + b_start,
             linewidth=1.4,
-            label="Регрессия START"
+            color="#4472C4", label="_Регрессия START"
         )
 
         ax.plot(
             x_line,
             k_end * x_line + b_end,
             linewidth=1.4,
-            label="Регрессия END"
+            color="#C00000", label="_Регрессия END"
         )
 
         # ====================================================
@@ -1491,51 +1636,36 @@ def plot_selected_windows(df, results, show=True):
         # ПОДПИСИ
         # ====================================================
 
-        ax.set_xlabel("Мощность", fontsize=8)
-        ax.set_ylabel("Расход топлива", fontsize=8)
+        ax.set_xlabel("Приведённая мощность, МВт", fontsize=16, fontfamily="Times New Roman")
+        ax.set_ylabel("Приведённый расход газа, нм³/ч", fontsize=16, fontfamily="Times New Roman")
 
         ax.set_title(
-            f"Период {period} — вариант №{rank}\n"
-            f"START: {start_begin:%d-%m-%Y %H:%M} → {start_end:%d-%m-%Y %H:%M}\n"
-            f"END:   {end_begin:%d-%m-%Y %H:%M} → {end_end:%d-%m-%Y %H:%M}",
-            fontsize=9
+            f"Период {period} — расходная характеристика, вариант №{rank}",
+            fontsize=10, fontfamily="Times New Roman"
         )
 
         # ====================================================
         # ИНФОРМАЦИЯ
         # ====================================================
 
-        text = (
-            f"START: k = {k_start:.6f}, "
-            f"b = {b_start:.6f}, "
-            f"R² = {result['R2_start']:.4f}\n"
-            f"END:   k = {k_end:.6f}, "
-            f"b = {b_end:.6f}, "
-            f"R² = {result['R2_end']:.4f}\n"
-            f"Δk = {result['delta_k_pct']:.3f}%    "
-            f"Δb = {result['delta_b_pct']:.3f}%"
-        )
-
-        ax.text(
-            0.02,
-            0.98,
-            text,
-            transform=ax.transAxes,
-            verticalalignment="top",
-            fontsize=6.5,
-            bbox=dict(
-                boxstyle="round",
-                alpha=0.85
-            )
-        )
+        boxes = {}
+        for prefix, x, y, title, date, k, b, color in (
+            ('end', .03, .95, "Условно-загрязнённое", end_begin, k_end, b_end, "#C00000"),
+            ('start', .42, .24, "Условно-чистое", start_begin, k_start, b_start, "#4472C4"),
+        ):
+            text = f"{title} состояние {date:%d.%m.%Y}\n{rh_equation('B', k, b)}"
+            boxes[prefix] = ax.text(x, y, text,
+                transform=ax.transAxes, va="top", fontsize=10, fontfamily="Times New Roman",
+                bbox=dict(boxstyle="square,pad=0.3", facecolor="white", edgecolor=color))
+        annotations.append((ax, result, boxes, (float(all_power.min()), float(all_power.max()))))
 
         ax.grid(
             True,
             alpha=0.25
         )
 
-        ax.tick_params(labelsize=7)
-        ax.legend(fontsize=7, loc="lower right")
+        ax.tick_params(labelsize=16)
+        ax.legend(prop={"family": "Times New Roman", "size": 16}, loc="lower right")
 
     # ========================================================
     # ГАСИМ НЕИСПОЛЬЗОВАННЫЕ ЯЧЕЙКИ СЕТКИ
@@ -1545,6 +1675,21 @@ def plot_selected_windows(df, results, show=True):
         ax.axis("off")
 
     fig.tight_layout()
+    fig.canvas.draw()
+    renderer = fig.canvas.get_renderer()
+    for ax, result, boxes, bounds in annotations:
+        starts = {}
+        for prefix, text in boxes.items():
+            frame = text.get_bbox_patch().get_window_extent(renderer)
+            edge = (frame.y0 if prefix == 'end' else frame.y1)
+            starts[prefix] = tuple(ax.transAxes.inverted().transform(((frame.x0 + frame.x1) / 2, edge)))
+        arrows = parallel_state_arrows(result, ax.get_xlim(), ax.get_ylim(), starts, bounds)
+        for prefix, color in (('end', '#C00000'), ('start', '#4472C4')):
+            beginning, target = arrows[prefix]
+            arrow = ax.annotate('', xy=target, xytext=beginning,
+                arrowprops=dict(arrowstyle='-|>', mutation_scale=18, color=color, lw=1.2,
+                                shrinkA=0, shrinkB=0, connectionstyle='arc3,rad=0'))
+            arrow.set_in_layout(False)
     if show:
         maximize_window()
     if show:

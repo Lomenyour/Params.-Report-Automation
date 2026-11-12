@@ -14,6 +14,7 @@
 """
 from __future__ import annotations
 
+import numpy as np
 import pandas as pd
 
 
@@ -21,7 +22,7 @@ import pandas as pd
 # НАСТРОЙКИ ОПРЕДЕЛЕНИЯ ПЕРИОДОВ
 # ============================================================
 
-# Мощность, ниже которой ГТУ считаем неработающей
+# Измеренная активная мощность, ниже которой ГТУ считаем неработающей
 LOW_POWER = 10
 
 # Порог «долгого останова»: сколько записей подряд с мощностью <= LOW_POWER
@@ -75,14 +76,32 @@ def is_working_power(power):
     return power > LOW_POWER
 
 
+def measured_power(df):
+    """Измеренная N для периодов; Nприв не является запасным сигналом."""
+    if "power_n" not in df:
+        raise ValueError(
+            "Для определения периодов назначьте параметр «Измеренная мощность» "
+            "(N, МВт) в маппинге основной книги."
+        )
+    power = pd.to_numeric(df["power_n"], errors="coerce")
+    power = power.where(np.isfinite(power), np.nan)
+    if len(power) and not power.notna().any():
+        raise ValueError(
+            "Для определения периодов нет числовых значений измеренной мощности N. "
+            "Проверьте назначение и данные канала мощности."
+        )
+    return power
+
+
 def detect_periods(df):
-    """Размечает периоды работы ГТУ автоматически, по GAP_SIZE."""
+    """Размечает периоды по измеренной мощности и прежнему GAP_SIZE."""
 
     # Индекс сбрасываем: ниже строки адресуются позиционно (df.loc[i]),
     # а у вызывающей стороны индекс может быть с дырками — например,
     # в VNA_full после dropna. Без сброса падает с KeyError.
     df = df.reset_index(drop=True).copy()
     df["period"] = 0
+    powers = measured_power(df)
 
     current_period = 1
     low_power_count = 0
@@ -90,7 +109,7 @@ def detect_periods(df):
     i = 0
 
     while i < len(df):
-        power = df.loc[i, "power"]
+        power = powers.loc[i]
 
         if pd.isna(power):
             i += 1
@@ -117,7 +136,7 @@ def detect_periods(df):
         check_end = min(i + WORK_CONFIRM_SIZE, len(df))
 
         for j in range(i, check_end):
-            p = df.loc[j, "power"]
+            p = powers.loc[j]
 
             if pd.isna(p):
                 continue
@@ -131,7 +150,7 @@ def detect_periods(df):
             df.loc[candidate_start, "period"] = current_period
 
             for j in range(candidate_start + 1, check_end):
-                p = df.loc[j, "power"]
+                p = powers.loc[j]
 
                 if pd.isna(p):
                     continue
@@ -175,6 +194,71 @@ def parse_periods_arg(value):
     return periods
 
 
+def period_bounds(overrides):
+    """Validate manual bounds once for both period labels and date selection."""
+    bounds = []
+    for number, (raw_start, raw_end) in enumerate(overrides, start=1):
+        try:
+            start = pd.to_datetime(raw_start, dayfirst=True)
+            end = pd.to_datetime(raw_end, dayfirst=True)
+            if pd.isna(start) or pd.isna(end):
+                raise ValueError('пустая дата')
+        except Exception as error:
+            raise ValueError(
+                f"Не разобрать даты периода {number}: "
+                f"{raw_start!r} .. {raw_end!r} ({error})"
+            ) from error
+        if start > end:
+            raise ValueError(
+                f"Период {number}: начало ({raw_start}) позже конца ({raw_end})"
+            )
+        bounds.append((start, end))
+    return bounds
+
+
+def period_selection_mask(dates, overrides):
+    """Union of inclusive manual intervals, including stops inside each one.
+
+    Empty overrides keep the automatic mode unchanged. Unlike period labels,
+    this scope is independent of power and includes no rows in intervening gaps.
+    """
+    moments = pd.to_datetime(pd.Series(dates, copy=False), errors='coerce')
+    if not overrides:
+        return pd.Series(True, index=moments.index)
+    selected = pd.Series(False, index=moments.index)
+    for start, end in period_bounds(overrides):
+        selected |= moments.between(start, end)
+    return selected
+
+
+def select_period_data(df, overrides):
+    """Select the calculation scope without changing counters or source rows."""
+    return df.loc[period_selection_mask(df['date'], overrides)].copy()
+
+
+def _mark_period_intervals(df, intervals):
+    result = df.copy()
+    result["period"] = 0
+    working = is_working_power(measured_power(result))
+    for number, start, end in intervals:
+        mask = (
+            (result["date"] >= start)
+            & (result["date"] <= end)
+            & working
+            & (result["period"] == 0)
+        )
+        result.loc[mask, "period"] = number
+    return result
+
+
+def apply_period_summary(df, periods_df):
+    """Переносит периоды полного входа на отобранные строки анализа ВНА."""
+    return _mark_period_intervals(df, (
+        (int(row.period), row.date_start, row.date_end)
+        for row in periods_df.itertuples(index=False)
+    ))
+
+
 def apply_period_overrides(df, overrides):
     """Размечает периоды по списку, заданному в PERIOD_OVERRIDES.
 
@@ -185,35 +269,10 @@ def apply_period_overrides(df, overrides):
     период, который в списке идёт раньше.
     """
 
-    result = df.copy()
-    result["period"] = 0
-
-    for number, (raw_start, raw_end) in enumerate(overrides, start=1):
-
-        try:
-            start = pd.to_datetime(raw_start, dayfirst=True)
-            end = pd.to_datetime(raw_end, dayfirst=True)
-        except Exception as error:
-            raise ValueError(
-                f"Не разобрать даты периода {number}: "
-                f"{raw_start!r} .. {raw_end!r} ({error})"
-            ) from error
-
-        if start > end:
-            raise ValueError(
-                f"Период {number}: начало ({raw_start}) позже конца ({raw_end})"
-            )
-
-        mask = (
-            (result["date"] >= start)
-            & (result["date"] <= end)
-            & is_working_power(result["power"])
-            & (result["period"] == 0)
-        )
-
-        result.loc[mask, "period"] = number
-
-    return result
+    return _mark_period_intervals(df, (
+        (number, start, end)
+        for number, (start, end) in enumerate(period_bounds(overrides), start=1)
+    ))
 
 
 def describe_periods(df):
@@ -221,7 +280,7 @@ def describe_periods(df):
 
     rows = []
 
-    work_df = df[(df["period"] > 0) & is_working_power(df["power"])]
+    work_df = df[(df["period"] > 0) & is_working_power(measured_power(df))]
 
     for period_number, period_df in work_df.groupby("period"):
         period_df = period_df.sort_values("date")
@@ -317,7 +376,7 @@ def print_period_overrides_template(periods_df, used_overrides):
     if used_overrides:
         print("Периоды взяты из PERIOD_OVERRIDES (автоопределение отключено).")
     else:
-        print("Периоды определены автоматически (GAP_SIZE).")
+        print("Периоды определены автоматически по измеренной мощности N (GAP_SIZE).")
 
     print("Если разбивка неверная — скопируй блок ниже в scr/periods.py")
     print("вместо строки  PERIOD_OVERRIDES = []")

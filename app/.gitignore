@@ -1,4 +1,6 @@
 build/
 dist/
 delivery/
+/word_auto/
+/config/
 *.spec

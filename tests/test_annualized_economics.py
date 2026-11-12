@@ -64,7 +64,7 @@ class AnnualizedEconomicsTest(unittest.TestCase):
             nominal_hours={"power_hours": 4.0, "vna_hours": 3.0, "vna_threshold": 80.0},
         )
 
-    def test_annualized_rows_use_accepted_period_hours_and_keep_total(self):
+    def test_annualized_rows_use_qualified_half_hours_and_keep_total(self):
         result = self.calculate(self.deltas)
         table = result["table"]
         self.assertEqual(result["total_period_hours"], 6.0)
@@ -72,7 +72,8 @@ class AnnualizedEconomicsTest(unittest.TestCase):
         total = table.loc[table["Период"] == "ИТОГО"].iloc[0]
         self.assertGreater(total["Недовыработка, МВт·ч"], 0)
         self.assertGreater(total["Перерасход, нм³"], 0)
-        factor = 8760.0 / 6.0
+        self.assertEqual(result['annualization_hours'], {'underproduction': 4., 'fuel': 4.})
+        factor = 8760.0 / 4.0
         self.assertAlmostEqual(
             result["annualized"]["underproduction_mwh"],
             total["Недовыработка, МВт·ч"] * factor,
@@ -98,20 +99,19 @@ class AnnualizedEconomicsTest(unittest.TestCase):
         self.assertAlmostEqual(result["annualized"]["total_cost_rub"], total_annual["Общие издержки, руб"])
         hours = table.set_index("Период")["Наработка, ч"]
         self.assertEqual(hours["Длительность принятых периодов"], 6.0)
-        self.assertEqual(hours["Наработка при Nприв ≥ 80 МВт"], 4.0)
-        self.assertEqual(hours["Наработка при ВНА ≥ 80 %"], 3.0)
+        self.assertEqual(hours['Учтённые часы недовыработки: местные пороги и качество'],4.)
+        self.assertEqual(hours['Учтённые часы перерасхода: местные пороги и качество'],4.)
         self.assertAlmostEqual(
             total["Общие издержки, руб"],
             total["Недовыработка, руб"] + total["Перерасход, руб"],
         )
 
-    def test_zero_duration_has_no_annualized_number(self):
+    def test_reference_delta_hours_do_not_control_annual_denominator(self):
         invalid = self.deltas.copy()
         invalid.loc[0, "Часы конца"] = invalid.loc[0, "Часы начала"]
         result = self.calculate(invalid)
-        self.assertTrue(np.isnan(result["total_period_hours"]))
-        self.assertTrue(np.isnan(result["annualized"]["fuel_overrun_nm3"]))
-        self.assertTrue(np.isnan(result["annualized"]["total_cost_rub"]))
+        self.assertEqual(result['annualization_hours'], {'underproduction': 4., 'fuel': 4.})
+        self.assertAlmostEqual(result['annualized']['fuel_overrun_nm3'],self.calculate(self.deltas)['annualized']['fuel_overrun_nm3'])
 
     def test_missing_delta_hours_uses_period_duration(self):
         result = self.calculate(pd.DataFrame({"Период": [1, 2]}))

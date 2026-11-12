@@ -8,6 +8,7 @@ import re
 import threading
 import time
 import traceback
+from dataclasses import replace
 from pathlib import Path
 
 import matplotlib
@@ -34,7 +35,6 @@ from RH_raschet import (
 from VNA_full import run_vna
 from economics import calculate_economics, print_economics
 from data_assembly import (
-    SENSOR_TARGET_COLUMNS,
     SensorMapping,
     apply_economic_columns,
     assemble_sensor_data,
@@ -42,21 +42,35 @@ from data_assembly import (
     list_source_sheets,
     load_saved_mappings,
     read_calculation_profile,
-    save_data_sheet,
     save_mappings,
     source_mapping_info,
+    source_channel_info,
+    source_selection_info,
     suggest_mappings,
     template_columns,
     validate_mappings,
 )
+from station_profiles import get_station_repository, sensor_target_columns, unit_number, StationTariffs
+from gas_passport import resolve_passport, save_passport, passport_entries, gas_values
+from parameter_mapping import parameter_targets, parameter_for_header, header_unit, unit_conversion, PRESSURE_UNITS, unit_info, canonical_unit, UNIT_CATALOG
+from gas_passport_ui import GasPassportDialog
+from correction_sheet import read_correction_sheet
+from correction_profiles import resolve_profile, require_profile, save_profile
+from correction_profiles_ui import CorrectionDialog
 from periods import parse_periods_arg
+from result_export import collect_result_tables, read_data_sheet, save_result_workbook
+from workbook_profile import read_layout, suggestions as suggest_book_columns, confirm as confirm_book, validate_recalculation
+from workbook_mapping_ui import BookMappingDialog, BookCorrectionsDialog
+from pressure_chart import PressureChartData
+from chart_events import ChartEvent, load_chart_events, save_chart_events
+from chart_events_ui import ChartEventsDialog
+from ui_theme import build_widgets, configure_theme, show_empty_states, update_status
+from calculation_snapshot import CalculationSnapshot
 from reporting import (
-    DEFAULT_DATA_FILE,
     DEFAULT_REPORT_DIR,
     DEFAULT_TEMPLATE,
     build_report_data,
-    generate_report_from_json,
-    save_report_data,
+    generate_report,
 )
 
 
@@ -220,32 +234,47 @@ class MappingDialog(tk.Toplevel):
 
     def __init__(self, parent, suggestions: list[SensorMapping],
                  target_headers: dict[str, str | None],
-                 source_headers: list[str], verified_duplicates: set[str]):
+                 source_headers: list[str], verified_duplicates: set[str],
+                 station_id: str):
         super().__init__(parent)
         self.title("Соответствие каналов датчиков")
-        self.geometry("880x620")
+        self.geometry("960x640")
+        self.minsize(760, 480)
+        self.configure(background=parent.colors["panel"])
         self.transient(parent)
         self.result: list[SensorMapping] | None = None
         self._rows = []
+        self._suggestions = {item.source: item for item in suggestions}
+        self._station_id = station_id
         self._target_headers = target_headers
         self._source_headers = source_headers
         self._verified_duplicates = verified_duplicates
+        self._allowed_targets = sensor_target_columns(station_id, parent.station_repository) | set(parameter_targets(target_headers, station_id).values())
+        self._parameter_columns = parent.book_setup.sensor_columns if getattr(parent,'book_setup',None) else {}
+        if self._parameter_columns: self._allowed_targets=set(self._parameter_columns.values())
+        self._unit_rows = {}
 
         ttk.Label(
             self,
             text=("Проверьте каждый канал, колонку листа «Данные» и коэффициент "
                   "перевода единиц. Колонку можно ввести вручную по букве."),
-            wraplength=820,
+            wraplength=900,
         ).pack(fill="x", padx=12, pady=(12, 8))
         holder = ttk.Frame(self)
         holder.pack(fill="both", expand=True, padx=12)
-        canvas = tk.Canvas(holder, highlightthickness=0)
+        canvas = tk.Canvas(
+            holder, highlightthickness=0, background=parent.colors["panel"]
+        )
         scroll = ttk.Scrollbar(holder, orient="vertical", command=canvas.yview)
         table = ttk.Frame(canvas)
         table.bind("<Configure>", lambda _event: canvas.configure(
             scrollregion=canvas.bbox("all")
         ))
-        canvas.create_window((0, 0), window=table, anchor="nw")
+        table_window = canvas.create_window((0, 0), window=table, anchor="nw")
+        canvas.bind(
+            "<Configure>",
+            lambda event: canvas.itemconfigure(table_window, width=event.width),
+        )
         canvas.configure(yscrollcommand=scroll.set)
         canvas.pack(side="left", fill="both", expand=True)
         scroll.pack(side="right", fill="y")
@@ -253,27 +282,55 @@ class MappingDialog(tk.Toplevel):
         ttk.Label(table, text="Канал выгрузки").grid(row=0, column=0, sticky="w")
         ttk.Label(table, text="Колонка «Данные»").grid(row=0, column=1, sticky="w")
         ttk.Label(table, text="Коэффициент").grid(row=0, column=2, sticky="w")
+        ttk.Label(table, text="Из единиц").grid(row=0, column=3, sticky="w")
+        ttk.Label(table, text="В единицы").grid(row=0, column=4, sticky="w")
         choices = [
             f"{column} — {header}" for column, header in target_headers.items()
-            if header and column in SENSOR_TARGET_COLUMNS
+            if header and column in self._allowed_targets
         ]
+        choices.insert(0, 'Не учитывать')
         for index, suggestion in enumerate(suggestions, start=1):
             target = suggestion.target
             header = target_headers.get(target)
-            initial = f"{target} — {header}" if target and header else target
+            initial = 'Не учитывать' if suggestion.status == 'ignored' else "" if suggestion.status == "deferred" else f"{target} — {header}" if target and header else target
             target_var = tk.StringVar(value=initial)
             factor_var = tk.StringVar(value=f"{suggestion.factor:.10g}")
-            ttk.Label(table, text=suggestion.source, width=28).grid(
-                row=index, column=0, sticky="w", pady=3
+            ttk.Label(table, text=suggestion.source).grid(
+                row=index, column=0, sticky="ew", pady=3
             )
             ttk.Combobox(
-                table, textvariable=target_var, values=choices, width=36
+                table, textvariable=target_var, values=choices, width=1
             ).grid(row=index, column=1, sticky="ew", padx=(8, 8), pady=3)
-            ttk.Entry(table, textvariable=factor_var, width=16).grid(
-                row=index, column=2, sticky="w", pady=3
-            )
+            conversion_cell = ttk.Frame(table)
+            conversion_cell.grid(row=index, column=2, sticky="ew", pady=3)
+            ttk.Entry(conversion_cell, textvariable=factor_var, width=1).pack(fill='x')
+            conversion_text = tk.StringVar()
+            conversion_label = ttk.Label(conversion_cell, textvariable=conversion_text, wraplength=130)
             self._rows.append((suggestion.source, target_var, factor_var))
-        table.columnconfigure(1, weight=1)
+            source_unit, target_unit = tk.StringVar(value=canonical_unit(suggestion.source_unit)), tk.StringVar(value=canonical_unit(suggestion.target_unit))
+            self._unit_rows[suggestion.source] = (source_unit, target_unit)
+            for unit_index, variable in enumerate((source_unit, target_unit), start=3):
+                known_units = list(dict.fromkeys(['', *(item['symbol'] for item in UNIT_CATALOG), variable.get()]))
+                ttk.Combobox(table, textvariable=variable, values=known_units, state='readonly', width=12).grid(row=index, column=unit_index, padx=3)
+            def update_factor(*_, source=source_unit, destination=target_unit, coefficient=factor_var,
+                              summary=conversion_text, display=conversion_label):
+                summary.set('')
+                display.pack_forget()
+                if source.get() and destination.get():
+                    try:
+                        multiplier, offset = unit_conversion(source.get(), destination.get())
+                        coefficient.set(f'{multiplier:.12g}')
+                        if offset:
+                            summary.set(f'x × {multiplier:.8g} {"+" if offset > 0 else "−"} {abs(offset):.8g}')
+                            display.pack(anchor='w')
+                    except ValueError:
+                        pass  # Общая проверка объяснит несовместимую пару при подтверждении.
+            source_unit.trace_add('write', update_factor)
+            target_unit.trace_add('write', update_factor)
+            update_factor()
+        table.columnconfigure(0, weight=2, minsize=180)
+        table.columnconfigure(1, weight=4, minsize=300)
+        table.columnconfigure(2, weight=1, minsize=130)
 
         actions = ttk.Frame(self, padding=12)
         actions.pack(fill="x")
@@ -291,12 +348,29 @@ class MappingDialog(tk.Toplevel):
                 text = target_var.get().strip().upper()
                 match = re.match(r"^([A-Z]{1,3})(?:\s|$)", text)
                 target = match.group(1) if match else ""
+                old = self._suggestions[source]
+                if text == 'НЕ УЧИТЫВАТЬ':
+                    mappings.append(replace(old, target='', parameter='', status='ignored', factor=1., offset=0., source_unit='', target_unit='', target_header=''))
+                    continue
+                if text == "ДО УТОЧНЕНИЯ":
+                    mappings.append(replace(old, target="", status="deferred", factor=1., offset=0.))
+                    continue
                 factor = float(factor_var.get().strip().replace(",", "."))
-                mappings.append(SensorMapping(source, target, factor))
+                offset = 0.
+                units = getattr(self, "_unit_rows", {}).get(source)
+                source_unit, target_unit = (value.get().strip() for value in units) if units else (old.source_unit, old.target_unit)
+                if source_unit and target_unit:
+                    factor, offset = unit_conversion(source_unit, target_unit)
+                mappings.append(replace(old, source=source, target=target, factor=factor, offset=offset, status="mapped",
+                                        parameter=next((key for key,column in getattr(self,'_parameter_columns',{}).items() if column==target),
+                                                       parameter_for_header(self._target_headers.get(target), self._station_id)),
+                                        target_header=self._target_headers.get(target) or "",
+                                        source_unit=source_unit, target_unit=target_unit))
             validate_mappings(
                 mappings, self._source_headers,
                 verified_duplicates=self._verified_duplicates,
                 target_headers=self._target_headers,
+                allowed_targets=self._allowed_targets,
             )
         except ValueError as error:
             messagebox.showerror("Проверьте соответствия", str(error), parent=self)
@@ -317,271 +391,254 @@ class CalculationApp(tk.Tk):
         self.output_queue: queue.Queue = queue.Queue()
         self.selected_file: Path | None = None
         self.selected_raw_file: Path | None = None
+        self.calculation_mode = tk.StringVar(value="ready")
+        self.calculation_running = False
+        self.export_running = False
+        self.has_calculation_run = False
+        self.chart_events: tuple[ChartEvent, ...] = ()
         self.selected_raw_sheet = tk.StringVar(value="")
         self.sensor_mappings: list[SensorMapping] | None = None
         self.mapping_sheet: str | None = None
+        self.book_setup = None
         self.figure_views = []
-        self.last_report_data_path: Path | None = None
+        self.last_result: CalculationSnapshot | None = None
+        self.station_repository = get_station_repository()
+        self.stations_by_name = {
+            station.name: station for station in self.station_repository.list_stations()
+        }
+        self.station_var = tk.StringVar(value="")
+        self.unit_var = tk.StringVar(value="")
+        self.station_manually_selected = False
         self.gas_tariff_var = tk.StringVar(value="0")
         self.electricity_tariff_var = tk.StringVar(value="0")
         self.electricity_cost_var = tk.StringVar(value="0")
 
         self._build_widgets()
+        self._update_input_controls()
+        for variable in (self.gas_tariff_var, self.electricity_tariff_var,
+                         self.electricity_cost_var):
+            variable.trace_add("write", self._invalidate_results)
         self.after(100, self._poll_output)
 
     def _configure_dark_theme(self):
-        """Настраивает тёмную тему окна, лога и вкладок графиков."""
-
-        self.colors = {
-            "window": "#202124",
-            "panel": "#292b2f",
-            "input": "#17181a",
-            "text": "#e8eaed",
-            "muted": "#b8bdc7",
-            "accent": "#79a7ff",
-            "accent_active": "#9bbcff",
-            "selection": "#3d5f9e",
-            "trough": "#151619",
-        }
-
-        self.configure(bg=self.colors["window"])
-        style = ttk.Style(self)
-        try:
-            style.theme_use("clam")
-        except tk.TclError:
-            pass
-
-        style.configure(".",
-                        background=self.colors["panel"],
-                        foreground=self.colors["text"])
-        style.configure("TFrame", background=self.colors["panel"])
-        style.configure("TLabel",
-                        background=self.colors["panel"],
-                        foreground=self.colors["text"])
-        style.configure(
-            "TEntry",
-            foreground="#111111",
-            fieldbackground="#ffffff",
-            insertcolor="#111111",
-            selectforeground="#ffffff",
-            selectbackground=self.colors["selection"],
-        )
-        style.configure("TButton",
-                        background="#3a3d43",
-                        foreground=self.colors["text"],
-                        padding=(10, 6))
-        style.map(
-            "TButton",
-            background=[
-                ("active", "#4a4e57"),
-                ("disabled", "#303238"),
-            ],
-            foreground=[("disabled", "#777b85")],
-        )
-        style.configure("TLabelFrame",
-                        background=self.colors["panel"],
-                        foreground=self.colors["text"])
-        style.configure("TLabelframe.Label",
-                        background=self.colors["panel"],
-                        foreground=self.colors["text"])
-        style.configure("TNotebook",
-                        background=self.colors["panel"],
-                        borderwidth=0)
-        style.configure("TNotebook.Tab",
-                        background="#34373d",
-                        foreground=self.colors["muted"],
-                        padding=(10, 5))
-        style.map(
-            "TNotebook.Tab",
-            background=[("selected", "#4a4f59"), ("active", "#41454d")],
-            foreground=[("selected", self.colors["text"])],
-        )
-        style.configure("TProgressbar",
-                        troughcolor=self.colors["trough"],
-                        background=self.colors["accent"],
-                        bordercolor=self.colors["trough"],
-                        lightcolor=self.colors["accent"],
-                        darkcolor=self.colors["accent"])
-        style.configure(
-            "Treeview",
-            background=self.colors["input"],
-            fieldbackground=self.colors["input"],
-            foreground=self.colors["text"],
-            rowheight=25,
-            borderwidth=0,
-        )
-        style.map(
-            "Treeview",
-            background=[("selected", self.colors["selection"])],
-            foreground=[("selected", self.colors["text"])],
-        )
-        style.configure(
-            "Treeview.Heading",
-            background="#3a3d43",
-            foreground=self.colors["text"],
-            padding=(7, 6),
-        )
-        style.map(
-            "Treeview.Heading",
-            background=[("active", "#4a4e57")],
-        )
+        configure_theme(self)
 
     def _build_widgets(self):
-        controls = ttk.Frame(self, padding=10)
-        controls.pack(fill="x")
+        build_widgets(self)
 
-        self.choose_button = ttk.Button(
-            controls,
-            text="Выбрать Excel-файл",
-            command=self.choose_file,
-        )
-        self.choose_button.pack(side="left")
+    def _invalidate_results(self, *_args):
+        self.last_result = None
+        self._update_input_controls()
+        self._clear_charts()
 
-        self.run_button = ttk.Button(
-            controls,
-            text="Запустить расчёт",
-            command=self.start_calculation,
-            state="disabled",
+    def _update_input_controls(self):
+        idle = not (self.calculation_running or self.export_running)
+        importing = self.calculation_mode.get() == "import"
+        has_book = self.selected_file is not None
+        has_raw = self.selected_raw_file is not None
+        has_station = self.station_var.get() in self.stations_by_name
+        has_unit = self._selected_turbine() is not None
+        self.station_combo.configure(state="readonly" if idle else "disabled")
+        if hasattr(self, "add_station_button"):
+            self.add_station_button.configure(state="normal" if idle else "disabled")
+        self.unit_combo.configure(state="readonly" if idle and has_station else "disabled")
+        self.events_button.configure(
+            state="normal" if idle and has_book else "disabled",
+            text=f"События графика ({len(self.chart_events)})",
         )
-        self.run_button.pack(side="left", padx=(10, 0))
+        self.choose_button.configure(state="normal" if idle else "disabled")
+        if hasattr(self, "gas_passport_button"):
+            self.gas_passport_button.configure(state="normal" if idle and has_book and has_unit else "disabled")
+        if hasattr(self, "corrections_button"):
+            self.corrections_button.configure(state="normal" if idle and has_book and has_unit else "disabled")
+        if hasattr(self, "book_mapping_button"):
+            self.book_mapping_button.configure(state="normal" if idle and has_book and has_unit else "disabled")
+        for button in self.mode_buttons:
+            button.configure(state="normal" if idle else "disabled")
+        for entry in self.tariff_entries:
+            entry.configure(state="normal" if idle else "disabled")
+        self.raw_button.configure(state="normal" if idle and importing and has_book else "disabled")
+        raw_ready = idle and importing and has_book and has_raw
+        self.mapping_button.configure(state="normal" if raw_ready and has_station and has_unit else "disabled")
+        self.clear_raw_button.configure(state="normal" if raw_ready else "disabled")
+        self.raw_sheet_combo.configure(state="readonly" if raw_ready else "disabled")
+        can_run = idle and has_book and has_station and has_unit and (
+            not importing or (has_raw and bool(self.selected_raw_sheet.get()))
+        )
+        if hasattr(self, "source_book_button"):
+            self.source_book_button.configure(state="normal" if can_run and importing else "disabled")
+        self.run_button.configure(
+            state="normal" if can_run else "disabled",
+            text="Перерасчет" if self.has_calculation_run else "Расчет",
+        )
+        export_state = "normal" if idle and self.last_result is not None else "disabled"
+        self.excel_button.configure(state=export_state)
+        self.report_button.configure(state=export_state)
+        self.raw_label.configure(text=(
+            "Выгрузка не используется в этом режиме" if not importing
+            else str(self.selected_raw_file) if has_raw else "Выгрузка не выбрана"
+        ))
+        update_status(self)
 
-        self.report_button = ttk.Button(
-            controls,
-            text="Сформировать Word",
-            command=self.generate_word_report,
-            state="disabled",
-        )
-        self.report_button.pack(side="left", padx=(10, 0))
+    def _apply_station(self, station, *, automatic: bool):
+        """Меняет профиль, сбрасывает назначения датчиков и старый результат."""
+        self.station_var.set(station.name if station else "")
+        self.station_manually_selected = not automatic
+        self._clear_mapping()
+        if station is not None:
+            try:
+                tariffs = self.station_repository.get_tariffs(station.id)
+            except (ValueError, OSError) as error:
+                tariffs = None
+                messagebox.showwarning('Тарифы не загружены',
+                    f'Не удалось прочитать сохранённые тарифы. Введите их для расчёта вручную.\n{error}', parent=self)
+            for variable, value in (
+                (self.gas_tariff_var, tariffs.gas_rub_per_nm3 if tariffs else None),
+                (self.electricity_tariff_var, tariffs.electricity_rub_per_mwh if tariffs else None),
+                (self.electricity_cost_var, tariffs.electricity_cost_rub_per_mwh if tariffs else None),
+            ):
+                variable.set(str(value).removesuffix('.0').replace('.', ',') if value is not None else '')
+            self.station_hint.configure(text=(
+                "Определена по имени файла; можно изменить."
+                if automatic else "Выбрана вручную. Тарифы можно изменить."
+            ))
+        else:
+            for variable in (self.gas_tariff_var, self.electricity_tariff_var,
+                             self.electricity_cost_var):
+                variable.set("0")
+            self.station_hint.configure(text="ТЭЦ не распознана. Выберите её из списка.")
+        choices = self.station_repository.list_turbines(station.id) if station else ()
+        self.unit_combo.configure(values=[item.name for item in choices])
+        detected = self.station_repository.detect_turbine(self.selected_file, station.id) if station and self.selected_file else None
+        self.unit_var.set(detected.name if detected else "")
+        self._on_unit_changed()
 
-        ttk.Label(controls, text="Газ, руб/нм³:").pack(
-            side="left", padx=(18, 4)
-        )
-        ttk.Entry(
-            controls,
-            textvariable=self.gas_tariff_var,
-            width=10,
-        ).pack(side="left")
+    def _selected_turbine(self):
+        station = self.stations_by_name.get(self.station_var.get())
+        if station is None:
+            return None
+        return next((item for item in self.station_repository.list_turbines(station.id)
+                     if item.name == self.unit_var.get()), None)
 
-        ttk.Label(controls, text="ЭЭ, руб/МВт·ч:").pack(
-            side="left", padx=(12, 4)
-        )
-        ttk.Entry(
-            controls,
-            textvariable=self.electricity_tariff_var,
-            width=10,
-        ).pack(side="left")
+    def _on_unit_changed(self, _event=None):
+        turbine = self._selected_turbine()
+        self.unit_model_label.configure(text=f"Модель: {turbine.model}" if turbine else "Выберите ГТУ.")
+        self.book_setup = None
+        self._clear_mapping()
+        self._invalidate_results()
 
-        ttk.Label(controls, text="Себестоимость ЭЭ, руб/МВт·ч:").pack(
-            side="left", padx=(12, 4)
-        )
-        ttk.Entry(
-            controls,
-            textvariable=self.electricity_cost_var,
-            width=10,
-        ).pack(side="left")
+    def _on_station_changed(self, _event=None):
+        self._apply_station(self.stations_by_name.get(self.station_var.get()), automatic=False)
 
-        self.file_label = ttk.Label(
-            controls,
-            text="Файл не выбран",
-            anchor="w",
-        )
-        self.file_label.pack(side="left", padx=(14, 0), fill="x", expand=True)
+    def review_corrections(self):
+        return self.review_book_mapping()
 
-        self.progress = ttk.Progressbar(controls, mode="indeterminate", length=160)
-        self.progress.pack(side="right")
+    def _ensure_book_mapping(self):
+        setup = getattr(self, 'book_setup', None)
+        turbine = self._selected_turbine()
+        station = self.stations_by_name.get(self.station_var.get())
+        if setup and self.selected_file and turbine and station:
+            try:
+                stat = self.selected_file.stat()
+            except OSError as error:
+                messagebox.showerror('Основная книга недоступна', str(error), parent=self)
+                return False
+            if (setup.station, setup.unit, setup.stamp) == (station.id, turbine.number,
+                    (str(self.selected_file.resolve()), stat.st_mtime_ns, stat.st_size)):
+                return True
+        return self.review_book_mapping()
 
-        import_controls = ttk.Frame(self, padding=(10, 0, 10, 10))
-        import_controls.pack(fill="x")
-        self.raw_button = ttk.Button(
-            import_controls,
-            text="Выбрать выгрузку датчиков",
-            command=self.choose_raw_file,
-            state="disabled",
-        )
-        self.raw_button.pack(side="left")
-        ttk.Label(import_controls, text="Лист выгрузки:").pack(
-            side="left", padx=(12, 4)
-        )
-        self.raw_sheet_combo = ttk.Combobox(
-            import_controls,
-            textvariable=self.selected_raw_sheet,
-            state="disabled",
-            width=34,
-        )
-        self.raw_sheet_combo.pack(side="left")
-        self.raw_sheet_combo.bind(
-            "<<ComboboxSelected>>", lambda _event: self._clear_mapping()
-        )
-        self.mapping_button = ttk.Button(
-            import_controls,
-            text="Проверить колонки",
-            command=self.review_mapping,
-            state="disabled",
-        )
-        self.mapping_button.pack(side="left", padx=(10, 0))
-        self.raw_label = ttk.Label(
-            import_controls, text="Выгрузка не выбрана", anchor="w"
-        )
-        self.raw_label.pack(side="left", padx=(12, 0), fill="x", expand=True)
+    def review_book_mapping(self):
+        if self.calculation_running or self.export_running or not self.selected_file:
+            return False
+        station = self.stations_by_name.get(self.station_var.get())
+        turbine = self._selected_turbine()
+        if not station or not turbine:
+            messagebox.showerror('Основная книга', 'Выберите ТЭЦ и ГТУ.', parent=self)
+            return False
+        try:
+            self._append_log('Чтение параметров и формул основной книги…\n')
+            started = time.perf_counter()
+            layout = read_layout(self.selected_file)
+            rows = suggest_book_columns(layout, station.id, turbine.number)
+            self._append_log(f'Параметры и формулы прочитаны за {time.perf_counter()-started:.1f} с.\n')
+            dialog = BookMappingDialog(self, layout, rows, station.id, turbine.number)
+            self.wait_window(dialog)
+            if dialog.result is None:
+                return False
+            self.book_setup = confirm_book(layout, station.id, turbine.number, dialog.result.columns)
+            self._clear_mapping()
+            self._invalidate_results()
+            self._append_log(f'Основная книга подтверждена: {len(self.book_setup.bindings)} параметров, '
+                             f'{len(self.book_setup.recipes)} расчётных выражений.\n')
+            return True
+        except (ValueError, OSError, KeyError) as error:
+            messagebox.showerror('Проверьте основную книгу', str(error), parent=self)
+            return False
 
-        panes = ttk.PanedWindow(self, orient="horizontal")
-        panes.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+    def _legacy_review_corrections(self):
+        if self.calculation_running or self.export_running or self.selected_file is None:
+            return
+        station = self.stations_by_name.get(self.station_var.get())
+        selected = self._selected_turbine()
+        turbine = selected.number if selected else None
+        if station is None or selected is None:
+            messagebox.showerror("Поправки", "Выберите ТЭЦ и ГТУ.", parent=self)
+            return
+        if selected.calculation_method != "syz_tec_v1":
+            messagebox.showerror("Поправки", "Методика поправок для этой ГТУ ещё не подключена.", parent=self)
+            return
+        try:
+            profile = resolve_profile(self.selected_file, station.id, turbine)
+            dialog = CorrectionDialog(self, profile, station.id, turbine, station.name)
+            self.wait_window(dialog)
+            if dialog.result is None:
+                return
+            saved = save_profile(dialog.result)
+            self._invalidate_results()
+            self._append_log(f"Поправки сохранены: {station.name} ГТ-{turbine}, версия {saved.revision}. Для применения выполните перерасчёт.\n")
+        except (ValueError, OSError) as error:
+            messagebox.showerror("Поправки", str(error), parent=self)
 
-        log_frame = ttk.LabelFrame(panes, text="Лог расчёта", padding=5)
-        panes.add(log_frame, weight=2)
+    def review_gas_passport(self):
+        if self.calculation_running or self.export_running or self.selected_file is None:
+            return
+        station = self.stations_by_name.get(self.station_var.get())
+        selected = self._selected_turbine()
+        turbine = selected.number if selected else None
+        if station is None or turbine is None:
+            messagebox.showerror("Паспорт газа", "Выберите ТЭЦ и ГТУ.", parent=self)
+            return
+        try:
+            passport = resolve_passport(self.selected_file, station.id, turbine)
+            dialog = GasPassportDialog(self, passport, station.id, turbine, station.name)
+            self.wait_window(dialog)
+            if dialog.result is None:
+                return
+            saved = save_passport(dialog.result)
+            self._invalidate_results()
+            self._append_log(f"Паспорт газа сохранён: {station.name} ГТ-{turbine}. Для применения выполните перерасчёт.\n")
+            if saved.composition_warning:
+                messagebox.showwarning("Состав газа", saved.composition_warning, parent=self)
+        except (ValueError, OSError) as error:
+            messagebox.showerror("Паспорт газа", str(error), parent=self)
 
-        self.log = tk.Text(
-            log_frame,
-            wrap="none",
-            state="disabled",
-            background=self.colors["input"],
-            foreground=self.colors["text"],
-            insertbackground=self.colors["text"],
-            selectbackground=self.colors["selection"],
-            selectforeground=self.colors["text"],
-            relief="flat",
-            borderwidth=0,
-            padx=8,
-            pady=8,
-            font=("Consolas", 10),
-        )
-        self.log.tag_configure(
-            "section_heading",
-            font=("Consolas", 10, "bold"),
-            foreground=self.colors["accent_active"],
-        )
-        self.log.tag_configure(
-            "degradation",
-            font=("Consolas", 11, "bold"),
-            foreground="#ffbd70",
-        )
-        log_scroll_y = ttk.Scrollbar(log_frame, orient="vertical", command=self.log.yview)
-        log_scroll_x = ttk.Scrollbar(log_frame, orient="horizontal", command=self.log.xview)
-        self.log.configure(yscrollcommand=log_scroll_y.set, xscrollcommand=log_scroll_x.set)
-        self.log.grid(row=0, column=0, sticky="nsew")
-        log_scroll_y.grid(row=0, column=1, sticky="ns")
-        log_scroll_x.grid(row=1, column=0, sticky="ew")
-        log_frame.rowconfigure(0, weight=1)
-        log_frame.columnconfigure(0, weight=1)
+    def _on_mode_changed(self):
+        self._invalidate_results()
+        self._update_input_controls()
 
-        chart_frame = ttk.LabelFrame(panes, text="Графики и таблицы", padding=5)
-        panes.add(chart_frame, weight=3)
+    def _on_raw_sheet_changed(self, _event=None):
+        self._clear_mapping()
+        self._invalidate_results()
+        self._update_input_controls()
 
-        self.chart_tabs = ttk.Notebook(chart_frame)
-        self.chart_tabs.pack(fill="both", expand=True)
-        self.tab_frames = {}
-        for key, title in (
-            ("pressure", "Перепады давления"),
-            ("vna", "ВНА"),
-            ("boundary", "Параметры на границах"),
-            ("top10", "TOP-10 ВНА"),
-            ("delta", "Дельты по регрессиям"),
-            ("economics", "Экономика"),
-            ("rh", "Графики RH"),
-        ):
-            frame = ttk.Frame(self.chart_tabs)
-            self.chart_tabs.add(frame, text=title)
-            self.tab_frames[key] = frame
+    def clear_raw_file(self):
+        self.selected_raw_file = None
+        self.selected_raw_sheet.set("")
+        self.raw_sheet_combo.configure(values=())
+        self._clear_mapping()
+        self._invalidate_results()
+        self._update_input_controls()
 
     def choose_file(self):
         file_name = filedialog.askopenfilename(
@@ -596,18 +653,46 @@ class CalculationApp(tk.Tk):
             return
 
         self.selected_file = Path(file_name)
+        self._apply_station(
+            self.station_repository.detect_station(self.selected_file), automatic=True,
+        )
+        self.has_calculation_run = False
+        try:
+            self.chart_events = load_chart_events(self.selected_file)
+        except (OSError, ValueError, TypeError) as error:
+            self.chart_events = ()
+            messagebox.showwarning("События не загружены", str(error), parent=self)
         self._clear_mapping()
-        self.raw_button.configure(state="normal")
-        self.last_report_data_path = None
-        self.report_button.configure(state="disabled")
+        self._invalidate_results()
         self.file_label.configure(text=str(self.selected_file))
-        self.run_button.configure(state="normal")
+        self._update_input_controls()
+
+    def review_chart_events(self):
+        if self.selected_file is None or self.calculation_running or self.export_running:
+            return
+        dialog = ChartEventsDialog(self, self.chart_events, self.selected_file.name)
+        self.wait_window(dialog)
+        if dialog.result is None:
+            return
+        self.chart_events = dialog.result
+        try:
+            save_chart_events(self.selected_file, self.chart_events)
+        except (OSError, ValueError, TypeError) as error:
+            messagebox.showwarning(
+                "Профиль событий не сохранён",
+                f"События применены для текущего запуска, но не сохранены: {error}",
+                parent=self,
+            )
+        self._invalidate_results()
+        self._update_input_controls()
 
     def _clear_mapping(self):
         self.sensor_mappings = None
         self.mapping_sheet = None
 
     def choose_raw_file(self):
+        if self.calculation_mode.get() != "import" or self.selected_file is None:
+            return
         file_name = filedialog.askopenfilename(
             title="Выберите исходную выгрузку датчиков",
             initialdir=str(
@@ -615,7 +700,7 @@ class CalculationApp(tk.Tk):
                 if (DATA_DIR / "initial_data").exists() else DATA_DIR
             ),
             filetypes=[
-                ("Excel-файлы", "*.xlsx *.xlsm *.xls *.xlsb"),
+                ("Excel и CSV", "*.xlsx *.xlsm *.xls *.xlsb *.csv"),
                 ("Все файлы", "*.*"),
             ],
         )
@@ -627,20 +712,30 @@ class CalculationApp(tk.Tk):
             messagebox.showerror("Не удалось открыть выгрузку", str(error), parent=self)
             return
         self.selected_raw_file = Path(file_name)
+        if not self.station_manually_selected and not self.station_var.get():
+            station = self.station_repository.detect_station(self.selected_raw_file)
+            if station is not None:
+                self._apply_station(station, automatic=True)
         self._clear_mapping()
         self.raw_sheet_combo.configure(values=sheets, state="readonly")
-        name = self.selected_file.stem.lower() if self.selected_file else ""
-        expected = "gt10" if "10" in name else "gt11" if "11" in name else ""
+        turbine = self._selected_turbine()
         default = next(
-            (sheet for sheet in sheets if expected in sheet.lower()),
+            (sheet for sheet in sheets if turbine and unit_number(sheet) == turbine.number),
             sheets[0] if sheets else "",
         )
         self.selected_raw_sheet.set(default)
-        self.mapping_button.configure(state="normal" if sheets else "disabled")
-        self.raw_label.configure(text=str(self.selected_raw_file))
+        self._invalidate_results()
+        self._update_input_controls()
 
     def review_mapping(self) -> bool:
         if not self.selected_file or not self.selected_raw_file:
+            return False
+        if not self._ensure_book_mapping():
+            return False
+        station = self.stations_by_name.get(self.station_var.get())
+        turbine = self._selected_turbine()
+        if station is None or turbine is None:
+            messagebox.showerror("Не выбрана ГТУ", "Выберите ТЭЦ и ГТУ из списка.", parent=self)
             return False
         sheet = self.selected_raw_sheet.get().strip()
         if not sheet:
@@ -648,29 +743,58 @@ class CalculationApp(tk.Tk):
             return False
         try:
             headers, verified_duplicates = source_mapping_info(
-                self.selected_raw_file, sheet
+                self.selected_raw_file, sheet, station_id=station.id,
+                repository=self.station_repository,
             )
+            targets = self.book_setup.import_headers(read_layout(self.selected_file).headers)
             suggestions = (
-                load_saved_mappings(self.selected_file, headers)
+                load_saved_mappings(self.selected_file, headers, station_id=station.id, unit=turbine.number,
+                                    repository=self.station_repository, target_headers=targets,
+                                    parameter_columns=self.book_setup.sensor_columns)
                 or suggest_mappings(
-                    headers, self.selected_file, verified_duplicates
+                    headers, self.selected_file, verified_duplicates,
+                    station_id=station.id, unit=turbine.number, repository=self.station_repository, target_headers=targets,
+                    parameter_columns=self.book_setup.sensor_columns,
                 )
             )
-            targets = template_columns(self.selected_file)
+            info = source_channel_info(self.selected_raw_file, sheet)
+            suggestions = [item for item in suggestions if item.source not in verified_duplicates]
+            suggestions = [replace(item, source_unit=item.source_unit or info.get(item.source, {}).get("unit", ""),
+                                   target_unit=header_unit(targets.get(item.target)) or item.target_unit) for item in suggestions]
+            converted = []
+            for item in suggestions:
+                try:
+                    if unit_info(item.source_unit) and unit_info(item.target_unit):
+                        factor, offset = unit_conversion(item.source_unit, item.target_unit)
+                        item = replace(item, factor=factor, offset=offset)
+                except ValueError:
+                    pass  # Показываем несовместимую пару в форме для ручной правки.
+                converted.append(item)
+            suggestions = converted
+            self.mapping_channel_info = info
+            selection = source_selection_info(self.selected_raw_file, sheet)
+            self.mapping_source_note = (f"Формат: {selection['format']}. Получасовых строк: {selection['rows']}. "
+                                        f"Не отобрано строк: {selection['skipped_rows']}, из них с неверной датой: {selection['invalid_dates']}.")
         except Exception as error:
             messagebox.showerror("Ошибка сопоставления", str(error), parent=self)
             return False
         dialog = MappingDialog(
-            self, suggestions, targets, headers, verified_duplicates
+            self, suggestions, targets, headers, verified_duplicates, station.id
         )
         self.wait_window(dialog)
         if dialog.result is None:
             return False
         self.sensor_mappings = dialog.result
         self.mapping_sheet = sheet
+        stat = self.selected_raw_file.stat()
+        self.mapping_source_stamp = (stat.st_mtime_ns, stat.st_size)
+        book_stat = self.selected_file.stat() if self.selected_file.exists() else None
+        self.mapping_book_stamp = (book_stat.st_mtime_ns, book_stat.st_size) if book_stat else None
+        self._invalidate_results()
         try:
-            save_mappings(self.selected_file, headers, dialog.result)
-        except OSError as error:
+            save_mappings(self.selected_file, headers, dialog.result, station_id=station.id, unit=turbine.number,
+                          repository=self.station_repository, target_headers=targets)
+        except (OSError, ValueError) as error:
             messagebox.showwarning(
                 "Профиль не сохранён",
                 f"Соответствия применены, но не удалось сохранить профиль: {error}",
@@ -679,34 +803,35 @@ class CalculationApp(tk.Tk):
         return True
 
     def start_calculation(self):
-        if self.selected_file is None:
+        if self.selected_file is None or self.calculation_running or self.export_running:
             return
-
-        assembled_path = None
-        if self.selected_raw_file is not None:
-            if self.sensor_mappings is None or self.mapping_sheet != self.selected_raw_sheet.get():
-                if not self.review_mapping():
-                    return
-            assembled_name = f"{self.selected_file.stem}_обновлённые_данные.xlsx"
-            output_name = filedialog.asksaveasfilename(
-                title="Куда сохранить собранный лист «Данные»",
-                initialdir=str(DATA_DIR),
-                initialfile=assembled_name,
-                defaultextension=".xlsx",
-                filetypes=[("Книга Excel", "*.xlsx")],
-            )
-            if not output_name:
-                return
-            assembled_path = Path(output_name)
-            if assembled_path.resolve() in {
-                self.selected_file.resolve(), self.selected_raw_file.resolve()
-            }:
+        station = self.stations_by_name.get(self.station_var.get())
+        if station is None:
+            messagebox.showerror("Не выбрана ТЭЦ", "Выберите ТЭЦ перед запуском расчёта.", parent=self)
+            return
+        turbine = self._selected_turbine()
+        if turbine is None:
+            messagebox.showerror("Не выбрана ГТУ", "Выберите ГТУ перед запуском расчёта.", parent=self)
+            return
+        if not self._ensure_book_mapping():
+            return
+        importing = self.calculation_mode.get() == "import"
+        raw_file_path = self.selected_raw_file if importing else None
+        if importing:
+            if raw_file_path is None or not self.selected_raw_sheet.get():
                 messagebox.showerror(
-                    "Выберите другой файл",
-                    "Результат нельзя сохранять поверх входной книги или выгрузки.",
-                    parent=self,
+                    "Выберите выгрузку", "Укажите файл датчиков и лист нужной ГТ.", parent=self
                 )
                 return
+            stat = raw_file_path.stat() if raw_file_path.exists() else None
+            stamp = (stat.st_mtime_ns, stat.st_size) if stat else None
+            book_stat = self.selected_file.stat() if self.selected_file.exists() else None
+            book_stamp = (book_stat.st_mtime_ns, book_stat.st_size) if book_stat else None
+            if (self.sensor_mappings is None or self.mapping_sheet != self.selected_raw_sheet.get()
+                    or stamp != getattr(self, "mapping_source_stamp", None)
+                    or book_stamp != getattr(self, "mapping_book_stamp", None)):
+                if not self.review_mapping():
+                    return
 
         try:
             gas_tariff = self._parse_tariff(
@@ -723,26 +848,26 @@ class CalculationApp(tk.Tk):
             return
 
         self._clear_log()
-        self._clear_charts()
-        self.choose_button.configure(state="disabled")
-        self.raw_button.configure(state="disabled")
-        self.mapping_button.configure(state="disabled")
-        self.raw_sheet_combo.configure(state="disabled")
-        self.run_button.configure(state="disabled")
-        self.report_button.configure(state="disabled")
+        self._invalidate_results()
+        self.calculation_running = True
+        self.has_calculation_run = True
+        self._update_input_controls()
         self.progress.start(10)
 
         worker = threading.Thread(
             target=self._calculation_worker,
             args=(
                 self.selected_file,
-                self.selected_raw_file,
-                self.selected_raw_sheet.get(),
-                self.sensor_mappings,
-                assembled_path,
+                raw_file_path,
+                self.selected_raw_sheet.get() if importing else "",
+                self.sensor_mappings if importing else None,
                 gas_tariff,
                 electricity_tariff,
                 electricity_cost,
+                self.chart_events,
+                station.id,
+                turbine.number,
+                self.book_setup,
             ),
             daemon=True,
         )
@@ -769,30 +894,76 @@ class CalculationApp(tk.Tk):
         raw_file_path: Path | None,
         raw_sheet: str,
         mappings: list[SensorMapping] | None,
-        assembled_path: Path | None,
         gas_tariff: float,
         electricity_tariff: float,
         electricity_cost: float,
+        chart_events: tuple[ChartEvent, ...] = (),
+        station_id: str | None = None,
+        turbine_number: str | None = None,
+        book_setup=None,
     ):
         writer = QueueWriter(self.output_queue)
         calculation_started = None
 
         try:
             with contextlib.redirect_stdout(writer), contextlib.redirect_stderr(writer):
+                station = self.station_repository.get_station(station_id)
+                print(f"ТЭЦ: {station.name}")
                 print(f"Выбран файл: {file_path}")
                 print("Лист: Данные")
+
+                selected_turbine = (self.station_repository.get_turbine(station.id, turbine_number)
+                    if turbine_number else self.station_repository.detect_turbine(file_path, station.id))
+                if selected_turbine is None:
+                    raise ValueError("Выберите ГТУ: имя файла не позволяет однозначно определить агрегат.")
+                turbine = selected_turbine.number
+                print(f"ГТУ: {selected_turbine.name}; модель: {selected_turbine.model}")
+                if book_setup is None:
+                    raise ValueError('Подтвердите параметры основной книги перед расчётом.')
+                stat = file_path.stat()
+                if (book_setup.station, book_setup.unit, book_setup.stamp) != (station.id, turbine,
+                        (str(file_path.resolve()), stat.st_mtime_ns, stat.st_size)):
+                    raise ValueError('Основная книга или ГТУ изменились. Повторите проверку параметров.')
+                print(f'Подтверждено: {len(book_setup.bindings)} параметров; '
+                      f'{len(book_setup.recipes)} выражений из выбранной книги.')
+                correction_profile = None
+                passport = resolve_passport(file_path, station.id, turbine)
+                corrections = None
+                if passport is not None:
+                    for entry in passport_entries(passport):
+                        print(f"Паспорт газа: {entry.valid_from or 'весь диапазон'} — {entry.valid_until or 'весь диапазон'}; "
+                              f"ρ = {entry.density_kg_per_nm3:g} кг/нм³; Qнр = {entry.q_lower_mj_per_nm3:g} МДж/нм³; "
+                              f"C/H = {entry.carbon_hydrogen_ratio:.10g} кг C/кг H "
+                              f"({'по составу' if entry.carbon_hydrogen_ratio_method else 'сохранённое значение'}).")
+                    if passport.composition_warning:
+                        print("WARNING: " + passport.composition_warning)
+                elif raw_file_path is not None:
+                    raise ValueError("Нет паспорта газа для выбранной ТЭЦ и ГТ. Заполните его кнопкой «Паспорт газа».")
+                else:
+                    print("Паспорт газа отсутствует: готовые газозависимые колонки книги сохранены. Для их обновления заполните «Паспорт газа».")
+                print('В экспорт войдёт использованный профиль формул и коэффициентов текущей книги.')
 
                 periods_mod.PERIOD_OVERRIDES = []
                 assembled = None
                 if raw_file_path is not None:
+                    validate_recalculation(book_setup)
+                    plan=book_setup.metadata()['calculation_plan']
+                    labels={row['column']:row['header'] or row['column'] for row in book_setup.columns}
+                    for title,key in (('Расчётные параметры','targets'),('Зависимые вспомогательные колонки','dependencies'),
+                                      ('Расчётные колонки без пересчёта','preserved')):
+                        print(title+': '+', '.join(f'{column} — {labels[column]}' for column in plan[key]))
                     print(f"Исходная выгрузка: {raw_file_path.name}, лист: {raw_sheet}")
                     assembled = assemble_sensor_data(
-                        file_path, raw_file_path, raw_sheet, mappings or []
+                        file_path, raw_file_path, raw_sheet, mappings or [],
+                        station_id=station.id, unit=turbine, repository=self.station_repository,
+                        book_setup=book_setup,
                     )
                     print(
                         f"Получасовых строк: {assembled.imported_rows}; "
                         f"совпадений по дате: {assembled.overlap_rows}."
                     )
+                    if assembled.source_diagnostics:
+                        print(f"Отбор выгрузки: {assembled.source_diagnostics}")
                     if assembled.invalid_sensor_values:
                         print(
                             "Нечисловые показания сохранены без подмены: "
@@ -807,22 +978,30 @@ class CalculationApp(tk.Tk):
                             "каналами и не дублируются: "
                             + ", ".join(assembled.verified_duplicate_columns)
                         )
-                    profile = read_calculation_profile(file_path)
-                    calculate_data_columns(assembled, profile)
+                    errors = book_setup.recalculate(assembled.values, passport=passport, changed_dates=assembled.changed_dates)
+                    print(f'Диагностика пересчёта без очистки измерений: {errors}')
                     missing = {
                         column: int(pd.to_numeric(
                             assembled.values[column], errors="coerce"
                         ).isna().sum())
-                        for column in ("R", "AB", "AQ", "AV", "AX")
+                        for column in [row['column'] for key,row in book_setup.bindings.items()
+                                       if key in ('eta_compressor','power','fuel','fuel_specific')]
                     }
                     print(
                         "Строки без расчётного значения "
                         "(в том числе остановы и X): "
                         + ", ".join(f"{column} — {count}" for column, count in missing.items())
                     )
-                    source = load_source_data(assembled.as_headered_frame())
+                    source = book_setup.canonical(assembled.values)
+                    data_for_export = assembled
                 else:
-                    source = load_source_data(file_path, "Данные")
+                    data_for_export = read_data_sheet(file_path)
+                    layout = read_layout(file_path)
+                    export_headers=book_setup.import_headers(layout.headers)
+                    data_for_export.apply_headers(export_headers)
+                    source = book_setup.canonical(layout.values)
+                    print('Готовые производные значения основной книги используются без замены формулами другой ГТУ.')
+                print(f'Проверка исходных данных без очистки: {book_setup.audit(source)}')
                 rh_data = prepare_rh_data(source)
                 vna_data = prepare_vna_data(source)
 
@@ -830,6 +1009,9 @@ class CalculationApp(tk.Tk):
                 print("=" * 78)
                 print("ПРЕДПРОСМОТР АВТОМАТИЧЕСКОЙ РАЗБИВКИ ПЕРИОДОВ")
                 print("=" * 78)
+                print(f"Периоды: измеренная мощность N > {periods_mod.LOW_POWER:g} МВт; "
+                      f"долгий останов — {periods_mod.GAP_SIZE} получасовых записей, "
+                      f"подтверждение пуска — {periods_mod.WORK_CONFIRM_SIZE}.")
                 # В предпросмотре нужны только даты и график. Полный RH
                 # печатает таблицы границ, которые после ручной правки
                 # остаются в логе рядом с окончательными и путают их.
@@ -858,7 +1040,23 @@ class CalculationApp(tk.Tk):
                         f"Используем {len(periods_mod.PERIOD_OVERRIDES)} "
                         "периодов, заданных вручную."
                     )
+                    full_rows = len(source)
+                    source = periods_mod.select_period_data(source, periods_mod.PERIOD_OVERRIDES)
+                    if source.empty:
+                        raise ValueError('В выбранных интервалах нет данных. Проверьте даты периодов.')
+                    # Keep the full export history and the original time counters.
+                    # Every downstream analysis/plot receives this same date scope.
+                    rh_data = prepare_rh_data(source)
+                    vna_data = prepare_vna_data(source)
+                    event_mask = periods_mod.period_selection_mask(
+                        [event.date for event in chart_events], periods_mod.PERIOD_OVERRIDES,
+                    )
+                    chart_events = tuple(event for event, keep in zip(chart_events, event_mask) if keep)
+                    print(f'Отбор по выбранным интервалам: {len(source)} из {full_rows} строк; '
+                          'история листа «Данные» в Excel сохраняется полностью.')
                     _, corrected_periods = periods_mod.build_periods(rh_data)
+                    if corrected_periods.empty:
+                        raise ValueError('В выбранных интервалах нет рабочих записей. Проверьте даты периодов.')
                     corrected_figure = plot_pressure_drops(
                         rh_data,
                         corrected_periods,
@@ -870,6 +1068,13 @@ class CalculationApp(tk.Tk):
                     print()
                     print("Используем автоматическую разбивку периодов.")
 
+                if passport is not None:
+                    # Apply analytical gas values to the accepted date scope.
+                    # Import formulas were prepared earlier with their full context.
+                    source["q_lower"] = gas_values(passport, source["date"])["q_lower_mj_per_nm3"]
+                    rh_data = prepare_rh_data(source)
+                    vna_data = prepare_vna_data(source)
+
                 print()
                 print("=" * 78)
                 print("РАСЧЁТ ВНА")
@@ -877,6 +1082,7 @@ class CalculationApp(tk.Tk):
                 vna_df, vna_periods, vna_results, vna_figures = run_vna(
                     data=vna_data,
                     show_plots=False,
+                    period_source=rh_data,
                 )
                 vna_figure = self._build_vna_overview(vna_figures, vna_periods)
                 for figure in vna_figures:
@@ -911,9 +1117,16 @@ class CalculationApp(tk.Tk):
 
                 if assembled is not None:
                     apply_economic_columns(assembled, economics_result)
-                    output_file = save_data_sheet(assembled, assembled_path)
-                    print(f"Собранный лист «Данные» сохранён: {output_file}")
-
+                else:
+                    data_for_export.apply_economic_result(economics_result,book_setup.bindings['date']['column'])
+                sections = collect_result_tables(
+                    rh_periods, output_tables, vna_results, economics_result["table"]
+                )
+                contact_names = ()
+                try:
+                    contact_names = self.station_repository.get_station_information(station.id).contact_names
+                except (ValueError, OSError) as error:
+                    print(f"WARNING: контактные лица ТЭЦ не загружены в Word-контекст: {error}")
                 report_data = build_report_data(
                     source_data=source,
                     rh_data=rh_df,
@@ -926,12 +1139,38 @@ class CalculationApp(tk.Tk):
                     gas_tariff=gas_tariff,
                     electricity_tariff=electricity_tariff,
                     electricity_cost=electricity_cost,
-                    source_file=assembled_path or file_path,
+                    source_file=file_path,
+                    turbine={"name": selected_turbine.name, "number": turbine,
+                             "model": selected_turbine.model, "station_id": station.id},
+                    manual_periods=periods_mod.PERIOD_OVERRIDES or None,
+                    station={"id": station.id, "name": station.name,
+                             "name_genitive": station.name_genitive,
+                             "contact_names": list(contact_names)},
                 )
-                report_data_path = save_report_data(report_data, DEFAULT_DATA_FILE)
+                suffix = "_обновлённые_данные_результаты" if raw_file_path is not None else "_результаты"
+                report_data["gas_passports"] = [entry.to_dict() for entry in passport_entries(passport)] if passport else []
+                snapshot = CalculationSnapshot(
+                    data=data_for_export, sections=sections,
+                    pressure_chart=PressureChartData(
+                        rh_data, rh_periods, output_tables.get("boundary"), chart_events,
+                        degradation_values=vna_df,
+                        degradation_deltas=output_tables.get("delta"),
+                        vna_top10=vna_results,
+                        rh_values=rh_df,
+                        rh_results=rh_results,
+                    ),
+                    report_data=report_data,
+                    input_files=tuple(path.resolve() for path in (file_path, raw_file_path) if path is not None),
+                    filename_stem=f"{file_path.stem}{suffix}",
+                    correction_sheet=corrections, gas_passport=passport,
+                    correction_profile=correction_profile,
+                    book_profile=book_setup.metadata(),
+                    tariffs_station_id=station.id,
+                    station_tariffs=StationTariffs(gas_tariff, electricity_tariff, electricity_cost),
+                )
 
                 pressure_figure = plot_pressure_drops(
-                    rh_df,
+                    rh_data if periods_mod.PERIOD_OVERRIDES else rh_df,
                     rh_periods,
                     show=False,
                 )
@@ -950,8 +1189,7 @@ class CalculationApp(tk.Tk):
                     "delta_table": output_tables.get("delta"),
                     "economics_table": economics_result["table"],
                     "rh_figure": windows_figure,
-                    "report_data_path": report_data_path,
-                    "assembled_path": assembled_path,
+                    "snapshot": snapshot,
                 }))
                 if calculation_started is not None:
                     print(
@@ -961,6 +1199,7 @@ class CalculationApp(tk.Tk):
                 print()
                 print("=" * 78)
                 print("ВСЁ ГОТОВО: расчёт завершён.")
+                print("Проверьте результаты во вкладках. Затем сформируйте Excel и Word кнопками.")
 
         except Exception:
             self.output_queue.put(("error", traceback.format_exc()))
@@ -985,19 +1224,10 @@ class CalculationApp(tk.Tk):
                     self._append_log("\nОШИБКА:\n" + value)
                 elif kind == "finished":
                     self.progress.stop()
-                    self.choose_button.configure(state="normal")
-                    self.raw_button.configure(
-                        state="normal" if self.selected_file else "disabled"
-                    )
-                    self.mapping_button.configure(
-                        state="normal" if self.selected_raw_file else "disabled"
-                    )
-                    self.raw_sheet_combo.configure(
-                        state="readonly" if self.selected_raw_file else "disabled"
-                    )
-                    self.run_button.configure(
-                        state="normal" if self.selected_file else "disabled"
-                    )
+                    self.calculation_running = False
+                    self._update_input_controls()
+                elif kind == "export_finished":
+                    self._show_export_result(value)
         except queue.Empty:
             pass
 
@@ -1137,6 +1367,7 @@ class CalculationApp(tk.Tk):
         for frame in self.tab_frames.values():
             for child in frame.winfo_children():
                 child.destroy()
+        show_empty_states(self)
 
     def _clear_tab(self, key):
         frame = self.tab_frames[key]
@@ -1241,13 +1472,14 @@ class CalculationApp(tk.Tk):
         canvas.bind("<Configure>", match_width)
 
         for index, table in enumerate(results, start=1):
+            period_number = table.attrs.get("period_number", index)
             table = table.drop(columns=["share_percent"], errors="ignore").copy()
             table.insert(3, "│₁", "│")
             table.insert(table.columns.get_loc("eta_1") + 1, "║", "║")
             table.insert(table.columns.get_loc("eta_2") + 1, "│₂", "│")
             ttk.Label(
                 content,
-                text=f"ПЕРИОД {index}: TOP-10 ИНТЕРВАЛОВ VNA",
+                text=f"ПЕРИОД {period_number}: TOP-10 ИНТЕРВАЛОВ VNA",
             ).pack(anchor="w", pady=(8, 4))
             table_frame = ttk.Frame(content)
             table_frame.pack(fill="both", expand=True)
@@ -1304,10 +1536,8 @@ class CalculationApp(tk.Tk):
         return overview
 
     def _show_results(self, results):
-        self.last_report_data_path = results.get("report_data_path")
-        self.report_button.configure(
-            state="normal" if self.last_report_data_path else "disabled"
-        )
+        self.last_result = results["snapshot"]
+        self._update_input_controls()
         self._show_figure("pressure", results.get("pressure_figure"))
         self._show_figure("vna", results.get("vna_figure"))
         self._show_table("boundary", results.get("boundary_table"))
@@ -1315,28 +1545,99 @@ class CalculationApp(tk.Tk):
         self._show_table("delta", results.get("delta_table"))
         self._show_table("economics", results.get("economics_table"))
         self._show_figure("rh", results.get("rh_figure"))
+        snapshot = self.last_result
+        if snapshot.station_tariffs is not None:
+            try:
+                self.station_repository.save_tariffs(snapshot.tariffs_station_id, snapshot.station_tariffs)
+                self._append_log('Тарифы сохранены для ТЭЦ завершённого расчёта.\n')
+            except (OSError, ValueError) as error:
+                self._append_log(f'Расчёт завершён, но тарифы не сохранены: {error}\n')
+                messagebox.showwarning('Тарифы не сохранены',
+                    f'Результаты расчёта доступны, но сохранить тарифы не удалось.\n{error}', parent=self)
+
+    def generate_excel_report(self):
+        self._start_export("Excel")
 
     def generate_word_report(self):
-        """Рендерит активный шаблон из JSON последнего расчёта."""
+        self._start_export("Word")
 
-        data_path = self.last_report_data_path or DEFAULT_DATA_FILE
-        try:
-            output = generate_report_from_json(
-                data_path,
-                template_path=DEFAULT_TEMPLATE,
-                output_path=DEFAULT_REPORT_DIR / "report.docx",
+    def _start_export(self, kind):
+        if self.calculation_running or self.export_running:
+            return
+        snapshot = self.last_result
+        if snapshot is None:
+            messagebox.showinfo(
+                "Сначала выполните расчёт",
+                "Документы формируются после успешного расчёта выбранных данных.", parent=self,
             )
+            return
+        suffix = ".xlsx" if kind == "Excel" else ".docx"
+        initialdir = DEFAULT_REPORT_DIR
+        try:
+            initialdir.mkdir(parents=True, exist_ok=True)
+        except OSError as error:
+            messagebox.showerror("Не удалось открыть папку результатов", str(error), parent=self)
+            return
+        output_name = filedialog.asksaveasfilename(
+            title=f"Куда сохранить {kind}", initialdir=str(initialdir),
+            initialfile=f"{snapshot.filename_stem}{suffix}",
+            defaultextension=suffix,
+            filetypes=[("Книга Excel", "*.xlsx")] if kind == "Excel" else [("Документ Word", "*.docx")],
+        )
+        if not output_name:
+            return
+        path = Path(output_name)
+        try:
+            snapshot.validate_destination(path, suffix)
+        except ValueError as error:
+            messagebox.showerror("Выберите другой файл", str(error), parent=self)
+            return
+        self.export_running = True
+        self._update_input_controls()
+        self.progress.start(10)
+        self._append_log(f"\nФормирование {kind}: {path}\n")
+        threading.Thread(
+            target=self._export_worker, args=(snapshot, path, kind), daemon=True,
+        ).start()
+
+    def _export_worker(self, snapshot, path, kind):
+        result = {"kind": kind, "path": path, "error": None}
+        try:
+            if kind == "Excel":
+                save_result_workbook(
+                    snapshot.data, snapshot.sections, path,
+                    pressure_chart=snapshot.pressure_chart,
+                    correction_sheet=snapshot.correction_sheet,
+                    gas_passport=snapshot.gas_passport,
+                    correction_profile=snapshot.correction_profile,
+                    book_profile=snapshot.book_profile,
+                )
+            else:
+                generate_report(snapshot.report_data, template_path=DEFAULT_TEMPLATE, output_path=path)
         except Exception as error:
-            messagebox.showerror(
-                "Ошибка формирования Word",
-                str(error),
-                parent=self,
+            result["error"] = str(error)
+            result["traceback"] = traceback.format_exc()
+        self.output_queue.put(("export_finished", result))
+
+    def _show_export_result(self, result):
+        self.export_running = False
+        self.progress.stop()
+        self._update_input_controls()
+        kind = result["kind"]
+        if result["error"] is not None:
+            self._append_log(f"\nОшибка формирования {kind}:\n{result['traceback']}\n")
+            messagebox.showerror(f"Ошибка формирования {kind}", result["error"], parent=self)
+            return
+        path = result["path"].resolve()
+        self._append_log(f"{kind} сохранён: {path}\n")
+        if result.get("warnings"):
+            messagebox.showwarning(
+                f"{kind} сохранён с замечаниями",
+                f"Файл сохранён:\n{path}\n\n" + "\n".join(result["warnings"]), parent=self,
             )
             return
         messagebox.showinfo(
-            "Word-отчёт сформирован",
-            f"Файл сохранён:\n{output.resolve()}",
-            parent=self,
+            f"{kind} сформирован", f"Файл сохранён:\n{path}", parent=self,
         )
 
 

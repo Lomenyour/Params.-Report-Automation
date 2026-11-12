@@ -257,8 +257,11 @@ powershell -NoProfile -File .\build_gui.ps1
 из PATH процесса PyInstaller: Qt использует системную ICU Windows.
 Это предотвращает подхват несовместимой DLL и не меняет PATH пользователя.
 Скрипт обновляет только тестовую сборку. Текущие исходники находятся в `scr/`;
-`app/src/` — отдельная копия для прежней поставки коллеге, её обновление
-выполняется отдельно. Подробнее: [BUILD_VARIANTS.md](BUILD_VARIANTS.md).
+`app/src/` синхронизируется при подготовке поставки коллеге. Полный пакет
+включает EXE, `_internal`, справочники и Word-шаблоны; передаётся одним
+`app/delivery/GTU_Report_for_colleague.zip`. Для подготовки после проверки
+Rotor Test: `app/build_app.ps1 -UseVerifiedTest` (без ключа сначала выполняется
+сборка Rotor Test). Подробнее: [BUILD_VARIANTS.md](BUILD_VARIANTS.md).
 
 ## Проверки и документация
 

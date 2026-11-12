@@ -19,6 +19,9 @@ import numpy as np
 import pandas as pd
 from docxtpl import DocxTemplate
 from jinja2 import Environment, StrictUndefined
+from project_paths import OUTPUT_DIR
+from data_loader import RECORD_HOURS
+from periods import period_bounds, select_period_data
 
 
 if getattr(sys, "frozen", False):
@@ -41,7 +44,7 @@ DEFAULT_TEMPLATE_DIR = (
     else _bundle_root / "word_auto" / "templates"
 )
 DEFAULT_TEMPLATE = DEFAULT_TEMPLATE_DIR / "template_mapped.docx"
-DEFAULT_REPORT_DIR = ROOT / "word_auto" / "reports"
+DEFAULT_REPORT_DIR = OUTPUT_DIR
 DEFAULT_DATA_FILE = ROOT / "data" / "report_runs" / "latest.json"
 NOMINAL_VNA_PERCENT = 80.0
 
@@ -175,6 +178,7 @@ def _boundary_context(row: Any) -> dict[str, str]:
         "date_short": _date_value(_get(row, "дата"), short=True),
         "vlo_pa": _number(_get(row, "ВЛО"), 1),
         "fgo_pa": _number(_get(row, "ФГО"), 1),
+        "fso_pa": _number(_get(row, "ФСО"), 1),
         "fto_pa": _number(_get(row, "ФТО"), 1),
         "fgo_fto_pa": _number(_get(row, "ФГО+ФТО"), 1),
         "vna_percent": _number(_get(row, "ВНА"), 1),
@@ -182,6 +186,12 @@ def _boundary_context(row: Any) -> dict[str, str]:
         "b_priv": _number(_get(row, "bприв"), 3),
         "power_n_mw": _number(_get(row, "N"), 3),
     }
+
+
+def _pressure_delta_context(values: dict | None) -> dict[str, str]:
+    """Разности перепадов в Па; пропуски не превращаются в нули."""
+    return {key: _number(_get(values, key), 1)
+            for key in ("vlo_pa", "fgo_pa", "fso_pa", "fto_pa", "fgo_fto_pa")}
 
 
 def _delta_context(row: Any) -> dict[str, Any]:
@@ -295,6 +305,23 @@ def _last_numeric(data: Any, column: str) -> float | None:
     return float(values.iloc[-1])
 
 
+def _source_date_range(source_data: pd.DataFrame | None) -> tuple[str, str, int]:
+    """Крайние даты всех строк с корректной датой, до фильтрации периодов."""
+
+    if source_data is None or "date" not in source_data.columns:
+        return "—", "—", 0
+    dates = pd.to_datetime(source_data["date"], errors="coerce")
+    invalid_rows = int(dates.isna().sum())
+    valid = dates.dropna()
+    if valid.empty:
+        return "—", "—", invalid_rows
+    return (
+        _date_value(valid.min(), short=True),
+        _date_value(valid.max(), short=True),
+        invalid_rows,
+    )
+
+
 def _economics_total(table: pd.DataFrame | None) -> Any:
     if table is None or table.empty:
         return None
@@ -303,6 +330,22 @@ def _economics_total(table: pd.DataFrame | None) -> Any:
         if not totals.empty:
             return totals.iloc[-1]
     return table.iloc[-1]
+
+
+def _station_context(record=None) -> dict[str, Any]:
+    """Keep station text in the snapshot; old JSON needs no live catalog lookup."""
+    values = dict(record or {})
+    names = values.get("contact_names", [])
+    if not isinstance(names, (list, tuple)) or any(not isinstance(name, str) for name in names):
+        raise ValueError("Поле station.contact_names должно быть списком имён.")
+    names = list(names)
+    return {
+        "id": values.get("id") or "",
+        "name": values.get("name") or "",
+        "name_genitive": values.get("name_genitive") or "",
+        "contact_names": names,
+        "contact_persons": "; ".join(names) if names else values.get("contact_persons") or "",
+    }
 
 
 def build_report_data(
@@ -319,9 +362,16 @@ def build_report_data(
     electricity_tariff: float,
     electricity_cost: float,
     source_file: str | Path | None = None,
+    turbine: dict[str, str] | None = None,
+    manual_periods=None,
+    station: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Собирает JSON-контекст после финального выбора периодов."""
 
+    if manual_periods:
+        if source_data is not None:
+            source_data = select_period_data(source_data, manual_periods)
+        rh_data = select_period_data(rh_data, manual_periods)
     periods: list[dict[str, Any]] = []
     vna_results = vna_results or []
     vna_by_period = {}
@@ -352,6 +402,10 @@ def build_report_data(
             "boundary": {
                 "start": _boundary_context(start),
                 "end": _boundary_context(end),
+                "delta": _pressure_delta_context(
+                    boundary_table.attrs.get("pressure_deltas_pa", {}).get(index)
+                    if boundary_table is not None else None
+                ),
             },
             "deltas": _delta_context(delta),
             "vna_top1": _vna_top_context(
@@ -359,10 +413,21 @@ def build_report_data(
             ),
         })
 
+    data_start_date, data_end_date, invalid_date_rows = _source_date_range(source_data)
+    if invalid_date_rows:
+        print(
+            f"WARNING: {invalid_date_rows} строк без корректной даты не вошли "
+            "в диапазон дат Word-отчёта."
+        )
     input_total = _last_numeric(source_data, "hours_input")
     if input_total is None:
         input_total = _last_numeric(rh_data, "hours_input")
     calculated_total = _last_numeric(rh_data, "hours")
+    if manual_periods:
+        # Source counters remain cumulative in the full-history Excel. They
+        # cannot represent hours of a disjoint manual selection in the report.
+        input_total = len(source_data) * RECORD_HOURS if source_data is not None else None
+        calculated_total = len(rh_data) * RECORD_HOURS
     total_row = _economics_total(economics_result.get("table"))
     annualized = economics_result.get("annualized") or {}
     weighted = (
@@ -370,14 +435,37 @@ def build_report_data(
     ) or {}
     vna_threshold = economics_result.get("vna_threshold")
     power_threshold = nominal_hours.get("power_threshold")
+    if economics_result.get('method') == 'period_thresholds_half_hour_v2':
+        power_threshold = economics_result.get('power_threshold')
     if power_threshold is None:
         power_threshold = economics_result.get("power_threshold")
+    economic_periods = [{
+        'number': int(row['Период']),
+        'power_threshold_mw': _number(row.get('Порог Nприв, МВт'), 1),
+        'vna_threshold_percent': _number(row.get('Порог ВНА, %'), 1),
+        'underproduction_hours': _number(row.get('Учтено для недовыработки, ч'), 1),
+        'fuel_hours': _number(row.get('Учтено для перерасхода, ч'), 1),
+        'status': row.get('Статус расчёта', ''),
+    } for row in economics_result.get('periods', [])]
+    thresholds_description = '; '.join(
+        f'период {row["number"]}: Nприв ≥ {row["power_threshold_mw"]} МВт, '
+        f'ВНА ≥ {row["vna_threshold_percent"]} %' for row in economic_periods)
+    annual_hours = economics_result.get('annualization_hours') or {}
 
     return {
         "schema_version": "1.1",
+        "station": _station_context(station),
+        "turbine": dict(turbine or {"name": "", "number": "", "model": ""}),
         "source": {
             "file_name": Path(source_file).name if source_file else "",
             "generated_at": datetime.now().isoformat(timespec="seconds"),
+            "data_start_date": data_start_date,
+            "data_end_date": data_end_date,
+            "invalid_date_rows": invalid_date_rows,
+            **({"selection_mode": "manual", "selected_intervals": [
+                {"start": start.isoformat(), "end": end.isoformat()}
+                for start, end in period_bounds(manual_periods)
+            ]} if manual_periods else {}),
         },
         "period_count": len(periods),
         "tariffs": {
@@ -395,6 +483,15 @@ def build_report_data(
         },
         "periods": periods,
         "economics": {
+            'method': economics_result.get('method', 'legacy'),
+            'periods': economic_periods,
+            'thresholds_description': ('Пороги: ' + thresholds_description + '.') if thresholds_description else '',
+            'method_note': 'Годовые значения рассчитаны по учтённым часам соответствующего режима.' if annual_hours else
+                'В сохранённом расчёте нет сведений о местных порогах и учтённых часах; требуется перерасчёт.',
+            'annualization_hours': {
+                'underproduction': _number(annual_hours.get('underproduction'), 1),
+                'fuel': _number(annual_hours.get('fuel'), 1),
+            },
             "power_threshold_mw": _number(power_threshold, 1),
             "vna_threshold_percent": _number(vna_threshold, 1),
             "vna_nominal_threshold_percent": _number(NOMINAL_VNA_PERCENT, 0),
@@ -446,6 +543,7 @@ def load_report_data(json_path: str | Path) -> dict[str, Any]:
         data = json.load(stream)
     if not isinstance(data, dict):
         raise ValueError("Корень JSON с данными отчёта должен быть объектом.")
+    data["station"] = _station_context(data.get("station"))
     periods = data.get("periods", [])
     if not isinstance(periods, list):
         raise ValueError("Поле periods в JSON должно быть массивом.")
@@ -505,12 +603,21 @@ def generate_report(
         keep_trailing_newline=True,
     )
     context = dict(report_data)
+    economic = context['economics'] = dict(context.get('economics') or {})
+    economic.setdefault('thresholds_description', '')
+    economic.setdefault('method_note', 'Для местных порогов и годовых часов требуется перерасчёт сохранённых данных.')
+    economic.setdefault('annualization_hours', {'underproduction': '—', 'fuel': '—'})
+    context["station"] = _station_context(context.get("station"))
+    context.setdefault("turbine", {"name": "", "number": "", "model": ""})
     # Дата относится к моменту формирования Word, а не к запуску расчёта.
     context["current_date"] = datetime.now().strftime("%d.%m.%Y")
     periods = context.get("periods", [])
     if isinstance(periods, list) and not isinstance(periods, PeriodCollection):
         context["periods"] = PeriodCollection(periods)
     for period in context["periods"]:
+        period.setdefault("boundary", {}).setdefault("delta", _pressure_delta_context(None))
+        for point in ('start','end','delta'):
+            period['boundary'].setdefault(point,{}).setdefault('fso_pa','—')
         deltas = period.get("deltas", {})
         if "show_no_degradation_text" not in deltas:
             values = (deltas.get("n_priv"), deltas.get("b_priv"))

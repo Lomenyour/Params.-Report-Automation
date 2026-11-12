@@ -1,0 +1,875 @@
+"""Адаптер существующего сценария к Qt/HTML. Расчётные функции не копируются."""
+from __future__ import annotations
+
+import base64
+import inspect
+import io
+import json
+from pathlib import Path
+import queue
+import threading
+import time
+import traceback
+import types
+
+from PySide6.QtCore import QCoreApplication, QEventLoop, QObject, QThread, QTimer, Signal, Slot
+from PySide6.QtWidgets import QFileDialog, QMessageBox
+from matplotlib.backends.backend_agg import FigureCanvasAgg
+
+import app as workflow
+import chart_events_ui as events_ui
+from chart_events import format_chart_events
+from station_profiles import sensor_target_columns, unit_number
+from ui_theme import RESULT_TABS
+from gas_passport_ui import passport_fields, passport_from_fields, history_rows, history_from_rows
+from gas_composition import ch_model
+from parameter_mapping import parameter_targets, PRESSURE_UNITS, UNIT_CATALOG, canonical_unit
+from correction_profiles_ui import correction_groups, profile_from_fields
+from workbook_mapping_ui import dialog_payload, corrections_payload, merge_mapping_rows, formula_view
+from workbook_profile import confirm as confirm_book
+from compressor_degradation_chart import (
+    prepare_compressor_plots, selected_compressor_pairs, compressor_pair_point_counts,
+)
+from compressor_preview import render_compressor_preview
+from pressure_probe import pressure_probe_payload
+
+
+# Это те же code objects, что и у проверенного сценария. Меняется только
+# окружение UI: диалоги и переменные вместо Tkinter общаются с Qt WebChannel.
+WORKFLOW_METHODS = (
+    "_invalidate_results", "_update_input_controls", "_apply_station",
+    "_on_station_changed", "_selected_turbine", "_on_unit_changed", "_on_mode_changed", "_on_raw_sheet_changed",
+    "clear_raw_file", "choose_file", "review_chart_events", "_clear_mapping",
+    "review_book_mapping", "_ensure_book_mapping",
+    "choose_raw_file", "review_mapping", "start_calculation", "_parse_tariff",
+    "_calculation_worker", "_poll_output", "_periods_text", "_format_cell", "review_gas_passport", "review_corrections",
+    "_build_vna_overview", "_show_results", "generate_excel_report",
+    "generate_word_report", "_start_export", "_export_worker", "_show_export_result",
+)
+
+
+def reuse_function(function, replacements):
+    """Сохраняет байткод и defaults; подменяет только зависимости представления."""
+    context = dict(function.__globals__)
+    context.update(replacements)
+    result = types.FunctionType(function.__code__, context, function.__name__,
+                                function.__defaults__, function.__closure__)
+    result.__kwdefaults__ = function.__kwdefaults__
+    return result
+
+
+class Value:
+    def __init__(self, value="", changed=lambda: None):
+        self.value, self.changed, self.traces = str(value), changed, []
+
+    def get(self):
+        return self.value
+
+    def set(self, value):
+        self.value = str(value)
+        for callback in self.traces:
+            callback("", "", "write")
+        self.changed()
+
+    def trace_add(self, _mode, callback):
+        self.traces.append(callback)
+
+
+class Control:
+    """Небольшая модель состояния прежнего виджета, без второго окна Tk."""
+    def __init__(self, changed=lambda: None, **attributes):
+        self.attributes = attributes
+        self.changed = changed
+
+    def configure(self, **attributes):
+        self.attributes.update(attributes)
+        self.changed()
+
+    def __getitem__(self, name):
+        return self.attributes[name]
+
+    def pack(self, **_options):
+        self.configure(visible=True)
+
+    def pack_forget(self):
+        self.configure(visible=False)
+
+    def start(self, _interval):
+        self.configure(active=True)
+
+    def stop(self):
+        self.configure(active=False)
+
+
+class Selection:
+    def __init__(self, controller):
+        self.controller = controller
+        self.key = "pressure"
+
+    def select(self, key=None):
+        if key is not None:
+            self.key = key
+            self.controller.changed()
+        return self.key
+
+
+class FileDialogs:
+    def __init__(self, window):
+        self.window = window
+
+    @staticmethod
+    def _filters(options):
+        return ";;".join(f"{title} ({patterns})" for title, patterns in options["filetypes"])
+
+    def askopenfilename(self, **options):
+        return QFileDialog.getOpenFileName(self.window, options["title"],
+                                           options.get("initialdir", ""), self._filters(options))[0]
+
+    def asksaveasfilename(self, **options):
+        dialog = QFileDialog(self.window, options["title"], options.get("initialdir", ""))
+        dialog.setAcceptMode(QFileDialog.AcceptMode.AcceptSave)
+        dialog.setNameFilter(self._filters(options))
+        dialog.setDefaultSuffix(options.get("defaultextension", "").lstrip("."))
+        dialog.selectFile(options.get("initialfile", ""))
+        return dialog.selectedFiles()[0] if dialog.exec() else ""
+
+
+class Messages:
+    def __init__(self, window):
+        self.window = window
+
+    def showerror(self, title, text, **_options):
+        QMessageBox.critical(self.window, title, text)
+
+    def showwarning(self, title, text, **_options):
+        QMessageBox.warning(self.window, title, text)
+
+    def showinfo(self, title, text, **_options):
+        QMessageBox.information(self.window, title, text)
+
+
+class Dialog:
+    def __init__(self, controller, payload):
+        self.controller, self.payload = controller, payload
+        self.result = None
+        self.loop = QEventLoop(controller.window)
+
+    def destroy(self):
+        self.controller.dialog = None
+        self.controller.dialog_changed.emit("null")
+        self.loop.quit()
+
+
+class MappingDialog(Dialog):
+    def __init__(self, parent, suggestions, target_headers, source_headers,
+                 verified_duplicates, station_id):
+        super().__init__(parent, {"kind": "mapping", "title": "Соответствие каналов датчиков"})
+        self._target_headers, self._source_headers = target_headers, source_headers
+        self._verified_duplicates = verified_duplicates
+        self._allowed_targets = sensor_target_columns(station_id, parent.station_repository)
+        self._allowed_targets |= set(parameter_targets(target_headers, station_id).values())
+        self._parameter_columns = getattr(parent, 'book_setup', None).sensor_columns if getattr(parent, 'book_setup', None) else {}
+        if self._parameter_columns:
+            self._allowed_targets = set(self._parameter_columns.values())
+        self._suggestions = {item.source: item for item in suggestions}
+        self._station_id = station_id
+        self._unit_rows = {item.source: (Value(canonical_unit(item.source_unit)), Value(canonical_unit(item.target_unit))) for item in suggestions}
+        self._rows = []
+        for suggestion in suggestions:
+            header = target_headers.get(suggestion.target)
+            text = 'Не учитывать' if suggestion.status == 'ignored' else "" if suggestion.status == "deferred" else f"{suggestion.target} — {header}" if suggestion.target and header else suggestion.target
+            self._rows.append((suggestion.source, Value(text), Value(f"{suggestion.factor:.10g}")))
+        self.payload.update(
+            note=getattr(parent, "mapping_source_note", "") + ' Каналы «Не учитывать» не импортируются в расчётную таблицу.',
+            choices=['Не учитывать']+[f"{column} — {header}" for column, header in target_headers.items()
+                     if header and column in self._allowed_targets],
+            pressure_units=PRESSURE_UNITS,
+            unit_catalog=UNIT_CATALOG,
+            rows=[{"source": source, "target": target.get(), "factor": factor.get(), "offset": self._suggestions[source].offset,
+                   "description": getattr(parent, "mapping_channel_info", {}).get(source, {}).get("description", ""),
+                   "declared_unit": getattr(parent, "mapping_channel_info", {}).get(source, {}).get("unit", ""),
+                   "source_unit": self._unit_rows[source][0].get(), "target_unit": self._unit_rows[source][1].get()}
+                  for source, target, factor in self._rows],
+        )
+        self._accept = types.MethodType(reuse_function(
+            workflow.MappingDialog._accept, {"messagebox": parent.messages}), self)
+
+    def accept(self, payload):
+        rows = payload.get("rows", [])
+        if len(rows) != len(self._rows):
+            return
+        for (_, target, factor), values in zip(self._rows, rows):
+            target.set(values.get("target", ""))
+            factor.set(values.get("factor", ""))
+        for (source, _, _), values in zip(self._rows, rows):
+            for field, variable in zip(("source_unit", "target_unit"), self._unit_rows[source]):
+                variable.set(values.get(field, variable.get()))
+        self._accept()
+
+
+class BookMappingDialog(Dialog):
+    def __init__(self,parent,layout,rows,station,unit):
+        super().__init__(parent,dialog_payload(layout,rows))
+        self.layout,self.rows,self.station,self.unit=layout,rows,station,unit
+        self.payload['unit_catalog']=UNIT_CATALOG
+
+    def accept(self,payload):
+        try:
+            rows=merge_mapping_rows(self.layout,self.rows,payload.get('rows',[]))
+            self.result=confirm_book(self.layout,self.station,self.unit,rows,save=False)
+        except (ValueError,KeyError,TypeError) as error:
+            self.controller.messages.showerror('Проверьте основную книгу',str(error))
+            return
+        self.destroy()
+
+
+class BookCorrectionsDialog(Dialog):
+    def __init__(self,parent,setup):
+        super().__init__(parent,corrections_payload(setup))
+        parent.dialog=self
+        parent.dialog_changed.emit(json.dumps(self.payload,ensure_ascii=False))
+
+    def accept(self,payload):
+        self.destroy()
+
+
+class EventsDialog(Dialog):
+    def __init__(self, parent, events, book_name):
+        super().__init__(parent, {"kind": "events", "title": "События на графике",
+                                  "book": book_name, "text": format_chart_events(events)})
+        self.editor = types.SimpleNamespace(get=lambda *_args: self.text)
+        self.text = self.payload["text"]
+        self._apply = types.MethodType(reuse_function(
+            events_ui.ChartEventsDialog._apply, {"messagebox": parent.messages}), self)
+
+    def accept(self, payload):
+        self.text = str(payload.get("text", ""))
+        self._apply()
+
+
+class GasPassportDialog(Dialog):
+    def __init__(self, parent, passport, station_id, unit, station_name):
+        super().__init__(parent, {"kind": "gasPassport", "title": f"Паспорт газа — {station_name} ГТ-{unit}",
+                                  "entries": history_rows(passport), "empty_fields": passport_fields(None),
+                                  'ch_model':ch_model(),
+                                  "warning": passport.composition_warning if passport else ""})
+        self.station_id, self.unit = station_id, unit
+
+    def accept(self, payload):
+        try:
+            self.result = (history_from_rows(payload["entries"], self.station_id, self.unit) if "entries" in payload
+                           else passport_from_fields(payload.get("values", {}), self.station_id, self.unit))
+        except ValueError as error:
+            self.controller.messages.showerror("Паспорт газа", str(error))
+            return
+        self.destroy()
+
+
+class CorrectionDialog(Dialog):
+    def __init__(self, parent, profile, station_id, unit, station_name):
+        super().__init__(parent, {"kind":"corrections", "title":f"Поправки — {station_name} ГТ-{unit}",
+            "groups":correction_groups(profile), "source":profile.source if profile else "Новый профиль",
+            "revision":profile.revision if profile else 0})
+        self.profile, self.station_id, self.unit = profile, station_id, unit
+
+    def accept(self, payload):
+        try:
+            self.result = profile_from_fields(payload.get("values",{}), self.station_id,self.unit,self.profile)
+        except ValueError as error:
+            self.controller.messages.showerror("Поправки",str(error))
+            return
+        self.destroy()
+
+
+class PreviewEvents(QObject):
+    completed = Signal(object)
+
+
+class AlgorithmEvents(QObject):
+    progress = Signal(str)
+    completed = Signal(object)
+
+
+class DesktopController(QObject):
+    state_changed = Signal(str)
+    view_changed = Signal(str)
+    log_changed = Signal(str)
+    dialog_changed = Signal(str)
+
+    def __init__(self, window):
+        super().__init__(window)
+        self.window, self.closed, self.ready = window, False, False
+        self._dirty = False
+        self.views, self.figures, self.logs = {}, {}, ""
+        self._top10_results, self._top10_mode = [], "table"
+        self._compressor_preview_cache, self._compressor_preview_busy = {}, False
+        self._compressor_point_counts, self._compressor_point_counts_key = {}, None
+        self._preview_events = PreviewEvents(self)
+        self._preview_events.completed.connect(self._finish_compressor_previews)
+        self._algorithm_events = AlgorithmEvents(self)
+        self._compressor_algorithm_job = None
+        self._algorithm_events.progress.connect(self._algorithm_progress)
+        self._algorithm_events.completed.connect(self._finish_compressor_algorithm)
+        self.dialog, self.period_request = None, None
+        self.messages, self.files = Messages(window), FileDialogs(window)
+        replacements = {"filedialog": self.files, "messagebox": self.messages,
+                        "MappingDialog": MappingDialog, "ChartEventsDialog": EventsDialog,
+                        "GasPassportDialog": GasPassportDialog, "CorrectionDialog": CorrectionDialog}
+        replacements['BookMappingDialog']=BookMappingDialog
+        replacements['BookCorrectionsDialog']=BookCorrectionsDialog
+        replacements['read_layout']=self._read_layout
+        for name in WORKFLOW_METHODS:
+            descriptor = inspect.getattr_static(workflow.CalculationApp, name)
+            static = isinstance(descriptor, staticmethod)
+            function = descriptor.__func__ if static else descriptor
+            copied = reuse_function(function, replacements)
+            setattr(self, name, copied if static else types.MethodType(copied, self))
+
+        # Те же исходные значения, что у CalculationApp.__init__.
+        self.output_queue = queue.Queue()
+        self.selected_file = self.selected_raw_file = None
+        self.calculation_mode = Value("ready", self.changed)
+        self.calculation_running = self.export_running = self.has_calculation_run = False
+        self.source_book_running = False
+        self.log_viewer = None
+        self.chart_events = ()
+        self.selected_raw_sheet = Value("", self.changed)
+        self.sensor_mappings = self.mapping_sheet = None
+        self.book_setup = None
+        self.figure_views = []
+        self.last_result = None
+        self.station_repository = workflow.get_station_repository()
+        self.stations_by_name = {station.name: station for station in self.station_repository.list_stations()}
+        self.station_var = Value("", self.changed)
+        self.unit_var = Value("", self.changed)
+        self.station_manually_selected = False
+        self.gas_tariff_var = Value("0", self.changed)
+        self.electricity_tariff_var = Value("0", self.changed)
+        self.electricity_cost_var = Value("0", self.changed)
+        names = ("station_combo", "unit_combo", "unit_model_label", "events_button", "choose_button", "raw_button", "mapping_button", "book_mapping_button", "gas_passport_button", "corrections_button",
+                 "clear_raw_button", "raw_sheet_combo", "run_button", "excel_button", "report_button", "source_book_button", "add_station_button",
+                 "raw_label", "file_label", "station_hint", "import_controls", "status_label", "progress")
+        self.controls = {name: Control(self.changed) for name in names}
+        for name, control in self.controls.items():
+            setattr(self, name, control)
+        self.raw_sheet_combo.configure(values=[])
+        self.file_label.configure(text="Файл не выбран")
+        self.station_hint.configure(text="Выберите ТЭЦ или загрузите файл.")
+        self.mode_buttons = [Control(self.changed), Control(self.changed)]
+        self.tariff_entries = [Control(self.changed) for _ in range(3)]
+        self.chart_tabs = Selection(self)
+        self.tab_frames = {key: key for key, _ in RESULT_TABS}
+        for variable in (self.gas_tariff_var, self.electricity_tariff_var, self.electricity_cost_var):
+            variable.trace_add("write", self._invalidate_results)
+        self._update_input_controls()
+        self.after(100, self._poll_output)
+
+    def changed(self):
+        if self.closed or self._dirty:
+            return
+        self._dirty = True
+        QTimer.singleShot(0, self.publish_state)
+
+    def _read_layout(self,path):
+        """Parse large books off the UI thread while keeping inputs immutable."""
+        if QThread.currentThread()!=self.thread():
+            return workflow.read_layout(path)
+        result={}; loop=QEventLoop(self.window); timer=QTimer()
+        self._preparing_book=True
+        states={name:control.attributes.get('state') for name,control in self.controls.items()}
+        for control in self.controls.values():
+            if 'state' in control.attributes: control.configure(state='disabled')
+        self.status_label.configure(text='Чтение параметров и формул книги…');self.progress.start(10)
+        def read():
+            try: result['value']=workflow.read_layout(path)
+            except Exception as error: result['error']=error
+        def poll():
+            if result or self.closed: loop.quit()
+        timer.timeout.connect(poll);timer.start(25)
+        threading.Thread(target=read,daemon=True).start()
+        try: loop.exec()
+        finally:
+            timer.stop();self._preparing_book=False
+            if not self.closed:
+                for name,state in states.items():
+                    if state is not None:self.controls[name].configure(state=state)
+                self.progress.stop();self._update_input_controls()
+        if self.closed: raise RuntimeError('Окно закрыто во время чтения книги.')
+        if 'error' in result: raise result['error']
+        return result['value']
+
+    def publish_state(self):
+        self._dirty = False
+        if self.ready and not self.closed:
+            self.state_changed.emit(json.dumps(self.state(), ensure_ascii=False))
+
+    def state(self):
+        return {
+            "controls": {name: control.attributes for name, control in self.controls.items()},
+            "values": {name: getattr(self, name).get() for name in (
+                "calculation_mode", "selected_raw_sheet", "station_var", "unit_var", "gas_tariff_var",
+                "electricity_tariff_var", "electricity_cost_var")},
+            "stations": list(self.stations_by_name), "tab": self.chart_tabs.key,
+            "file": str(self.selected_file) if self.selected_file else "",
+            "filename": self.selected_file.name if self.selected_file else "",
+            "station": self.station_var.get(), "unit": self.unit_var.get(),
+            "units": self.unit_combo.attributes.get("values", []),
+            "modeDisabled": any(button.attributes.get("state") == "disabled" for button in self.mode_buttons),
+            "tariffsDisabled": any(entry.attributes.get("state") == "disabled" for entry in self.tariff_entries),
+            "running": self.calculation_running, "exporting": self.export_running,
+            "hasResult": self.last_result is not None,
+        }
+
+    def after(self, milliseconds, callback):
+        timer = QTimer(self)
+        timer.setSingleShot(True)
+        def invoke():
+            timer.deleteLater()
+            if not self.closed:
+                callback()
+        timer.timeout.connect(invoke)
+        timer.start(milliseconds)
+        return timer
+
+    def update_idletasks(self):
+        QCoreApplication.processEvents()
+
+    def wait_window(self, dialog):
+        self.dialog = dialog
+        self.dialog_changed.emit(json.dumps(dialog.payload, ensure_ascii=False))
+        dialog.loop.exec()
+
+    def _append_log(self, text):
+        self.logs += text
+        if self.ready:
+            self.log_changed.emit(json.dumps({"append": text}, ensure_ascii=False))
+
+    def _clear_log(self):
+        self.logs = ""
+        if self.ready:
+            self.log_changed.emit(json.dumps({"replace": ""}))
+
+    def _clear_charts(self):
+        if self._compressor_algorithm_job is not None:
+            self._compressor_algorithm_job = None
+            self.calculation_running = False
+            self.progress.stop()
+            self._update_input_controls()
+        self._top10_results, self._top10_mode = [], "table"
+        self._compressor_preview_cache.clear()
+        self._compressor_point_counts.clear()
+        self._compressor_point_counts_key = None
+        for figure in self.figures.values():
+            workflow.plt.close(figure)
+        self.figures.clear()
+        self.views.clear()
+        if self.ready:
+            self.view_changed.emit(json.dumps({"clear": True}))
+
+    def _show_figure(self, key, figure):
+        if figure is None:
+            return
+        if key in self.figures:
+            workflow.plt.close(self.figures[key])
+        self.figures[key] = figure
+        canvas = FigureCanvasAgg(figure)
+        data = io.BytesIO()
+        canvas.print_png(data)
+        payload = {"type": "figure", "src": "data:image/png;base64," + base64.b64encode(data.getvalue()).decode("ascii")}
+        if key == "pressure":
+            payload["probe"] = pressure_probe_payload(figure)
+        self.set_view(key, payload)
+
+    def _table(self, table, key=""):
+        if table is None or table.empty:
+            return {"columns": [], "rows": []}
+        table = workflow.delta_table_for_display(table) if key == "delta" else table.copy()
+        columns = [str(column) for column in table.columns]
+        return {"columns": columns, "rows": [[
+            self._format_cell(value, 2 if key == "delta" and column in ("ΔNприв, %", "Δbприв, %") else 3)
+            for column, value in zip(columns, row)]
+            for row in table.itertuples(index=False, name=None)]}
+
+    def _show_table(self, key, table):
+        self.set_view(key, {"type": "table", **self._table(table, key)})
+
+    def _show_top10_tables(self, results):
+        self._top10_results = results
+        self._refresh_top10_view()
+
+    def _refresh_top10_view(self):
+        tables = []
+        chart = self.last_result.pressure_chart if self.last_result else None
+        choices = (chart.compressor_pair_ranks or {}) if chart is not None else {}
+        if chart is not None:
+            counts_key = (id(chart.degradation_values), id(chart.periods),
+                          tuple(id(table) for table in (chart.vna_top10 or [])))
+            if counts_key != self._compressor_point_counts_key:
+                self._compressor_point_counts = compressor_pair_point_counts(
+                    chart.degradation_values, chart.periods, chart.vna_top10,
+                )
+                self._compressor_point_counts_key = counts_key
+        for index, table in enumerate(self._top10_results, start=1):
+            if table is None or table.empty:
+                continue
+            period = int(table.attrs.get("period_number", index))
+            rank = int(choices.get(period, table.iloc[0].get("rank", 1)))
+            display = table.drop(columns=["share_percent"], errors="ignore").copy()
+            pairs = []
+            for position, (_, row) in enumerate(table.iterrows(), 1):
+                pair_rank = int(row.get("rank", position))
+                points = self._compressor_point_counts.get((period, pair_rank))
+                count_label = str(points) if points is not None else "—"
+                pairs.append({"rank": pair_rank, "points": points,
+                    "label": f"Пара №{pair_rank} · точек: {count_label} · Δдней {self._format_cell(row.get('delta_days'))} · ΔКПД {self._format_cell(row.get('delta_eta'))} п.п."})
+            preview = self._compressor_preview_cache.get((period, rank)) if self._top10_mode == "graphs" else None
+            tables.append({"title": f"Период {period} · ТОП-10 ВНА", "period": period,
+                           "selected_rank": rank, "pairs": pairs, "preview": preview,
+                           **self._table(display)})
+        messages = []
+        if chart is not None and chart.compressor_algorithm == 2:
+            messages = [{'period': int(table.attrs['period_number']),
+                         'text': table.attrs.get('empty_reason') or 'Нет подходящих пар.'}
+                        for table in chart.vna_top10 if table is not None and table.empty]
+        self.set_view("top10", {"type": "vna_top10", "mode": self._top10_mode,
+            "algorithm": chart.compressor_algorithm if chart is not None else 1,
+            "tables": tables, "messages": messages})
+
+    @Slot(str)
+    def _algorithm_progress(self, text):
+        if not self.closed and self._compressor_algorithm_job is not None:
+            self._append_log(text+'\n')
+            self.status_label.configure(text=text)
+
+    def select_compressor_algorithm(self, algorithm):
+        if self.calculation_running or self.export_running or self.last_result is None:
+            return
+        if isinstance(algorithm, bool) or not isinstance(algorithm, int) or algorithm not in (1, 2):
+            self.messages.showerror('ТОП-10 ВНА', 'Номер алгоритма должен быть 1 или 2.')
+            return
+        snapshot = self.last_result
+        chart = snapshot.pressure_chart
+        if chart is None or algorithm == chart.compressor_algorithm:
+            return
+        available = chart.vna_top10_algorithms or {chart.compressor_algorithm: chart.vna_top10}
+        if algorithm in available:
+            self.last_result = snapshot.with_compressor_algorithm(algorithm)
+            self._compressor_preview_cache.clear()
+            self._show_top10_tables(self.last_result.pressure_chart.vna_top10)
+            self._request_compressor_previews()
+            return
+        self.calculation_running = True
+        job = self._compressor_algorithm_job = object()
+        self.progress.start(10)
+        self.status_label.configure(text='ВНА: подбор пар алгоритмом 2…')
+        self._update_input_controls()
+        self._refresh_top10_view()
+
+        def calculate():
+            started = time.perf_counter()
+            result = {'snapshot': snapshot, 'job': job}
+            try:
+                from vna_density import calculate_density_top10
+                result['tables'] = calculate_density_top10(
+                    chart.degradation_values, chart.periods, self._algorithm_events.progress.emit)
+            except Exception as error:
+                result['error'] = str(error)
+            result['seconds'] = time.perf_counter()-started
+            try:
+                self._algorithm_events.completed.emit(result)
+            except RuntimeError:
+                pass
+        threading.Thread(target=calculate, daemon=True).start()
+
+    @Slot(object)
+    def _finish_compressor_algorithm(self, result):
+        if self.closed or result.get('job') is not self._compressor_algorithm_job or self._compressor_algorithm_job is None:
+            return
+        self._compressor_algorithm_job = None
+        self.calculation_running = False
+        self.progress.stop()
+        if result['snapshot'] is self.last_result:
+            if 'error' in result:
+                self.messages.showerror('Алгоритм 2 ТОП-10 ВНА', result['error'])
+            else:
+                self.last_result = self.last_result.with_compressor_algorithm(2, result['tables'])
+                self._compressor_preview_cache.clear()
+                self._show_top10_tables(self.last_result.pressure_chart.vna_top10)
+                self._request_compressor_previews()
+                self._append_log(f'ВНА: алгоритм 2 рассчитан за {result["seconds"]:.3f} с.\n')
+        self.status_label.configure(text='Завершён' if self.last_result else 'Выберите исходную книгу')
+        self._update_input_controls()
+        if self.last_result is not None:
+            self._refresh_top10_view()
+
+    def _request_compressor_previews(self):
+        if self.closed or self._compressor_preview_busy or self._top10_mode != "graphs" or self.last_result is None:
+            return
+        snapshot = self.last_result
+        chart = snapshot.pressure_chart
+        if chart is None:
+            return
+        selected = selected_compressor_pairs(chart.vna_top10, chart.compressor_pair_ranks)
+        missing = [(number, int(row.get("rank", 1))) for number, row in selected.items()
+                   if (number, int(row.get("rank", 1))) not in self._compressor_preview_cache]
+        if not missing:
+            return
+        self._compressor_preview_busy = True
+
+        def render():
+            images = {}
+            try:
+                periods = chart.periods.loc[chart.periods["period"].isin([number for number, _ in missing])]
+                plots = {plot.period: plot for plot in prepare_compressor_plots(
+                    chart.degradation_values, periods, chart.vna_top10, chart.compressor_pair_ranks)}
+                for number, rank in missing:
+                    if self.closed or snapshot is not self.last_result:
+                        break
+                    plot = plots.get(number)
+                    images[number, rank] = ({"src": "data:image/png;base64," +
+                        base64.b64encode(render_compressor_preview(plot)).decode("ascii"),
+                        "points": len(plot.points)} if plot is not None else
+                        {"message": "Для выбранной пары нет измерений, удовлетворяющих условиям графика."})
+            except Exception as error:
+                images = {key: {"message": f"Не удалось подготовить график: {error}"} for key in missing}
+            try:
+                self._preview_events.completed.emit({"snapshot": snapshot, "images": images})
+            except RuntimeError:
+                pass  # The window was destroyed while the independent renderer finished.
+
+        threading.Thread(target=render, daemon=True).start()
+
+    @Slot(object)
+    def _finish_compressor_previews(self, result):
+        self._compressor_preview_busy = False
+        if self.closed:
+            return
+        if result["snapshot"] is self.last_result:
+            self._compressor_preview_cache.update(result["images"])
+        if self.last_result is not None and self._top10_results:
+            self._request_compressor_previews()
+            self._refresh_top10_view()
+
+    def select_compressor_pair(self, period, rank):
+        if self.calculation_running or self.export_running or self.last_result is None:
+            return
+        try:
+            updated = self.last_result.with_compressor_pair(period, rank)
+        except (ValueError, KeyError, TypeError) as error:
+            self.messages.showerror("Пара ТОП-10 ВНА", str(error))
+            return
+        if updated is self.last_result:
+            return
+        self.last_result = updated
+        self._append_log(f"График компрессора: период {period}, пара №{rank}.\n")
+        self._request_compressor_previews()
+        self._refresh_top10_view()
+
+    def set_view(self, key, payload):
+        self.views[key] = payload
+        if self.ready:
+            self.view_changed.emit(json.dumps({"key": key, "view": payload}, ensure_ascii=False))
+
+    def _show_period_choice(self, request):
+        self.period_request = request
+        self.dialog_changed.emit(json.dumps({"kind": "periods", "title": "Проверка периодов",
+            "text": self._periods_text(request["periods_df"])}, ensure_ascii=False))
+
+    def resolve_dialog(self, payload):
+        if self.period_request is not None:
+            request = self.period_request
+            manual = payload.get("action") == "manual"
+            overrides = None
+            if manual:
+                lines = [line.strip() for line in payload.get("text", "").splitlines() if line.strip()]
+                if not lines:
+                    self.messages.showerror("Периоды не заданы", "Введите хотя бы один период или выберите автоматическую разбивку.")
+                    return
+                try:
+                    overrides = workflow.parse_periods_arg("|".join(lines))
+                except ValueError as error:
+                    self.messages.showerror("Ошибка формата дат", str(error))
+                    return
+            request["overrides"] = overrides
+            self.period_request = None
+            self.dialog_changed.emit("null")
+            request["event"].set()
+        elif self.dialog is not None:
+            if payload.get("action") == "cancel":
+                self.dialog.destroy()
+            else:
+                self.dialog.accept(payload)
+
+    @Slot()
+    def connect_ui(self):
+        self.ready = True
+        self.publish_state()
+        for key, view in self.views.items():
+            self.view_changed.emit(json.dumps({"key": key, "view": view}, ensure_ascii=False))
+        self.log_changed.emit(json.dumps({"replace": self.logs}, ensure_ascii=False))
+
+    @Slot(str, str)
+    def action(self, name, data):
+        # Сначала возвращаем управление WebChannel. Иначе вложенное ожидание
+        # диалога держит IPC-вызов открытым, и WebEngine не исполняет ответ JS.
+        self.after(0, lambda: self.dispatch(name, data))
+
+    @Slot(str, result=str)
+    def preview_workbook_formulas(self, text):
+        """Read-only preview of current edits; no file reads or profile writes."""
+        if not isinstance(self.dialog,BookMappingDialog):
+            return json.dumps({'error':'Окно основной книги закрыто.'},ensure_ascii=False)
+        try:
+            rows=merge_mapping_rows(self.dialog.layout,self.dialog.rows,json.loads(text))
+            return json.dumps(formula_view(self.dialog.layout,rows),ensure_ascii=False)
+        except (ValueError,KeyError,TypeError) as error:
+            return json.dumps({'error':str(error)},ensure_ascii=False)
+
+    def dispatch(self, name, data):
+        if self.closed:
+            return
+        if name == "fullLog":
+            self.open_full_log()
+            return
+        if getattr(self,'_preparing_book',False):
+            return
+        payload = json.loads(data or "{}")
+        if name == "dialog":
+            self.resolve_dialog(payload)
+            return
+        if self.dialog is not None or self.period_request is not None:
+            if name == "tab" and self.period_request is not None:
+                self.chart_tabs.select(payload.get("key", "pressure"))
+            return
+        if name == "top10Mode":
+            if payload.get("mode") in ("table", "graphs") and self.last_result is not None:
+                self._top10_mode = payload["mode"]
+                self._request_compressor_previews()
+                self._refresh_top10_view()
+            return
+        if name == "compressorPair":
+            self.select_compressor_pair(payload.get("period"), payload.get("rank"))
+            return
+        if name == 'compressorAlgorithm':
+            self.select_compressor_algorithm(payload.get('algorithm'))
+            return
+        actions = {"file": self.choose_file, "raw": self.choose_raw_file,
+                   "bookMapping": self.review_book_mapping,
+                   "gasPassport": self.review_gas_passport,
+                   "corrections": self.review_corrections,
+                   "clearRaw": self.clear_raw_file, "mapping": self.review_mapping,
+                   "events": self.review_chart_events, "run": self.start_calculation,
+                   "excel": self.generate_excel_report, "word": self.generate_word_report,
+                   "sourceBook": self.generate_source_book, "addStation": self.add_station}
+        guards = {"file": "choose_button", "raw": "raw_button", "clearRaw": "clear_raw_button",
+                  "bookMapping": "book_mapping_button",
+                  "gasPassport": "gas_passport_button",
+                  "corrections": "corrections_button",
+                  "mapping": "mapping_button", "events": "events_button", "run": "run_button",
+                  "excel": "excel_button", "word": "report_button", "sourceBook": "source_book_button", "addStation": "add_station_button"}
+        if name in actions:
+            if self.controls[guards[name]].attributes.get("state") != "disabled":
+                actions[name]()
+        elif name == "tab" and payload.get("key") in self.tab_frames:
+            self.chart_tabs.select(payload["key"])
+        elif name == "value" and not (self.calculation_running or self.export_running):
+            key, value = payload.get("key"), payload.get("value", "")
+            fields = {"station": (self.station_var, self._on_station_changed),
+                      "unit": (self.unit_var, self._on_unit_changed),
+                      "mode": (self.calculation_mode, self._on_mode_changed),
+                      "sheet": (self.selected_raw_sheet, self._on_raw_sheet_changed),
+                      "gas": (self.gas_tariff_var, None), "electricity": (self.electricity_tariff_var, None),
+                      "cost": (self.electricity_cost_var, None)}
+            if key in fields:
+                variable, callback = fields[key]
+                variable.set(value)
+                if callback:
+                    callback()
+
+    def open_full_log(self):
+        from log_viewer import LogViewer
+        if self.log_viewer is None:
+            self.log_viewer = LogViewer(self)
+        self.log_viewer.show()
+        self.log_viewer.raise_()
+        self.log_viewer.activateWindow()
+
+    def add_station(self):
+        if self.calculation_running or self.export_running:
+            return
+        from station_creation_ui import StationCreationDialog
+        dialog = StationCreationDialog(self.window,self.station_repository,
+            alias=self.selected_file.stem if self.selected_file else '',
+            number=unit_number(self.selected_file) or '' if self.selected_file else '')
+        if not dialog.exec() or dialog.created is None:
+            return
+        station,turbine = dialog.created
+        self.stations_by_name = {item.name:item for item in self.station_repository.list_stations()}
+        self.station_combo.configure(values=list(self.stations_by_name))
+        self._apply_station(station,automatic=False)
+        self.unit_var.set(turbine.name)
+        self._on_unit_changed()
+        self._update_input_controls()
+        self._append_log(f'Добавлена ТЭЦ: {station.name}; {turbine.name}, {turbine.model}.\n')
+
+    def generate_source_book(self):
+        if self.calculation_running or self.export_running or self.calculation_mode.get() != 'import':
+            return
+        station = self.stations_by_name.get(self.station_var.get())
+        turbine = self._selected_turbine()
+        if not all((self.selected_file, self.selected_raw_file, self.selected_raw_sheet.get(), station, turbine)):
+            return
+        if not self._ensure_book_mapping():
+            return
+        try:
+            raw_stat = self.selected_raw_file.stat()
+            book_stat = self.selected_file.stat()
+        except OSError as error:
+            self.messages.showerror('Не удалось прочитать входные файлы', str(error))
+            return
+        if (self.sensor_mappings is None or self.mapping_sheet != self.selected_raw_sheet.get()
+                or (raw_stat.st_mtime_ns, raw_stat.st_size) != getattr(self, 'mapping_source_stamp', None)
+                or (book_stat.st_mtime_ns, book_stat.st_size) != getattr(self, 'mapping_book_stamp', None)):
+            if not self.review_mapping():
+                return
+        directory = workflow.DEFAULT_REPORT_DIR
+        try:
+            directory.mkdir(parents=True, exist_ok=True)
+        except OSError as error:
+            self.messages.showerror('Не удалось открыть папку результатов', str(error))
+            return
+        suffix = self.selected_file.suffix.lower()
+        name = self.files.asksaveasfilename(
+            title='Сохранить исходную книгу с новой выгрузкой', initialdir=str(directory),
+            initialfile=f'{self.selected_file.stem}_обновлённая{suffix}', defaultextension=suffix,
+            filetypes=[('Исходная книга Excel', '*' + suffix)])
+        if not name:
+            return
+        from source_workbook import validate_destination
+        try:
+            path = validate_destination(self.selected_file, self.selected_raw_file, name)
+        except (ValueError, OSError) as error:
+            self.messages.showerror('Выберите другой файл', str(error))
+            return
+        self.export_running = self.source_book_running = True
+        self._update_input_controls()
+        self.status_label.configure(text='Сохранение исходной книги через Excel…')
+        self.progress.start(10)
+        self._append_log(f'\nИсходная книга: {path}\n')
+        threading.Thread(target=self._source_book_worker, args=(
+            self.selected_file, self.selected_raw_file, self.selected_raw_sheet.get(),
+            tuple(self.sensor_mappings), path, self.book_setup, station.id, turbine.number), daemon=True).start()
+
+    def _source_book_worker(self, book, source, sheet, mappings, path, setup, station_id, unit):
+        from source_workbook import save_source_workbook
+        result = dict(kind='Excel (исходная книга)', path=path, error=None)
+        try:
+            response = save_source_workbook(book, source, sheet, mappings, path, setup=setup,
+                station_id=station_id, unit=unit, repository=self.station_repository,
+                log=lambda text: self.output_queue.put(('log', text)))
+            result['warnings'] = response.get('warnings', [])
+        except Exception as error:
+            result.update(error=str(error), traceback=traceback.format_exc())
+        finally:
+            self.source_book_running = False
+        self.output_queue.put(('export_finished', result))

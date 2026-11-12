@@ -296,8 +296,9 @@ class WorkbookProfileTests(unittest.TestCase):
         ready=read_data_sheet(self.path);ready.apply_economic_result(losses,'C')
         np.testing.assert_allclose(data.values.O,[10,20,30])
         np.testing.assert_allclose(pd.to_numeric(ready.values.iloc[1:,14]),[10,20,30])
-        self.assertEqual(data.values.P.iloc[1],15)
-        self.assertEqual(ready.values.iat[2,15],15)
+        self.assertEqual(data.values.P.iloc[1],10)
+        self.assertEqual(ready.values.iat[2,15],10)
+        self.assertEqual(data.values.P.iloc[-1],15)
         np.testing.assert_allclose(pd.to_numeric(ready.values.iloc[1:,3]),101)
 
     def test_adding_confirmed_header_to_unnamed_numeric_column_preserves_values(self):

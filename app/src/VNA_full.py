@@ -12,12 +12,13 @@ from CoolProp.CoolProp import PropsSI
 # Разбивка на периоды — общая логика, живёт в scr/periods.py.
 import periods as periods_mod
 from periods import (
+    apply_period_summary,
     build_periods,
     make_periods_display_table,
     parse_periods_arg,
     print_period_overrides_template,
 )
-from data_loader import load_source_data, prepare_vna_data
+from data_loader import load_source_data, prepare_rh_data, prepare_vna_data
 
 
 # Windows-консоль по умолчанию работает в cp1251 и падает на символах
@@ -90,132 +91,8 @@ TOP_INTERVALS = 10
 
 
 # ============================================================
-# ФУНКЦИЯ РАСЧЕТА КПД КОМПРЕССОРА
+# ФУНКЦИЯ РАСЧЕТА КПД ГТУ
 # ============================================================
-
-def calculate_compressor_efficiency(t, p, tkk, pkk):
-    """
-    Расчет изоэнтропического КПД компрессора.
-
-    t   - температура на входе, °C
-    p   - давление на входе, мбар
-    tkk - температура на выходе, °C
-    pkk - давление на выходе, бар
-
-    Возвращает:
-    eta - КПД, %
-    h1  - энтальпия на входе, кДж/кг
-    h2  - реальная энтальпия на выходе, кДж/кг
-    h2s - изоэнтропическая энтальпия на выходе, кДж/кг
-    """
-
-    # --------------------------------------------------------
-    # Перевод единиц
-    # --------------------------------------------------------
-
-    T1 = t + 273.15
-    P1 = p * 100
-
-    T2 = tkk + 273.15
-    P2 = pkk * 1e5
-
-    # --------------------------------------------------------
-    # Проверка точки на физическую корректность
-    #
-    # В данных есть строки останова и переходных режимов:
-    # отрицательные давления, нулевые, либо давление на выходе
-    # НЕ выше входного (машина не сжимает). На таких точках CoolProp
-    # падает или КПД выходит бессмысленным (например, −2167 %).
-    # Такие точки помечаем NaN.
-    # --------------------------------------------------------
-
-    if P1 <= 0 or P2 <= P1:
-
-        return np.nan, np.nan, np.nan, np.nan
-
-    # --------------------------------------------------------
-    # Опорная энтальпия
-    # --------------------------------------------------------
-
-    h0 = PropsSI(
-        "H",
-        "T", 273.15,
-        "P", 101325,
-        "HEOS::Air"
-    )
-
-    # --------------------------------------------------------
-    # Энтальпия на входе
-    # --------------------------------------------------------
-
-    h1 = (
-        PropsSI(
-            "H",
-            "T", T1,
-            "P", P1,
-            "HEOS::Air"
-        )
-        - h0
-    ) / 1000
-
-    # --------------------------------------------------------
-    # Энтальпия на выходе реальная
-    # --------------------------------------------------------
-
-    h2 = (
-        PropsSI(
-            "H",
-            "T", T2,
-            "P", P2,
-            "HEOS::Air"
-        )
-        - h0
-    ) / 1000
-
-    # --------------------------------------------------------
-    # Энтропия на входе
-    # --------------------------------------------------------
-
-    s1 = PropsSI(
-        "S",
-        "T", T1,
-        "P", P1,
-        "HEOS::Air"
-    )
-
-    # --------------------------------------------------------
-    # Изоэнтропическая энтальпия на выходе
-    # --------------------------------------------------------
-
-    h2s = (
-        PropsSI(
-            "H",
-            "S", s1,
-            "P", P2,
-            "HEOS::Air"
-        )
-        - h0
-    ) / 1000
-
-    # --------------------------------------------------------
-    # КПД
-    # --------------------------------------------------------
-
-    denominator = h2 - h1
-
-    if denominator == 0:
-        return np.nan, h1, h2, h2s
-
-    eta = (
-        (h2s - h1)
-        /
-        denominator
-        *
-        100
-    )
-
-    return eta, h1, h2, h2s
-
 
 def calculate_gtu_efficiency(power, fuel, gas_temperature, gas_pressure, q_lower):
     """Считает КПД ГТУ по формуле из книги Excel.
@@ -290,10 +167,14 @@ def load_data(file_path, sheet_name="Данные"):
     return prepare_vna_data(load_source_data(file_path, sheet_name))
 
 
-def run_vna(data, show_plots=True):
+def run_vna(data, show_plots=True, *, period_source=None):
     """Считает ВНА по уже загруженному DataFrame."""
     data = add_gtu_efficiency(data)
-    df, periods_df = build_periods(data)
+    if period_source is None:
+        df, periods_df = build_periods(data)
+    else:
+        _, periods_df = build_periods(period_source)
+        df = apply_period_summary(data, periods_df)
 
     print()
     print("=" * 80)
@@ -330,8 +211,8 @@ def run_vna(data, show_plots=True):
     return df, periods_df, results, figures
 
 
-def _build_pair_result(interval_df, dates, temperatures, pressures,
-                       vna_values, tkk_values, pkk_values, pi_k_values, i, j):
+def _build_pair_result(dates, temperatures, pressures,
+                       vna_values, tkk_values, pi_k_values, eta_values, i, j):
     """Формирует результат для уже найденной допустимой пары точек."""
 
     date1 = pd.Timestamp(dates[i])
@@ -341,26 +222,19 @@ def _build_pair_result(interval_df, dates, temperatures, pressures,
     p1 = pressures[i]
     vna1 = vna_values[i]
     tkk1 = tkk_values[i]
-    pkk1 = pkk_values[i]
     pi_k1 = pi_k_values[i]
 
     t2 = temperatures[j]
     p2 = pressures[j]
     vna2 = vna_values[j]
     tkk2 = tkk_values[j]
-    pkk2 = pkk_values[j]
     pi_k2 = pi_k_values[j]
 
     delta_t = abs(t2 - t1)
     delta_p = abs(p2 - p1)
     delta_days = (date2 - date1).total_seconds() / 86400
 
-    eta1, h1_1, h2_1, h2s_1 = calculate_compressor_efficiency(
-        t1, p1, tkk1, pkk1
-    )
-    eta2, h1_2, h2_2, h2s_2 = calculate_compressor_efficiency(
-        t2, p2, tkk2, pkk2
-    )
+    eta1, eta2 = eta_values[i], eta_values[j]
 
     return {
         "date_1": date1,
@@ -370,9 +244,6 @@ def _build_pair_result(interval_df, dates, temperatures, pressures,
         "tkk_1": tkk1,
         "pi_k_1": pi_k1,
         "eta_1": eta1,
-        "h1_1": h1_1,
-        "h2_1": h2_1,
-        "h2s_1": h2s_1,
         "date_2": date2,
         "t_2": t2,
         "p_2": p2,
@@ -380,9 +251,6 @@ def _build_pair_result(interval_df, dates, temperatures, pressures,
         "tkk_2": tkk2,
         "pi_k_2": pi_k2,
         "eta_2": eta2,
-        "h1_2": h1_2,
-        "h2_2": h2_2,
-        "h2s_2": h2s_2,
         "delta_t": delta_t,
         "delta_p": delta_p,
         "delta_days": delta_days,
@@ -391,9 +259,9 @@ def _build_pair_result(interval_df, dates, temperatures, pressures,
 
 
 def _find_flexible_vna_intervals(df):
-    """Находит пары для всех окон ВНА на сетке 0,1°.
+    """Находит пары для всех окон ВНА на сетке 0,1 п.п.
 
-    Окна имеют ширину от 0,1° до 1,0°. Для каждого окна сохраняется
+    Окна имеют ширину от 0,1 до 1,0 п.п. Для каждого окна сохраняется
     наиболее удалённая по времени допустимая пара. Перекрывающиеся окна
     с разными наборами строк сохраняются, а полностью эквивалентные окна
     объединяются.
@@ -405,7 +273,8 @@ def _find_flexible_vna_intervals(df):
     повторного полного O(n²) поиска для каждого из тысяч окон.
     """
 
-    interval_df = df.sort_values("date").reset_index(drop=True)
+    # 100 belongs to no [lower, upper) window ending at 100.
+    interval_df = df.loc[df["vna"].ge(0) & df["vna"].lt(100)].sort_values("date").reset_index(drop=True)
 
     dates = interval_df["date"].to_numpy(dtype="datetime64[ns]")
     date_ns = dates.astype("int64")
@@ -413,17 +282,20 @@ def _find_flexible_vna_intervals(df):
     pressures = interval_df["p"].to_numpy(dtype=float)
     vna_values = interval_df["vna"].to_numpy(dtype=float)
     tkk_values = interval_df["tkk"].to_numpy(dtype=float)
-    pkk_values = interval_df["pkk"].to_numpy(dtype=float)
     pi_k_values = interval_df["pi_k"].to_numpy(dtype=float)
+    eta_values = pd.to_numeric(
+        interval_df["eta_compressor"], errors="coerce",
+    ).to_numpy(dtype=float)
 
     if len(interval_df) < 2:
         return []
 
-    # Каждая точка попадает в десятую долю градуса. Правая граница
+    # Каждая точка попадает в десятую долю процентного пункта. Правая граница
     # интервала открыта, как и в прежнем поиске по гистограмме.
-    vna_cells = np.floor(
-        np.clip(vna_values, 0, 100 - 1e-9) / VNA_INTERVAL_STEP
-    ).astype(int)
+    # Decimal edges must match the actual [lower, upper) graph selection.
+    # floor(86.1 / 0.1) may otherwise put 86.1 into the excluded right edge.
+    vna_edges = np.arange(1001, dtype=float) / 10.0
+    vna_cells = np.searchsorted(vna_edges, vna_values, side="right") - 1
     vna_cells = np.clip(vna_cells, 0, 1000 - 1)
     groups = [np.flatnonzero(vna_cells == cell) for cell in range(1000)]
 
@@ -448,6 +320,37 @@ def _find_flexible_vna_intervals(df):
         pair_heap = []
         active_count = 0
 
+        def push_best_pair(anchor):
+            if not np.isfinite(eta_values[anchor]):
+                return
+            parts = [active_lists[cell] for cell in range(
+                current_start, current_start + width_cells,
+            ) if active_lists[cell]]
+            if not parts:
+                return
+            others = np.asarray([index for part in parts for index in part], dtype=int)
+            valid = (
+                (others != anchor)
+                & (np.round(np.abs(temperatures[others] - temperatures[anchor]), 12) <= MAX_DELTA_T)
+                & (np.round(np.abs(pressures[others] - pressures[anchor]), 12) <= MAX_DELTA_P)
+                & np.isfinite(eta_values[others])
+                # Числа вида 80,8 − 80 не должны обходить строгую границу
+                # 0,8 из-за погрешности двоичного представления float.
+                & (np.round(np.abs(eta_values[others] - eta_values[anchor]), 12) < MAX_DELTA_ETA)
+            )
+            compatible = others[valid]
+            if not compatible.size:
+                return
+            extremes = {
+                int(compatible[np.argmin(date_ns[compatible])]),
+                int(compatible[np.argmax(date_ns[compatible])]),
+            }
+            candidates = []
+            for other in extremes:
+                left, right = sorted((int(anchor), other))
+                candidates.append((-int(date_ns[right] - date_ns[left]), left, right, int(anchor)))
+            heapq.heappush(pair_heap, min(candidates))
+
         def add_cell(cell):
             nonlocal active_count
 
@@ -455,46 +358,7 @@ def _find_flexible_vna_intervals(df):
                 return
 
             for new_index in groups[cell]:
-                # Все точки текущего окна, включая уже добавленные точки
-                # этой же ячейки, являются возможными партнёрами.
-                parts = [
-                    active_lists[current_cell]
-                    for current_cell in range(
-                        current_start,
-                        current_start + width_cells,
-                    )
-                    if active_lists[current_cell]
-                ]
-
-                if parts:
-                    other_indices = np.asarray(
-                        [index for part in parts for index in part],
-                        dtype=int,
-                    )
-                    valid = (
-                        np.abs(temperatures[other_indices] - temperatures[new_index])
-                        <= MAX_DELTA_T
-                    ) & (
-                        np.abs(pressures[other_indices] - pressures[new_index])
-                        <= MAX_DELTA_P
-                    )
-                    valid_indices = other_indices[valid]
-
-                    if valid_indices.size:
-                        # Для максимальной разницы дат достаточно самой
-                        # ранней и самой поздней совместимой точки.
-                        extremes = {
-                            int(valid_indices[np.argmin(date_ns[valid_indices])]),
-                            int(valid_indices[np.argmax(date_ns[valid_indices])]),
-                        }
-                        for other_index in extremes:
-                            left, right = sorted((int(other_index), int(new_index)))
-                            delta_ns = int(date_ns[right] - date_ns[left])
-                            heapq.heappush(
-                                pair_heap,
-                                (-delta_ns, left, right),
-                            )
-
+                push_best_pair(int(new_index))
                 active_flags[new_index] = True
                 active_lists[cell].append(int(new_index))
                 active_count += 1
@@ -521,21 +385,24 @@ def _find_flexible_vna_intervals(df):
                 not active_flags[pair_heap[0][1]]
                 or not active_flags[pair_heap[0][2]]
             ):
-                heapq.heappop(pair_heap)
+                _, left, right, anchor = heapq.heappop(pair_heap)
+                if active_flags[anchor]:
+                    # Партнёр вышел из окна: восстанавливаем следующую
+                    # допустимую пару для оставшейся точки, а не теряем её.
+                    push_best_pair(anchor)
 
             if pair_heap:
-                _, best_i, best_j = pair_heap[0]
-                start_value = current_start * VNA_INTERVAL_STEP
-                end_value = (current_start + width_cells) * VNA_INTERVAL_STEP
+                _, best_i, best_j, _ = pair_heap[0]
+                start_value = current_start / 10.0
+                end_value = (current_start + width_cells) / 10.0
                 pair = _build_pair_result(
-                    interval_df,
                     dates,
                     temperatures,
                     pressures,
                     vna_values,
                     tkk_values,
-                    pkk_values,
                     pi_k_values,
+                    eta_values,
                     best_i,
                     best_j,
                 )
@@ -544,7 +411,7 @@ def _find_flexible_vna_intervals(df):
                     "vna_to": end_value,
                     "vna_interval": f"{start_value:.1f}-{end_value:.1f}",
                     "count": int(active_count),
-                    "share_percent": active_count / len(interval_df) * 100,
+                    "share_percent": active_count / len(df) * 100,
                 })
                 row_signature = tuple(np.flatnonzero(active_flags).tolist())
                 candidate_key = (width_cells, current_start)
@@ -584,7 +451,7 @@ def analyze_period(df, period_number, show_plot=True):
     print(f"Минимум VNA: {df['vna'].min():.3f}")
     print(f"Максимум VNA: {df['vna'].max():.3f}")
 
-    # Обзорная гистограмма остаётся с шагом 1°.
+    # Обзорная гистограмма остаётся с шагом 1 п.п.
     bins = np.arange(0, 101, 1)
     counts, edges = np.histogram(df["vna"], bins=bins)
     distribution = pd.DataFrame({
@@ -621,15 +488,11 @@ def analyze_period(df, period_number, show_plot=True):
     candidates = _find_flexible_vna_intervals(df)
     result_df = pd.DataFrame(candidates)
 
-    if not result_df.empty:
-        candidates_before_eta_filter = len(result_df)
-        result_df = result_df[
-            result_df["delta_eta"] < MAX_DELTA_ETA
-        ].copy()
-        print(
-            f"Фильтр TOP-10: Δη < {MAX_DELTA_ETA:.1f} п.п.; "
-            f"осталось {len(result_df)} из {candidates_before_eta_filter} кандидатов"
-        )
+    print(
+        f"Поиск пар TOP-10: Δt ≤ {MAX_DELTA_T:g} °C, "
+        f"Δp ≤ {MAX_DELTA_P:g} мбар, Δη < {MAX_DELTA_ETA:g} п.п.; "
+        f"найдено {len(result_df)} различных выборок ВНА"
+    )
 
     if result_df.empty:
         print()
@@ -641,11 +504,15 @@ def analyze_period(df, period_number, show_plot=True):
     result_df = result_df.sort_values(
         by=["delta_days", "count", "delta_eta"],
         ascending=[False, False, True],
-    ).head(TOP_INTERVALS).reset_index(drop=True)
+    )
+    # Разные окна могут дать одну длительность. Отбор выполняется до
+    # ограничения TOP-10, на точности итоговой таблицы; порядок прежний.
+    result_df = result_df.loc[
+        ~result_df["delta_days"].round(3).duplicated()
+    ].head(TOP_INTERVALS).reset_index(drop=True)
     result_df.insert(0, "rank", np.arange(1, len(result_df) + 1))
 
-    # Сохраняем прежний состав и порядок полей итоговой таблицы. Внутренние
-    # энтальпии нужны только для расчёта КПД и в отчёт не выводятся.
+    # Сохраняем прежний состав и порядок полей итоговой таблицы.
     result_df = result_df[
         [
             "rank",
@@ -712,12 +579,15 @@ def analyze_period(df, period_number, show_plot=True):
 # ПРОГОН ПО КАЖДОМУ ПЕРИОДУ
 # ============================================================
 
-def main(file_path=None, sheet_name="Данные", data=None):
+def main(file_path=None, sheet_name="Данные", data=None, *, period_source=None):
     if data is None:
         if file_path is None:
             raise ValueError("Не задан файл данных для ВНА.")
-        data = load_data(file_path, sheet_name)
-    return run_vna(data)
+        source = load_source_data(file_path, sheet_name)
+        data = prepare_vna_data(source)
+        if period_source is None:
+            period_source = prepare_rh_data(source)
+    return run_vna(data, period_source=period_source)
 
 
 if __name__ == "__main__":

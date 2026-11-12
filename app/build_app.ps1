@@ -1,18 +1,9 @@
-$ErrorActionPreference = "Stop"
-
-Set-Location $PSScriptRoot
-
-py -m PyInstaller `
-    --noconfirm `
-    --clean `
-    --onefile `
-    --windowed `
-    --name GTU_Report `
-    --paths "$PSScriptRoot\src" `
-    --collect-all CoolProp `
-    --collect-all matplotlib `
-    --collect-all python_calamine `
-    --collect-all openpyxl `
-    "$PSScriptRoot\src\app.py"
-
-Write-Host "Build complete: $PSScriptRoot\dist\GTU_Report.exe"
+param([switch]$UseVerifiedTest)
+$ErrorActionPreference = 'Stop'
+$colleagueRoot = Split-Path -Parent $PSScriptRoot
+if (-not $UseVerifiedTest) {
+    & (Join-Path $colleagueRoot 'build_gui.ps1')
+    if ($LASTEXITCODE -ne 0) { throw 'Rotor Test build failed.' }
+}
+py -B -X utf8 (Join-Path $colleagueRoot 'tools\build_colleague_package.py')
+if ($LASTEXITCODE -ne 0) { throw 'Colleague package verification/build failed.' }

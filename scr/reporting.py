@@ -435,8 +435,22 @@ def build_report_data(
     ) or {}
     vna_threshold = economics_result.get("vna_threshold")
     power_threshold = nominal_hours.get("power_threshold")
+    if economics_result.get('method') == 'period_thresholds_half_hour_v2':
+        power_threshold = economics_result.get('power_threshold')
     if power_threshold is None:
         power_threshold = economics_result.get("power_threshold")
+    economic_periods = [{
+        'number': int(row['Период']),
+        'power_threshold_mw': _number(row.get('Порог Nприв, МВт'), 1),
+        'vna_threshold_percent': _number(row.get('Порог ВНА, %'), 1),
+        'underproduction_hours': _number(row.get('Учтено для недовыработки, ч'), 1),
+        'fuel_hours': _number(row.get('Учтено для перерасхода, ч'), 1),
+        'status': row.get('Статус расчёта', ''),
+    } for row in economics_result.get('periods', [])]
+    thresholds_description = '; '.join(
+        f'период {row["number"]}: Nприв ≥ {row["power_threshold_mw"]} МВт, '
+        f'ВНА ≥ {row["vna_threshold_percent"]} %' for row in economic_periods)
+    annual_hours = economics_result.get('annualization_hours') or {}
 
     return {
         "schema_version": "1.1",
@@ -469,6 +483,15 @@ def build_report_data(
         },
         "periods": periods,
         "economics": {
+            'method': economics_result.get('method', 'legacy'),
+            'periods': economic_periods,
+            'thresholds_description': ('Пороги: ' + thresholds_description + '.') if thresholds_description else '',
+            'method_note': 'Годовые значения рассчитаны по учтённым часам соответствующего режима.' if annual_hours else
+                'В сохранённом расчёте нет сведений о местных порогах и учтённых часах; требуется перерасчёт.',
+            'annualization_hours': {
+                'underproduction': _number(annual_hours.get('underproduction'), 1),
+                'fuel': _number(annual_hours.get('fuel'), 1),
+            },
             "power_threshold_mw": _number(power_threshold, 1),
             "vna_threshold_percent": _number(vna_threshold, 1),
             "vna_nominal_threshold_percent": _number(NOMINAL_VNA_PERCENT, 0),
@@ -580,6 +603,10 @@ def generate_report(
         keep_trailing_newline=True,
     )
     context = dict(report_data)
+    economic = context['economics'] = dict(context.get('economics') or {})
+    economic.setdefault('thresholds_description', '')
+    economic.setdefault('method_note', 'Для местных порогов и годовых часов требуется перерасчёт сохранённых данных.')
+    economic.setdefault('annualization_hours', {'underproduction': '—', 'fuel': '—'})
     context["station"] = _station_context(context.get("station"))
     context.setdefault("turbine", {"name": "", "number": "", "model": ""})
     # Дата относится к моменту формирования Word, а не к запуску расчёта.

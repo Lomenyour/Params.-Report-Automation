@@ -15,7 +15,7 @@ from PySide6.QtWidgets import QApplication, QWidget
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scr'))
 from calculation_snapshot import CalculationSnapshot
-from compressor_degradation_chart import prepare_compressor_plots
+from compressor_degradation_chart import prepare_compressor_plots, compressor_pair_point_counts
 from compressor_preview import compressor_preview_figure
 from desktop_controller import DesktopController
 from pressure_chart import PressureChartData
@@ -60,6 +60,27 @@ def fixture():
 
 
 class PairSelectionTest(unittest.TestCase):
+    def test_candidate_counts_are_filtered_plot_points_not_window_counts(self):
+        chart = fixture().pressure_chart
+        for table in chart.vna_top10:
+            table['count'] = 999
+        values = chart.degradation_values
+        rows = {rank: values.index[values.period.eq(1) &
+                    values.vna.ge(86+rank*.2) & values.vna.lt(86+rank*.2+.1)]
+                for rank in (1, 2, 3)}
+        values.loc[rows[1][0], 'eta_compressor'] = np.nan
+        values.loc[rows[2][0], 'pi_k'] = np.inf
+        values.loc[rows[3], 'pi_k'] = np.nan
+        before = values.copy(deep=True)
+        tables = [table.copy(deep=True) for table in chart.vna_top10]
+        counts = compressor_pair_point_counts(values, chart.periods, chart.vna_top10)
+        self.assertEqual(counts, {(number, rank):
+            ({1: 1, 2: 1, 3: 0}[rank] if number == 1 else 2)
+            for number in (1, 2, 3) for rank in (1, 2, 3)})
+        pd.testing.assert_frame_equal(values, before)
+        for actual, expected in zip(chart.vna_top10, tables):
+            pd.testing.assert_frame_equal(actual, expected)
+
     def test_only_selected_period_changes_and_defaults_are_identical(self):
         original = fixture()
         top10 = [table.copy(deep=True) for table in original.pressure_chart.vna_top10]
@@ -185,6 +206,22 @@ class DesktopPairSelectionTest(unittest.TestCase):
         c.dispatch('compressorPair', json.dumps(dict(period=1, rank=99)))
         self.assertIs(c.last_result, snapshot)
         c.messages.showerror.assert_called_once()
+
+    def test_all_dropdown_counts_are_ready_before_preview_and_cached(self):
+        c = self.controller
+        pairs = [pair for table in c.views['top10']['tables'] for pair in table['pairs']]
+        self.assertEqual([pair['points'] for pair in pairs], [2]*9)
+        self.assertTrue(all('точек: 2' in pair['label'] for pair in pairs))
+        self.assertFalse(c._compressor_preview_cache)
+        with patch('desktop_controller.compressor_pair_point_counts') as recount:
+            c.select_compressor_pair(2, 3)
+            recount.assert_not_called()
+        c._invalidate_results()
+        self.assertFalse(c._compressor_point_counts)
+        self.assertIsNone(c._compressor_point_counts_key)
+        c.last_result = fixture()
+        c._show_top10_tables(c.last_result.pressure_chart.vna_top10)
+        self.assertEqual(len(c._compressor_point_counts), 9)
 
     def test_stale_preview_is_discarded_and_invalidation_resets_selection(self):
         c = self.controller

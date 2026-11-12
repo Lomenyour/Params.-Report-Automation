@@ -26,6 +26,85 @@
   }
   const views = {}, zoom = {}, scrolls = {};
   let backend = null, model = null, selected = 'pressure', dialogPayload = null;
+  let pressureProbeX = null;
+
+  function initializePressureProbe(stage, readoutHost, probe) {
+    if (!probe?.points?.length) return;
+    const points = probe.points;
+    const area = element('div', 'gtu-pressure-probe');
+    const line = element('div', 'gtu-probe-line');
+    line.append(element('span', 'gtu-probe-handle'));
+    const readout = element('output', 'gtu-probe-readout');
+    const [left, top, width, height] = probe.bounds;
+    Object.assign(area.style, {left:`${left*100}%`, top:`${top*100}%`,
+      width:`${width*100}%`, height:`${height*100}%`});
+    area.tabIndex = 0; area.setAttribute('role', 'slider');
+    area.setAttribute('aria-label', 'Обзорная линия: дата, мощность N и ВНА');
+    area.setAttribute('aria-orientation', 'horizontal');
+    area.setAttribute('aria-valuemin', '0');
+    area.setAttribute('aria-valuemax', String(points.length-1));
+    area.title = 'Щелчок или перетаскивание — выбрать дату; ←/→ — соседняя запись';
+    area.append(line); stage.append(area); readoutHost.append(readout);
+    const format = new Intl.NumberFormat('ru-RU', {maximumFractionDigits:3});
+    const number = (value, unit) => Number.isFinite(value) ? `${format.format(value)} ${unit}` : 'нет данных';
+    let index = 0, dragging = null;
+    function lowerBound(x) {
+      let lower = 0, upper = points.length;
+      while (lower < upper) {
+        const middle = (lower+upper) >>> 1;
+        if (points[middle][0] < x) lower = middle+1; else upper = middle;
+      }
+      return lower;
+    }
+    function closest(x) {
+      const right = lowerBound(x);
+      if (!right) return 0;
+      if (right === points.length) return points.length-1;
+      return x-points[right-1][0] <= points[right][0]-x ? right-1 : right;
+    }
+    function select(position) {
+      index = Math.max(0, Math.min(points.length-1, position));
+      index = lowerBound(points[index][0]);
+      const [x, date, power, vna] = points[index];
+      pressureProbeX = x;
+      line.style.left = `${100*(x-probe.x_min)/(probe.x_max-probe.x_min)}%`;
+      readout.textContent = `Дата: ${date} · N: ${number(power, 'МВт')} · ВНА: ${number(vna, '%')}`;
+      readout.dataset.index = String(index);
+      area.setAttribute('aria-valuenow', String(index));
+      area.setAttribute('aria-valuetext', readout.textContent);
+    }
+    function move(event) {
+      const bounds = area.getBoundingClientRect();
+      if (!bounds.width) return;
+      const fraction = Math.max(0, Math.min(1, (event.clientX-bounds.left)/bounds.width));
+      select(closest(probe.x_min+fraction*(probe.x_max-probe.x_min)));
+    }
+    area.onpointerdown = event => {
+      if (event.button !== 0 || dragging !== null) return;
+      event.preventDefault(); area.focus({preventScroll:true});
+      dragging = event.pointerId;
+      try { area.setPointerCapture(event.pointerId); } catch (_error) { /* Synthetic pointer. */ }
+      move(event);
+    };
+    area.onpointermove = event => { if (dragging === event.pointerId) move(event); };
+    area.onpointerup = event => {
+      if (dragging !== event.pointerId) return;
+      move(event); dragging = null;
+      if (area.hasPointerCapture(event.pointerId)) area.releasePointerCapture(event.pointerId);
+    };
+    area.onpointercancel = area.onlostpointercapture = () => { dragging = null; };
+    area.onkeydown = event => {
+      let next = index;
+      if (event.key === 'ArrowLeft') next--;
+      else if (event.key === 'ArrowRight') {
+        do { next++; } while (next < points.length && points[next][0] === points[index][0]);
+      } else if (event.key === 'Home') next = 0;
+      else if (event.key === 'End') next = points.length-1;
+      else return;
+      event.preventDefault(); select(next);
+    };
+    select(closest(pressureProbeX ?? (probe.x_min+probe.x_max)/2));
+  }
   function initializeSidebarResize() {
     const layout = root.querySelector('.gtu-layout');
     const sidebar = byId('settings-panel');
@@ -243,7 +322,9 @@
       viewport._resizeFigure = () => resizePlots.forEach(resize => resize());
       if (!data.tables.length) viewport.append(element('p','gtu-caption','Нет подходящих пар ТОП-10 ВНА.'));
     } else if (data.type === 'figure') {
-      title.append(element('p', '', 'Колесо мыши — масштаб · 100 % — по ширине'));
+      const hasProbe = selected === 'pressure' && data.probe;
+      if (hasProbe) heading.classList.add('gtu-pressure-head');
+      else title.append(element('p', '', 'Колесо мыши — масштаб · 100 % — по ширине'));
       const controls = element('div', 'gtu-row');
       const reset = element('button', 'gtu-action', '100 %');
       reset.type = 'button'; reset.setAttribute('aria-label', 'Вернуть масштаб по ширине');
@@ -253,6 +334,7 @@
       const image = element('img', 'gtu-figure');
       image.alt = titles[selected]; image.draggable = false;
       stage.append(image); viewport.append(stage);
+      if (hasProbe) initializePressureProbe(stage, title, data.probe);
       const key = selected;
       zoom[key] = zoom[key] || 1;
       function resize() { stage.style.width = `${viewport.clientWidth * zoom[key]}px`; label.textContent = `${Math.round(zoom[key] * 100)} %`; }
@@ -693,7 +775,7 @@
     backend.state_changed.connect(json => applyState(JSON.parse(json)));
     backend.view_changed.connect(json => {
       const event = JSON.parse(json);
-      if (event.clear) { Object.keys(views).forEach(key => delete views[key]); Object.keys(scrolls).forEach(key => delete scrolls[key]); renderView(false); }
+      if (event.clear) { pressureProbeX = null; Object.keys(views).forEach(key => delete views[key]); Object.keys(scrolls).forEach(key => delete scrolls[key]); renderView(false); }
       else { views[event.key] = event.view; zoom[event.key] = 1; if (event.key === selected) renderView(); }
     });
     backend.log_changed.connect(json => { const data = JSON.parse(json), log = byId('log'); if ('replace' in data) log.textContent = data.replace; else log.textContent += data.append; log.scrollTop = log.scrollHeight; });

@@ -282,6 +282,12 @@ body.gtu-resizing, body.gtu-resizing * { cursor: col-resize !important; user-sel
 #desktop .gtu-view-viewport { flex: 1; min-height: 0; overflow: auto; overscroll-behavior: contain; }
 #desktop .gtu-figure-stage { position: relative; }
 #desktop .gtu-figure { display: block; width: 100%; height: auto; user-select: none; }
+#desktop .gtu-pressure-head { display:grid; grid-template-columns:minmax(0,1fr) auto; }
+#desktop .gtu-pressure-probe { position:absolute; cursor:crosshair; touch-action:none; user-select:none; }
+#desktop .gtu-pressure-probe:focus-visible { outline:2px solid #2563eb; outline-offset:3px; }
+#desktop .gtu-probe-line { position:absolute; top:0; bottom:0; border-left:2px dashed #111827; pointer-events:none; }
+#desktop .gtu-probe-handle { position:absolute; top:-5px; left:-6px; width:10px; height:10px; border-radius:50%; background:#111827; box-shadow:0 0 0 2px white; }
+#desktop .gtu-probe-readout { display:block; color:var(--gtu-text); font-size:12px; line-height:1.5; font-variant-numeric:tabular-nums; }
 #desktop .gtu-empty { flex: 1; min-height: 0; gap: 14px; padding: 20px 12px; }
 #desktop .gtu-empty > span > svg { width: 26px; height: 26px; color: var(--gtu-sub); }
 #desktop .gtu-empty h3 { font: 400 26px/1.25 Georgia, "Times New Roman", serif; max-width: 100%; }

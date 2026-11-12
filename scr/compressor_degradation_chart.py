@@ -127,6 +127,25 @@ def prepare_compressor_plots(values, periods, top10_results, pair_ranks=None):
     return plots
 
 
+def compressor_pair_point_counts(values, periods, top10_results):
+    """Count every candidate using exactly the GUI/Excel plot selection."""
+    counts = {}
+    if periods is None or periods.empty:
+        return counts
+    for table in top10_results or []:
+        if table is None or table.empty or "period_number" not in table.attrs:
+            continue
+        number = int(table.attrs["period_number"])
+        selected_period = periods.loc[periods["period"] == number]
+        for position, (_, row) in enumerate(table.iterrows(), 1):
+            rank = int(row.get("rank", position))
+            plots = prepare_compressor_plots(
+                values, selected_period, [table], {number: rank},
+            )
+            counts[number, rank] = len(plots[0].points) if plots else 0
+    return counts
+
+
 def _criteria(plot, *, multiline=False):
     eta_lower, eta_upper = sorted((float(plot.top["eta_1"]), float(plot.top["eta_2"])))
     parts = [

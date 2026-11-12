@@ -15,6 +15,7 @@ import matplotlib.pyplot as plt
 # Разбивка на периоды — общая логика, живёт в scr/periods.py,
 # потому что нужна и RH_raschet, и VNA_full.
 import periods as periods_mod
+from pressure_probe import attach_pressure_probe
 from periods import (
     LOW_POWER,
     build_periods,
@@ -587,6 +588,7 @@ def plot_pressure_drops(df, periods_df, show=True):
                 )
 
     fig.tight_layout()
+    attach_pressure_probe(fig, ax, df)
     if show:
         maximize_window()
     if show:

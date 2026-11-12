@@ -26,8 +26,11 @@ from parameter_mapping import parameter_targets, PRESSURE_UNITS, UNIT_CATALOG, c
 from correction_profiles_ui import correction_groups, profile_from_fields
 from workbook_mapping_ui import dialog_payload, corrections_payload, merge_mapping_rows, formula_view
 from workbook_profile import confirm as confirm_book
-from compressor_degradation_chart import prepare_compressor_plots, selected_compressor_pairs
+from compressor_degradation_chart import (
+    prepare_compressor_plots, selected_compressor_pairs, compressor_pair_point_counts,
+)
 from compressor_preview import render_compressor_preview
+from pressure_probe import pressure_probe_payload
 
 
 # Это те же code objects, что и у проверенного сценария. Меняется только
@@ -294,6 +297,7 @@ class DesktopController(QObject):
         self.views, self.figures, self.logs = {}, {}, ""
         self._top10_results, self._top10_mode = [], "table"
         self._compressor_preview_cache, self._compressor_preview_busy = {}, False
+        self._compressor_point_counts, self._compressor_point_counts_key = {}, None
         self._preview_events = PreviewEvents(self)
         self._preview_events.completed.connect(self._finish_compressor_previews)
         self.dialog, self.period_request = None, None
@@ -438,6 +442,8 @@ class DesktopController(QObject):
     def _clear_charts(self):
         self._top10_results, self._top10_mode = [], "table"
         self._compressor_preview_cache.clear()
+        self._compressor_point_counts.clear()
+        self._compressor_point_counts_key = None
         for figure in self.figures.values():
             workflow.plt.close(figure)
         self.figures.clear()
@@ -454,7 +460,10 @@ class DesktopController(QObject):
         canvas = FigureCanvasAgg(figure)
         data = io.BytesIO()
         canvas.print_png(data)
-        self.set_view(key, {"type": "figure", "src": "data:image/png;base64," + base64.b64encode(data.getvalue()).decode("ascii")})
+        payload = {"type": "figure", "src": "data:image/png;base64," + base64.b64encode(data.getvalue()).decode("ascii")}
+        if key == "pressure":
+            payload["probe"] = pressure_probe_payload(figure)
+        self.set_view(key, payload)
 
     def _table(self, table, key=""):
         if table is None or table.empty:
@@ -477,15 +486,27 @@ class DesktopController(QObject):
         tables = []
         chart = self.last_result.pressure_chart if self.last_result else None
         choices = (chart.compressor_pair_ranks or {}) if chart is not None else {}
+        if chart is not None:
+            counts_key = (id(chart.degradation_values), id(chart.periods),
+                          tuple(id(table) for table in (chart.vna_top10 or [])))
+            if counts_key != self._compressor_point_counts_key:
+                self._compressor_point_counts = compressor_pair_point_counts(
+                    chart.degradation_values, chart.periods, chart.vna_top10,
+                )
+                self._compressor_point_counts_key = counts_key
         for index, table in enumerate(self._top10_results, start=1):
             if table is None or table.empty:
                 continue
             period = int(table.attrs.get("period_number", index))
             rank = int(choices.get(period, table.iloc[0].get("rank", 1)))
             display = table.drop(columns=["share_percent"], errors="ignore").copy()
-            pairs = [{"rank": int(row.get("rank", position)),
-                      "label": f"Пара №{int(row.get('rank', position))} · Δдней {self._format_cell(row.get('delta_days'))} · ΔКПД {self._format_cell(row.get('delta_eta'))} п.п."}
-                     for position, (_, row) in enumerate(table.iterrows(), 1)]
+            pairs = []
+            for position, (_, row) in enumerate(table.iterrows(), 1):
+                pair_rank = int(row.get("rank", position))
+                points = self._compressor_point_counts.get((period, pair_rank))
+                count_label = str(points) if points is not None else "—"
+                pairs.append({"rank": pair_rank, "points": points,
+                    "label": f"Пара №{pair_rank} · точек: {count_label} · Δдней {self._format_cell(row.get('delta_days'))} · ΔКПД {self._format_cell(row.get('delta_eta'))} п.п."})
             preview = self._compressor_preview_cache.get((period, rank)) if self._top10_mode == "graphs" else None
             tables.append({"title": f"Период {period} · ТОП-10 ВНА", "period": period,
                            "selected_rank": rank, "pairs": pairs, "preview": preview,
